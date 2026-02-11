@@ -1,0 +1,55 @@
+id: sys.staffx
+kind: System
+name: StaffX
+metadata:
+  description: StaffX workforce management platform
+matrix:
+  Features:
+    featureRefs:
+      - sha256:50309de5479708c3302fafd3b3409b47355b1c383f9585a60ae195c06cba2c95
+      - sha256:29e68012208fe495e178ae1f494c7558f26fcee9ba2cefe79142c28c932b9aa6
+      - sha256:c151a2bf2d068a6e24fe7db9f95c11523c70fab4a1720e0a33fbb6c6ef71da50
+      - sha256:b2a9a18cd0cf5f0537bb9e24bd6c7df7f9b7a0c622c840455f47239041e7d980
+    specRefs: []
+    skillRefs: []
+  General Specs:
+    featureRefs: []
+    specRefs:
+      - sha256:5cb718a648e1142dd917c85667f1441b28603a81a0acf75609bc35ccb442dabc
+    skillRefs: []
+  General Skills:
+    featureRefs: []
+    specRefs: []
+    skillRefs: []
+  Data Model:
+    featureRefs: []
+    specRefs: []
+    skillRefs: []
+  Interfaces:
+    featureRefs: []
+    specRefs:
+      - sha256:5cb718a648e1142dd917c85667f1441b28603a81a0acf75609bc35ccb442dabc
+    skillRefs: []
+  Connectivity:
+    featureRefs: []
+    specRefs:
+      - sha256:5cb718a648e1142dd917c85667f1441b28603a81a0acf75609bc35ccb442dabc
+    skillRefs: []
+  Security:
+    featureRefs:
+      - sha256:50309de5479708c3302fafd3b3409b47355b1c383f9585a60ae195c06cba2c95
+    specRefs:
+      - sha256:ac547084f0fa826e1a3dd519a2ef0fa7b94f55213c19e3e894694701e2be914f
+    skillRefs: []
+  Implementation:
+    featureRefs: []
+    specRefs: []
+    skillRefs: []
+  Deployment:
+    featureRefs: []
+    specRefs: []
+    skillRefs: []
+artifacts:
+  Summary: []
+  Docs: []
+  Code: []

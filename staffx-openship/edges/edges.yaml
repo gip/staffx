@@ -1,0 +1,36 @@
+edges:
+  - id: e.react-web.backend
+    type: Runtime
+    fromNodeId: p.react-web
+    toNodeId: p.backend
+    metadata:
+      protocol: http
+      description: React web frontend communicates with backend via REST API
+  - id: e.electron.backend
+    type: Runtime
+    fromNodeId: p.electron
+    toNodeId: p.backend
+    metadata:
+      protocol: http
+      description: Electron frontend communicates with backend via REST API
+  - id: e.react-web.auth0
+    type: Runtime
+    fromNodeId: p.react-web
+    toNodeId: p.auth0-idp
+    metadata:
+      protocol: http
+      description: React web redirects to Auth0 for login flows via Auth0 SPA SDK
+  - id: e.electron.auth0
+    type: Runtime
+    fromNodeId: p.electron
+    toNodeId: p.auth0-idp
+    metadata:
+      protocol: http
+      description: Electron redirects to Auth0 for login flows via Auth0 SPA SDK
+  - id: e.backend.auth0
+    type: Runtime
+    fromNodeId: p.backend
+    toNodeId: p.auth0-idp
+    metadata:
+      protocol: http
+      description: Backend validates JWT tokens and queries Auth0 Management API

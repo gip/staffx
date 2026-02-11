@@ -1,0 +1,12 @@
+specVersion: openship/v1
+systemNodeId: sys.staffx
+concerns:
+  - Features
+  - General Specs
+  - General Skills
+  - Data Model
+  - Interfaces
+  - Connectivity
+  - Security
+  - Implementation
+  - Deployment

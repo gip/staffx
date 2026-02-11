@@ -1,0 +1,46 @@
+id: h.server
+kind: Host
+name: Server Environment
+metadata:
+  description: Server-side execution environment for the backend API
+matrix:
+  Features:
+    featureRefs: []
+    specRefs: []
+    skillRefs: []
+  General Specs:
+    featureRefs: []
+    specRefs: []
+    skillRefs: []
+  General Skills:
+    featureRefs: []
+    specRefs: []
+    skillRefs: []
+  Data Model:
+    featureRefs: []
+    specRefs: []
+    skillRefs: []
+  Interfaces:
+    featureRefs: []
+    specRefs: []
+    skillRefs: []
+  Connectivity:
+    featureRefs: []
+    specRefs: []
+    skillRefs: []
+  Security:
+    featureRefs: []
+    specRefs: []
+    skillRefs: []
+  Implementation:
+    featureRefs: []
+    specRefs: []
+    skillRefs: []
+  Deployment:
+    featureRefs: []
+    specRefs: []
+    skillRefs: []
+artifacts:
+  Summary: []
+  Docs: []
+  Code: []

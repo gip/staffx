@@ -1,0 +1,58 @@
+id: p.electron
+kind: Process
+name: Electron Frontend
+parentId: h.client
+metadata:
+  runtime: node
+  language: typescript
+  framework: electron
+matrix:
+  Features:
+    featureRefs:
+      - sha256:c151a2bf2d068a6e24fe7db9f95c11523c70fab4a1720e0a33fbb6c6ef71da50
+    specRefs: []
+    skillRefs: []
+  General Specs:
+    featureRefs: []
+    specRefs:
+      - sha256:8d5baee6f7b0415936239aef74b56871c9f0901be2a880bb2f8eac4546af3495
+    skillRefs: []
+  General Skills:
+    featureRefs: []
+    specRefs: []
+    skillRefs: []
+  Data Model:
+    featureRefs: []
+    specRefs: []
+    skillRefs: []
+  Interfaces:
+    featureRefs: []
+    specRefs:
+      - sha256:5cb718a648e1142dd917c85667f1441b28603a81a0acf75609bc35ccb442dabc
+    skillRefs: []
+  Connectivity:
+    featureRefs: []
+    specRefs:
+      - sha256:5cb718a648e1142dd917c85667f1441b28603a81a0acf75609bc35ccb442dabc
+      - sha256:8d5baee6f7b0415936239aef74b56871c9f0901be2a880bb2f8eac4546af3495
+    skillRefs: []
+  Security:
+    featureRefs:
+      - sha256:50309de5479708c3302fafd3b3409b47355b1c383f9585a60ae195c06cba2c95
+    specRefs:
+      - sha256:ac547084f0fa826e1a3dd519a2ef0fa7b94f55213c19e3e894694701e2be914f
+    skillRefs:
+      - sha256:51f2f0406f08eecf8b1ed0811338561f1d2a1d7ef660ceda9aa4db4b4a22071a
+  Implementation:
+    featureRefs: []
+    specRefs:
+      - sha256:8d5baee6f7b0415936239aef74b56871c9f0901be2a880bb2f8eac4546af3495
+    skillRefs: []
+  Deployment:
+    featureRefs: []
+    specRefs: []
+    skillRefs: []
+artifacts:
+  Summary: []
+  Docs: []
+  Code: []

@@ -1,0 +1,54 @@
+id: h.auth0
+kind: Host
+name: Auth0
+metadata:
+  description: Auth0 identity platform providing authentication via user/password, Google OAuth, and GitHub OAuth
+  provider: auth0
+matrix:
+  Features:
+    featureRefs:
+      - sha256:50309de5479708c3302fafd3b3409b47355b1c383f9585a60ae195c06cba2c95
+    specRefs: []
+    skillRefs: []
+  General Specs:
+    featureRefs: []
+    specRefs: []
+    skillRefs: []
+  General Skills:
+    featureRefs: []
+    specRefs: []
+    skillRefs: []
+  Data Model:
+    featureRefs: []
+    specRefs: []
+    skillRefs: []
+  Interfaces:
+    featureRefs: []
+    specRefs:
+      - sha256:ac547084f0fa826e1a3dd519a2ef0fa7b94f55213c19e3e894694701e2be914f
+    skillRefs: []
+  Connectivity:
+    featureRefs: []
+    specRefs:
+      - sha256:ac547084f0fa826e1a3dd519a2ef0fa7b94f55213c19e3e894694701e2be914f
+    skillRefs: []
+  Security:
+    featureRefs:
+      - sha256:50309de5479708c3302fafd3b3409b47355b1c383f9585a60ae195c06cba2c95
+    specRefs:
+      - sha256:ac547084f0fa826e1a3dd519a2ef0fa7b94f55213c19e3e894694701e2be914f
+    skillRefs:
+      - sha256:51f2f0406f08eecf8b1ed0811338561f1d2a1d7ef660ceda9aa4db4b4a22071a
+  Implementation:
+    featureRefs: []
+    specRefs: []
+    skillRefs:
+      - sha256:51f2f0406f08eecf8b1ed0811338561f1d2a1d7ef660ceda9aa4db4b4a22071a
+  Deployment:
+    featureRefs: []
+    specRefs: []
+    skillRefs: []
+artifacts:
+  Summary: []
+  Docs: []
+  Code: []
