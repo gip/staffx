@@ -1,0 +1,21 @@
+{
+  "name": "@staffx/api",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "migrate": "tsx src/migrate.ts"
+  },
+  "dependencies": {
+    "fastify": "^5.2.1",
+    "@fastify/cors": "^11.0.0",
+    "pg": "^8.13.1"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.2",
+    "@types/pg": "^8.11.11"
+  }
+}
