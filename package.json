@@ -1,0 +1,20 @@
+{
+  "name": "staffx",
+  "private": true,
+  "scripts": {
+    "dev:web": "pnpm --filter @staffx/web dev",
+    "dev:api": "pnpm --filter @staffx/api dev",
+    "dev:desktop": "pnpm --filter @staffx/desktop dev",
+    "build:web": "pnpm --filter @staffx/web build",
+    "build:desktop": "pnpm --filter @staffx/desktop build",
+    "migrate": "pnpm --filter @staffx/api migrate"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.3",
+    "@types/node": "^22.13.1"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "packageManager": "pnpm@9.15.4"
+}

@@ -1,0 +1,24 @@
+{
+  "name": "@staffx/desktop",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "main": "out/main/index.js",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "preview": "electron-vite preview"
+  },
+  "dependencies": {
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "@staffx/ui": "workspace:*"
+  },
+  "devDependencies": {
+    "electron": "^34.0.0",
+    "electron-vite": "^5.0.0",
+    "@vitejs/plugin-react": "^4.3.4",
+    "@types/react": "^19.0.8",
+    "@types/react-dom": "^19.0.3"
+  }
+}
