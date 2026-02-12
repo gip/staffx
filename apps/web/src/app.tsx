@@ -32,6 +32,32 @@ function mergeChatMessages(current: ChatMessage[], incoming: ChatMessage[]) {
   return [...current, ...next];
 }
 
+function applyTopologyPositions(
+  detail: ThreadDetailPayload,
+  positions: Array<{ nodeId: string; x: number; y: number }>,
+): ThreadDetailPayload {
+  const byNodeId = new Map(positions.map((position) => [position.nodeId, position]));
+  return {
+    ...detail,
+    topology: {
+      ...detail.topology,
+      nodes: detail.topology.nodes.map((node) => {
+        const position = byNodeId.get(node.id);
+        if (!position) return node;
+        return { ...node, layoutX: position.x, layoutY: position.y };
+      }),
+    },
+    matrix: {
+      ...detail.matrix,
+      nodes: detail.matrix.nodes.map((node) => {
+        const position = byNodeId.get(node.id);
+        if (!position) return node;
+        return { ...node, layoutX: position.x, layoutY: position.y };
+      }),
+    },
+  };
+}
+
 async function readError(res: Response, fallback: string) {
   const body = await res.json().catch(() => ({}));
   if (typeof body.error === "string" && body.error) return body.error;
@@ -209,6 +235,29 @@ function ThreadRoute() {
           }
           return { error: "Failed to update thread" };
         }
+      }}
+      onSaveTopologyLayout={async (payload) => {
+        const res = await apiFetch(
+          `/projects/${encodeURIComponent(handle!)}/${encodeURIComponent(projectName!)}/thread/${encodeURIComponent(threadId!)}/topology/layout`,
+          {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          },
+        );
+        if (!res.ok) {
+          return { error: await readError(res, "Failed to save topology layout") };
+        }
+        const data = (await res.json()) as { systemId: string };
+        setDetail((prev) => (
+          prev
+            ? {
+                ...applyTopologyPositions(prev, payload.positions),
+                systemId: data.systemId,
+              }
+            : prev
+        ));
+        return data;
       }}
       onAddMatrixDoc={async (payload) => {
         const res = await apiFetch(

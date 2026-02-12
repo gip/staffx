@@ -737,10 +737,24 @@ a.project-card {
   height: 100%;
 }
 
+.thread-topology-canvas .react-flow__nodes {
+  z-index: 4 !important;
+}
+
+.thread-topology-canvas .react-flow__edges,
+.thread-topology-canvas .react-flow__edge-labels {
+  z-index: 10 !important;
+}
+
+.thread-topology-canvas .react-flow__node-topology {
+  overflow: visible;
+}
+
 .thread-topology-node {
   display: flex;
   flex-direction: column;
   gap: 5px;
+  position: relative;
 }
 
 .thread-topology-node strong {
@@ -752,6 +766,44 @@ a.project-card {
 .thread-topology-node span {
   font-size: 11px;
   color: var(--fg-muted);
+}
+
+.thread-topology-nested-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 4px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+}
+
+.thread-topology-nested-item {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 6px 8px;
+  border: 1px solid color-mix(in srgb, var(--border) 80%, transparent);
+  border-radius: 7px;
+  background: var(--bg-secondary);
+  position: relative;
+}
+
+.thread-topology-handle {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: var(--bg);
+}
+
+.thread-topology-handle--host {
+  z-index: 2;
+}
+
+.thread-topology-handle--child {
+  z-index: 3;
 }
 
 .matrix-table-wrap {

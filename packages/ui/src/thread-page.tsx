@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ChevronDown,
   ChevronRight,
@@ -12,10 +12,14 @@ import {
 import ReactFlow, {
   Background,
   Controls,
+  Handle,
   MarkerType,
   Position,
+  useNodesState,
+  type NodeMouseHandler,
   type Edge,
   type Node,
+  type NodeProps,
 } from "reactflow";
 import "reactflow/dist/style.css";
 import { Link } from "./link";
@@ -33,6 +37,8 @@ export interface TopologyNode {
   name: string;
   kind: string;
   parentId: string | null;
+  layoutX?: number | null;
+  layoutY?: number | null;
 }
 
 export interface TopologyEdge {
@@ -40,6 +46,7 @@ export interface TopologyEdge {
   type: string;
   fromNodeId: string;
   toNodeId: string;
+  protocol?: string | null;
 }
 
 export interface MatrixCellDoc {
@@ -125,6 +132,7 @@ interface MatrixRefInput {
 interface ThreadPageProps {
   detail: ThreadDetailPayload;
   onUpdateThread?: (payload: { title?: string; description?: string | null }) => Promise<MutationResult<{ thread: ThreadDetail }>>;
+  onSaveTopologyLayout?: (payload: { positions: Array<{ nodeId: string; x: number; y: number }> }) => Promise<MutationResult<{ systemId: string }>>;
   onAddMatrixDoc?: (payload: MatrixRefInput) => Promise<MutationResult<{ systemId: string; cell: MatrixCell }>>;
   onRemoveMatrixDoc?: (payload: MatrixRefInput) => Promise<MutationResult<{ systemId: string; cell: MatrixCell }>>;
   onSendChatMessage?: (payload: { content: string }) => Promise<MutationResult<{ messages: ChatMessage[] }>>;
@@ -162,21 +170,134 @@ function sortNodes(a: TopologyNode, b: TopologyNode) {
   return a.id.localeCompare(b.id);
 }
 
-function buildFlowNodes(nodes: TopologyNode[]): Node[] {
-  if (nodes.length === 0) return [];
+interface FlowLayoutModel {
+  byId: Map<string, TopologyNode>;
+  visibleNodes: TopologyNode[];
+  hiddenNodeIds: Set<string>;
+  visibleParentById: Map<string, string | null>;
+  nestedChildrenByHost: Map<string, TopologyNode[]>;
+}
 
+interface TopologyFlowNodeData {
+  name: string;
+  kind: string;
+  nestedChildren: TopologyNode[];
+}
+
+interface FlowEndpoint {
+  nodeId: string;
+  handleId: string;
+}
+
+function TopologyFlowNode({ data }: NodeProps<TopologyFlowNodeData>) {
+  return (
+    <div className="thread-topology-node">
+      <Handle
+        type="target"
+        position={Position.Left}
+        id="host-in"
+        className="thread-topology-handle thread-topology-handle--host"
+        style={{ top: 22 }}
+      />
+      <Handle
+        type="source"
+        position={Position.Right}
+        id="host-out"
+        className="thread-topology-handle thread-topology-handle--host"
+        style={{ top: 22 }}
+      />
+
+      <strong>{data.name}</strong>
+      <span>{data.kind}</span>
+      {data.nestedChildren.length > 0 && (
+        <div className="thread-topology-nested-list">
+          {data.nestedChildren.map((child) => (
+            <div className="thread-topology-nested-item" key={child.id}>
+              <Handle
+                type="target"
+                position={Position.Left}
+                id={`child-in:${child.id}`}
+                className="thread-topology-handle thread-topology-handle--child"
+                style={{ top: "50%" }}
+              />
+              <Handle
+                type="source"
+                position={Position.Right}
+                id={`child-out:${child.id}`}
+                className="thread-topology-handle thread-topology-handle--child"
+                style={{ top: "50%" }}
+              />
+              <strong>{child.name}</strong>
+              <span>{child.kind}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+const FLOW_NODE_TYPES = {
+  topology: TopologyFlowNode,
+};
+
+function buildFlowLayoutModel(nodes: TopologyNode[]): FlowLayoutModel {
   const byId = new Map(nodes.map((node) => [node.id, node]));
-  const children = new Map<string, TopologyNode[]>();
+  const hiddenNodeIds = new Set<string>();
+  const nestedChildrenByHost = new Map<string, TopologyNode[]>();
+  const nestedKinds = new Set(["Container", "Process", "Library"]);
 
   for (const node of nodes) {
-    if (!node.parentId || !byId.has(node.parentId)) continue;
-    const list = children.get(node.parentId) ?? [];
+    if (!node.parentId) continue;
+    const parent = byId.get(node.parentId);
+    if (!parent || parent.kind !== "Host") continue;
+    if (!nestedKinds.has(node.kind)) continue;
+    hiddenNodeIds.add(node.id);
+    const nested = nestedChildrenByHost.get(parent.id) ?? [];
+    nested.push(node);
+    nestedChildrenByHost.set(parent.id, nested);
+  }
+
+  for (const nested of nestedChildrenByHost.values()) {
+    nested.sort(sortNodes);
+  }
+
+  const visibleNodes = nodes.filter((node) => !hiddenNodeIds.has(node.id));
+  const visibleParentById = new Map<string, string | null>();
+  for (const node of visibleNodes) {
+    let parentId = node.parentId;
+    while (parentId && hiddenNodeIds.has(parentId)) {
+      parentId = byId.get(parentId)?.parentId ?? null;
+    }
+    if (parentId && !byId.has(parentId)) {
+      parentId = null;
+    }
+    visibleParentById.set(node.id, parentId);
+  }
+
+  return {
+    byId,
+    visibleNodes,
+    hiddenNodeIds,
+    visibleParentById,
+    nestedChildrenByHost,
+  };
+}
+
+function buildFlowNodes(model: FlowLayoutModel): Node[] {
+  if (model.visibleNodes.length === 0) return [];
+
+  const children = new Map<string, TopologyNode[]>();
+  for (const node of model.visibleNodes) {
+    const parentId = model.visibleParentById.get(node.id);
+    if (!parentId) continue;
+    const list = children.get(parentId) ?? [];
     list.push(node);
-    children.set(node.parentId, list);
+    children.set(parentId, list);
   }
 
   const depths = new Map<string, number>();
-  const roots = nodes.filter((node) => !node.parentId || !byId.has(node.parentId)).sort(sortNodes);
+  const roots = model.visibleNodes.filter((node) => !model.visibleParentById.get(node.id)).sort(sortNodes);
   const queue: Array<{ node: TopologyNode; depth: number }> = roots.map((node) => ({ node, depth: 0 }));
 
   while (queue.length > 0) {
@@ -192,14 +313,14 @@ function buildFlowNodes(nodes: TopologyNode[]): Node[] {
     }
   }
 
-  for (const node of nodes) {
+  for (const node of model.visibleNodes) {
     if (!depths.has(node.id)) {
       depths.set(node.id, 0);
     }
   }
 
   const columns = new Map<number, TopologyNode[]>();
-  for (const node of nodes) {
+  for (const node of model.visibleNodes) {
     const depth = depths.get(node.id) ?? 0;
     const list = columns.get(depth) ?? [];
     list.push(node);
@@ -219,46 +340,95 @@ function buildFlowNodes(nodes: TopologyNode[]): Node[] {
     });
   }
 
-  return nodes.map((node) => ({
-    id: node.id,
-    position: positions.get(node.id) ?? { x: 0, y: 0 },
-    sourcePosition: Position.Right,
-    targetPosition: Position.Left,
-    data: {
-      label: (
-        <div className="thread-topology-node">
-          <strong>{node.name}</strong>
-          <span>{node.kind}</span>
-        </div>
-      ),
-    },
-    style: {
-      borderRadius: 10,
-      border: "1px solid var(--border)",
-      background: "var(--bg-secondary)",
-      color: "var(--fg)",
-      minWidth: 170,
-      padding: 10,
-      boxShadow: "none",
-    },
-  }));
+  return model.visibleNodes.map((node) => {
+    const nestedChildren = model.nestedChildrenByHost.get(node.id) ?? [];
+    const hasSavedPosition =
+      typeof node.layoutX === "number" &&
+      Number.isFinite(node.layoutX) &&
+      typeof node.layoutY === "number" &&
+      Number.isFinite(node.layoutY);
+    const defaultPosition = positions.get(node.id) ?? { x: 0, y: 0 };
+
+    return {
+      id: node.id,
+      type: "topology",
+      position: hasSavedPosition ? { x: node.layoutX as number, y: node.layoutY as number } : defaultPosition,
+      data: {
+        name: node.name,
+        kind: node.kind,
+        nestedChildren,
+      },
+      style: {
+        borderRadius: 10,
+        border: "1px solid var(--border)",
+        background: "var(--bg-secondary)",
+        color: "var(--fg)",
+        minWidth: nestedChildren.length > 0 ? 240 : 180,
+        padding: 10,
+        boxShadow: "none",
+      },
+    };
+  });
 }
 
-function buildFlowEdges(edges: TopologyEdge[]): Edge[] {
-  return edges.map((edge) => ({
-    id: edge.id,
-    source: edge.fromNodeId,
-    target: edge.toNodeId,
-    markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16 },
-    style: { stroke: "var(--fg-muted)", strokeWidth: 1.2 },
-    label: edge.type,
-    labelStyle: { fill: "var(--fg-muted)", fontSize: 11 },
-  }));
+function resolveFlowEndpoint(
+  nodeId: string,
+  direction: "source" | "target",
+  model: FlowLayoutModel,
+): FlowEndpoint | null {
+  const endpoint = model.byId.get(nodeId);
+  if (!endpoint) return null;
+
+  if (!model.hiddenNodeIds.has(nodeId)) {
+    return {
+      nodeId,
+      handleId: direction === "source" ? "host-out" : "host-in",
+    };
+  }
+
+  let parentId = endpoint.parentId;
+  while (parentId) {
+    const parentNode = model.byId.get(parentId);
+    if (!parentNode) break;
+    if (!model.hiddenNodeIds.has(parentNode.id)) {
+      return {
+        nodeId: parentNode.id,
+        handleId: direction === "source" ? `child-out:${endpoint.id}` : `child-in:${endpoint.id}`,
+      };
+    }
+    parentId = parentNode.parentId;
+  }
+
+  return null;
+}
+
+function buildFlowEdges(edges: TopologyEdge[], model: FlowLayoutModel): Edge[] {
+  const flowEdges: Edge[] = [];
+  for (const edge of edges) {
+    const source = resolveFlowEndpoint(edge.fromNodeId, "source", model);
+    const target = resolveFlowEndpoint(edge.toNodeId, "target", model);
+    if (!source || !target) continue;
+
+    flowEdges.push({
+      id: edge.id,
+      source: source.nodeId,
+      sourceHandle: source.handleId,
+      target: target.nodeId,
+      targetHandle: target.handleId,
+      markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16 },
+      style: { stroke: "var(--fg-muted)", strokeWidth: 1.2 },
+      label: edge.protocol?.trim() || edge.type,
+      labelStyle: { fill: "var(--fg-muted)", fontSize: 11 },
+      zIndex: 1000,
+    });
+  }
+  return flowEdges;
 }
 
 export function ThreadPage({
   detail,
   onUpdateThread,
+  onSaveTopologyLayout,
   onAddMatrixDoc,
   onRemoveMatrixDoc,
   onSendChatMessage,
@@ -276,6 +446,8 @@ export function ThreadPage({
   const [chatInput, setChatInput] = useState("");
   const [chatError, setChatError] = useState("");
   const [isSendingChat, setIsSendingChat] = useState(false);
+  const [topologyError, setTopologyError] = useState("");
+  const [isSavingTopologyLayout, setIsSavingTopologyLayout] = useState(false);
   const [docPicker, setDocPicker] = useState<{
     nodeId: string;
     concern: string;
@@ -305,8 +477,14 @@ export function ThreadPage({
     return () => document.removeEventListener("fullscreenchange", onFullscreenChange);
   }, []);
 
-  const flowNodes = useMemo(() => buildFlowNodes(detail.topology.nodes), [detail.topology.nodes]);
-  const flowEdges = useMemo(() => buildFlowEdges(detail.topology.edges), [detail.topology.edges]);
+  const flowLayoutModel = useMemo(() => buildFlowLayoutModel(detail.topology.nodes), [detail.topology.nodes]);
+  const initialFlowNodes = useMemo(() => buildFlowNodes(flowLayoutModel), [flowLayoutModel]);
+  const [flowNodes, setFlowNodes, onFlowNodesChange] = useNodesState(initialFlowNodes);
+  const flowEdges = useMemo(() => buildFlowEdges(detail.topology.edges, flowLayoutModel), [detail.topology.edges, flowLayoutModel]);
+
+  useEffect(() => {
+    setFlowNodes(initialFlowNodes);
+  }, [initialFlowNodes, setFlowNodes]);
 
   const cellsByKey = useMemo(() => {
     const map = new Map<string, MatrixCell>();
@@ -449,6 +627,23 @@ export function ThreadPage({
     setChatInput("");
   }
 
+  const handleNodeDragStop = useCallback<NodeMouseHandler>(
+    async (_event, node) => {
+      if (!detail.permissions.canEdit || !onSaveTopologyLayout) return;
+      setTopologyError("");
+      setIsSavingTopologyLayout(true);
+      const result = await onSaveTopologyLayout({
+        positions: [{ nodeId: node.id, x: node.position.x, y: node.position.y }],
+      });
+      setIsSavingTopologyLayout(false);
+      const error = getErrorMessage(result);
+      if (error) {
+        setTopologyError(error);
+      }
+    },
+    [detail.permissions.canEdit, onSaveTopologyLayout],
+  );
+
   return (
     <main className="page thread-view-page">
       <div className="thread-view-header">
@@ -565,8 +760,11 @@ export function ThreadPage({
               <ReactFlow
                 nodes={flowNodes}
                 edges={flowEdges}
+                nodeTypes={FLOW_NODE_TYPES}
+                onNodesChange={onFlowNodesChange}
+                onNodeDragStop={handleNodeDragStop}
                 fitView
-                nodesDraggable={false}
+                nodesDraggable={detail.permissions.canEdit && Boolean(onSaveTopologyLayout)}
                 nodesConnectable={false}
                 elementsSelectable={false}
                 deleteKeyCode={null}
@@ -575,6 +773,8 @@ export function ThreadPage({
                 <Controls />
               </ReactFlow>
             </div>
+            {isSavingTopologyLayout && <p className="matrix-empty">Saving layout…</p>}
+            {topologyError && <p className="field-error">{topologyError}</p>}
           </div>
         )}
       </section>

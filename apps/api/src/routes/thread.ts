@@ -26,6 +26,8 @@ interface TopologyNodeRow {
   name: string;
   kind: string;
   parent_id: string | null;
+  layout_x: number | null;
+  layout_y: number | null;
 }
 
 interface TopologyEdgeRow {
@@ -33,6 +35,7 @@ interface TopologyEdgeRow {
   type: string;
   from_node_id: string;
   to_node_id: string;
+  protocol: string | null;
 }
 
 interface ConcernRow {
@@ -128,6 +131,14 @@ interface MatrixRefBody {
   concern: string;
   docHash: string;
   refType: "Feature" | "Spec" | "Skill";
+}
+
+interface TopologyLayoutBody {
+  positions: Array<{
+    nodeId: string;
+    x: number;
+    y: number;
+  }>;
 }
 
 interface ThreadPatchBody {
@@ -235,6 +246,35 @@ function normalizeMatrixMutationBody(
   return { nodeId, concern, docHash, refType };
 }
 
+function normalizeTopologyLayoutBody(
+  body: unknown,
+): { positions: Array<{ nodeId: string; x: number; y: number }> } | null {
+  if (!body || typeof body !== "object") return null;
+  const parsed = body as Partial<TopologyLayoutBody>;
+  if (!Array.isArray(parsed.positions) || parsed.positions.length === 0) return null;
+
+  const seen = new Set<string>();
+  const positions: Array<{ nodeId: string; x: number; y: number }> = [];
+  for (const position of parsed.positions) {
+    if (!position || typeof position !== "object") return null;
+    const entry = position as Partial<TopologyLayoutBody["positions"][number]>;
+    if (typeof entry.nodeId !== "string" || typeof entry.x !== "number" || typeof entry.y !== "number") {
+      return null;
+    }
+
+    const nodeId = entry.nodeId.trim();
+    if (!nodeId) return null;
+    if (!Number.isFinite(entry.x) || !Number.isFinite(entry.y)) return null;
+    if (seen.has(nodeId)) continue;
+    seen.add(nodeId);
+
+    positions.push({ nodeId, x: entry.x, y: entry.y });
+  }
+
+  if (positions.length === 0) return null;
+  return { positions };
+}
+
 async function getThreadSystemId(threadId: string): Promise<string | null> {
   const result = await query<SystemRow>(
     "SELECT thread_current_system($1) AS system_id",
@@ -328,14 +368,20 @@ export async function threadRoutes(app: FastifyInstance) {
       const [nodesResult, edgesResult, concernsResult, matrixRefsResult, documentsResult, artifactsResult, messagesResult] =
         await Promise.all([
           query<TopologyNodeRow>(
-            `SELECT id, name, kind, parent_id
+            `SELECT
+               id,
+               name,
+               kind,
+               parent_id,
+               (metadata->'layout'->>'x')::double precision AS layout_x,
+               (metadata->'layout'->>'y')::double precision AS layout_y
              FROM nodes
              WHERE system_id = $1
              ORDER BY name, id`,
             [systemId],
           ),
           query<TopologyEdgeRow>(
-            `SELECT id, type, from_node_id, to_node_id
+            `SELECT id, type, from_node_id, to_node_id, metadata->>'protocol' AS protocol
              FROM edges
              WHERE system_id = $1
              ORDER BY id`,
@@ -392,6 +438,8 @@ export async function threadRoutes(app: FastifyInstance) {
         name: row.name,
         kind: row.kind,
         parentId: row.parent_id,
+        layoutX: row.layout_x,
+        layoutY: row.layout_y,
       }));
 
       const concerns = concernsResult.rows.map((row) => ({
@@ -461,6 +509,7 @@ export async function threadRoutes(app: FastifyInstance) {
             type: row.type,
             fromNodeId: row.from_node_id,
             toNodeId: row.to_node_id,
+            protocol: row.protocol,
           })),
         },
         matrix: {
@@ -550,6 +599,106 @@ export async function threadRoutes(app: FastifyInstance) {
           accessRole: context.accessRole,
         },
       };
+    },
+  );
+
+  app.patch<{ Params: { handle: string; projectName: string; threadId: string }; Body: TopologyLayoutBody }>(
+    "/projects/:handle/:projectName/thread/:threadId/topology/layout",
+    async (req, reply) => {
+      const { handle, projectName, threadId } = req.params;
+      const context = await requireContext(reply, req.auth.id, handle, projectName, threadId);
+      if (!context) return;
+
+      if (!canEdit(context.accessRole)) {
+        return reply.code(403).send({ error: "Forbidden" });
+      }
+
+      const payload = normalizeTopologyLayoutBody(req.body);
+      if (!payload) {
+        return reply.code(400).send({ error: "Invalid topology layout payload" });
+      }
+
+      const client = await pool.connect();
+      let inTransaction = false;
+      try {
+        await client.query("BEGIN");
+        inTransaction = true;
+
+        const actionId = randomUUID();
+        const beginResult = await client.query<BeginActionRow>(
+          `SELECT begin_action($1, $2, $3::action_type, $4) AS output_system_id`,
+          [context.threadId, actionId, "Edit", "Topology layout update"],
+        );
+
+        const outputSystemId = beginResult.rows[0]?.output_system_id;
+        if (!outputSystemId) {
+          throw new Error("Failed to create action output system");
+        }
+
+        const requestedNodeIds = payload.positions.map((position) => position.nodeId);
+        const existingNodesResult = await client.query<{ id: string }>(
+          `SELECT id
+           FROM nodes
+           WHERE system_id = $1
+             AND id = ANY($2::text[])`,
+          [outputSystemId, requestedNodeIds],
+        );
+
+        const existingNodeIds = new Set(existingNodesResult.rows.map((row) => row.id));
+        const invalidNode = requestedNodeIds.find((nodeId) => !existingNodeIds.has(nodeId));
+        if (invalidNode) {
+          await client.query("ROLLBACK");
+          inTransaction = false;
+          return reply.code(400).send({ error: "Invalid node id in topology layout payload" });
+        }
+
+        let changedCount = 0;
+        for (const position of payload.positions) {
+          const updateResult = await client.query<ChangedRow>(
+            `UPDATE nodes
+             SET metadata = jsonb_set(
+               coalesce(metadata, '{}'::jsonb),
+               '{layout}',
+               jsonb_build_object('x', $3, 'y', $4),
+               true
+             )
+             WHERE system_id = $1
+               AND id = $2
+               AND (
+                 (metadata->'layout'->>'x')::double precision IS DISTINCT FROM $3
+                 OR (metadata->'layout'->>'y')::double precision IS DISTINCT FROM $4
+               )
+             RETURNING 1 AS changed`,
+            [outputSystemId, position.nodeId, position.x, position.y],
+          );
+          changedCount += updateResult.rowCount ?? 0;
+        }
+
+        if (changedCount === 0) {
+          await client.query("SELECT commit_action_empty($1, $2)", [context.threadId, actionId]);
+        }
+
+        await client.query("COMMIT");
+        inTransaction = false;
+      } catch (error) {
+        if (inTransaction) {
+          try {
+            await client.query("ROLLBACK");
+          } catch {
+            // Best effort rollback.
+          }
+        }
+        throw error;
+      } finally {
+        client.release();
+      }
+
+      const systemId = await getThreadSystemId(context.threadId);
+      if (!systemId) {
+        return reply.code(500).send({ error: "Unable to resolve thread system" });
+      }
+
+      return { systemId };
     },
   );
 
