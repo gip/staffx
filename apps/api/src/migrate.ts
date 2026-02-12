@@ -36,6 +36,7 @@ async function migrate() {
 
     drop function if exists set_updated_at cascade;
     drop function if exists upsert_file_content cascade;
+    drop function if exists validate_system_root_node cascade;
     drop function if exists fork_system cascade;
     drop function if exists thread_current_system cascade;
     drop function if exists next_project_thread_id cascade;
