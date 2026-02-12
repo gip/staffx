@@ -21,6 +21,20 @@ interface ThreadRow {
 export async function projectRoutes(app: FastifyInstance) {
   app.addHook("preHandler", verifyAuth);
 
+  app.get<{ Querystring: { name: string } }>(
+    "/projects/check-name",
+    async (req, reply) => {
+      const { name } = req.query;
+      if (!name) return reply.code(400).send({ error: "name is required" });
+
+      const result = await query(
+        "SELECT 1 FROM projects WHERE owner_id = $1 AND name = $2",
+        [req.auth.id, name],
+      );
+      return { available: result.rowCount === 0 };
+    },
+  );
+
   app.get("/projects", async (req) => {
     const result = await query<ProjectRow & { threads: ThreadRow[] }>(
       `SELECT
@@ -79,12 +93,20 @@ export async function projectRoutes(app: FastifyInstance) {
       }
 
       const id = randomUUID();
-      const result = await query<ProjectRow>(
-        `INSERT INTO projects (id, name, description, owner_id)
-         VALUES ($1, $2, $3, $4)
-         RETURNING id, name, description, created_at`,
-        [id, name.trim(), description?.trim() || null, req.auth.id],
-      );
+      let result;
+      try {
+        result = await query<ProjectRow>(
+          `INSERT INTO projects (id, name, description, owner_id)
+           VALUES ($1, $2, $3, $4)
+           RETURNING id, name, description, created_at`,
+          [id, name.trim(), description?.trim() || null, req.auth.id],
+        );
+      } catch (err: unknown) {
+        if (err instanceof Error && "code" in err && (err as { code: string }).code === "23505") {
+          return reply.code(409).send({ error: "A project with this name already exists" });
+        }
+        throw err;
+      }
 
       const row = result.rows[0];
       return reply.code(201).send({

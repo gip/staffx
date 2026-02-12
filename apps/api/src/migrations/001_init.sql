@@ -207,6 +207,7 @@ create table projects (
 );
 
 create index idx_projects_owner on projects (owner_id);
+create unique index idx_projects_owner_name on projects (owner_id, name);
 
 create table project_collaborators (
   project_id  text not null references projects(id) on delete cascade,

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Plus } from "lucide-react";
 import { useAuth } from "./auth-context";
 
@@ -17,29 +17,51 @@ const TEMPLATES = [
 
 interface CreateModalProps {
   onClose: () => void;
-  onCreate: (data: { name: string; description: string; template: string }) => void;
+  onCreate: (data: { name: string; description: string; template: string }) => Promise<{ error?: string } | void>;
+  onCheckName?: (name: string) => Promise<boolean>;
 }
 
-function CreateProjectModal({ onClose, onCreate }: CreateModalProps) {
+function CreateProjectModal({ onClose, onCreate, onCheckName }: CreateModalProps) {
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [template, setTemplate] = useState("blank");
   const [submitting, setSubmitting] = useState(false);
+  const [duplicateError, setDuplicateError] = useState("");
+  const [submitError, setSubmitError] = useState("");
+  const debounceRef = useRef<ReturnType<typeof setTimeout>>(null);
 
   const nameTrimmed = name.trim();
   const nameValid = /^[a-zA-Z0-9]([a-zA-Z0-9_-]*[a-zA-Z0-9])?$/.test(nameTrimmed) && !/[-_]{2}/.test(nameTrimmed);
-  const nameError = nameTrimmed.length > 0 && !nameValid
+  const formatError = nameTrimmed.length > 0 && !nameValid
     ? "Letters and numbers only, no leading/trailing - or _, no consecutive - or _"
     : name.length > 0 && name !== nameTrimmed
       ? "No spaces at the beginning or end"
       : "";
-  const canSubmit = nameTrimmed.length > 0 && nameValid && name === nameTrimmed && !submitting;
+  const nameError = formatError || duplicateError;
+  const canSubmit = nameTrimmed.length > 0 && nameValid && name === nameTrimmed && !submitting && !duplicateError;
 
-  function handleSubmit(e: React.FormEvent) {
+  useEffect(() => {
+    setDuplicateError("");
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    if (!nameTrimmed || !nameValid || !onCheckName) return;
+    const currentName = nameTrimmed;
+    debounceRef.current = setTimeout(async () => {
+      const available = await onCheckName(currentName);
+      if (!available) setDuplicateError("A project with this name already exists");
+    }, 300);
+    return () => { if (debounceRef.current) clearTimeout(debounceRef.current); };
+  }, [nameTrimmed, nameValid, onCheckName]);
+
+  async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!canSubmit) return;
     setSubmitting(true);
-    onCreate({ name: name.trim(), description: description.trim(), template });
+    setSubmitError("");
+    const result = await onCreate({ name: name.trim(), description: description.trim(), template });
+    if (result?.error) {
+      setSubmitError(result.error);
+      setSubmitting(false);
+    }
   }
 
   return (
@@ -93,6 +115,7 @@ function CreateProjectModal({ onClose, onCreate }: CreateModalProps) {
           />
         </label>
 
+        {submitError && <p className="field-error">{submitError}</p>}
         <div className="modal-actions">
           <button type="button" className="btn btn-secondary" onClick={onClose}>Cancel</button>
           <button type="submit" className="btn" disabled={!canSubmit}>
@@ -106,10 +129,11 @@ function CreateProjectModal({ onClose, onCreate }: CreateModalProps) {
 
 interface HomeProps {
   projects: Project[];
-  onCreateProject?: (data: { name: string; description: string; template: string }) => Promise<void>;
+  onCreateProject?: (data: { name: string; description: string; template: string }) => Promise<{ error?: string } | void>;
+  onCheckProjectName?: (name: string) => Promise<boolean>;
 }
 
-export function Home({ projects, onCreateProject }: HomeProps) {
+export function Home({ projects, onCreateProject, onCheckProjectName }: HomeProps) {
   const { isAuthenticated, isLoading, login, user } = useAuth();
   const [showCreate, setShowCreate] = useState(false);
 
@@ -166,8 +190,10 @@ export function Home({ projects, onCreateProject }: HomeProps) {
       {showCreate && (
         <CreateProjectModal
           onClose={() => setShowCreate(false)}
+          onCheckName={onCheckProjectName}
           onCreate={async (data) => {
-            await onCreateProject?.(data);
+            const result = await onCreateProject?.(data);
+            if (result?.error) return result;
             setShowCreate(false);
           }}
         />
