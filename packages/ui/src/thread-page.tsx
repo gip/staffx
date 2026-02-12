@@ -1573,13 +1573,22 @@ export function ThreadPage({
                                             const removeKey = `remove:${node.id}:${concern.name}:${doc.hash}:${doc.refType}`;
                                             const isMutating = activeMatrixMutation === removeKey;
                                             return (
-                                              <button
+                                              <div
                                                 key={`${doc.hash}:${doc.refType}`}
                                                 className={`matrix-doc-chip matrix-doc-chip--${doc.refType.toLowerCase()}`}
-                                                type="button"
+                                                role="button"
+                                                tabIndex={0}
                                                 onClick={() => {
                                                   if (detail.permissions.canEdit) {
                                                     openEditDocumentModal(doc, node.id, concern.name);
+                                                  }
+                                                }}
+                                                onKeyDown={(event) => {
+                                                  if (event.key === "Enter" || event.key === " ") {
+                                                    event.preventDefault();
+                                                    if (detail.permissions.canEdit) {
+                                                      openEditDocumentModal(doc, node.id, concern.name);
+                                                    }
                                                   }
                                                 }}
                                               >
@@ -1598,7 +1607,7 @@ export function ThreadPage({
                                                     ×
                                                   </button>
                                                 )}
-                                              </button>
+                                              </div>
                                             );
                                           })}
                                         </div>
