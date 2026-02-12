@@ -7,26 +7,19 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const migrationsDir = join(__dirname, "migrations");
 
 async function migrate() {
-  await query(`
-    CREATE TABLE IF NOT EXISTS _migrations (
-      name TEXT PRIMARY KEY,
-      applied_at TIMESTAMPTZ DEFAULT now()
-    )
-  `);
+  // Drop everything and recreate — dev only, no migrations tracking
+  await query("DROP TABLE IF EXISTS users CASCADE");
+  await query("DROP TABLE IF EXISTS _migrations CASCADE");
 
   const files = (await readdir(migrationsDir)).filter((f) => f.endsWith(".sql")).sort();
-  const applied = await query<{ name: string }>("SELECT name FROM _migrations");
-  const appliedSet = new Set(applied.rows.map((r) => r.name));
 
   for (const file of files) {
-    if (appliedSet.has(file)) continue;
     const sql = await readFile(join(migrationsDir, file), "utf-8");
-    console.log(`Applying ${file}…`);
+    console.log(`Running ${file}…`);
     await query(sql);
-    await query("INSERT INTO _migrations (name) VALUES ($1)", [file]);
   }
 
-  console.log("Migrations complete.");
+  console.log("Schema reset complete.");
   await close();
 }
 
