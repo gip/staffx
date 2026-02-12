@@ -14,7 +14,11 @@ interface ProjectRow {
 interface ThreadRow {
   id: string;
   title: string | null;
+  description: string | null;
+  project_thread_id: number | null;
   status: string;
+  created_by: string | null;
+  created_at: Date;
   updated_at: Date;
 }
 
@@ -36,17 +40,18 @@ export async function projectRoutes(app: FastifyInstance) {
   );
 
   app.get("/projects", async (req) => {
-    const result = await query<ProjectRow & { threads: ThreadRow[] }>(
+    const result = await query<ProjectRow & { owner_handle: string; threads: ThreadRow[] }>(
       `SELECT
          p.id,
          p.name,
          p.description,
          p.access_role,
          p.created_at,
+         u.handle AS owner_handle,
          COALESCE(
-           (SELECT jsonb_agg(t)
+            (SELECT jsonb_agg(t)
             FROM (
-              SELECT t.id, t.title, t.status, t.updated_at
+              SELECT t.id, t.title, t.description, t.project_thread_id, t.status, t.updated_at
               FROM threads t
               WHERE t.project_id = p.id
               ORDER BY t.updated_at DESC
@@ -55,6 +60,7 @@ export async function projectRoutes(app: FastifyInstance) {
            '[]'::jsonb
          ) AS threads
        FROM user_projects p
+       JOIN users u ON u.id = p.owner_id
        WHERE p.user_id = $1
        ORDER BY p.created_at DESC`,
       [req.auth.id],
@@ -65,15 +71,73 @@ export async function projectRoutes(app: FastifyInstance) {
       name: row.name,
       description: row.description,
       accessRole: row.access_role,
+      ownerHandle: row.owner_handle,
       createdAt: row.created_at,
       threads: (row.threads as unknown as ThreadRow[]).map((t) => ({
         id: t.id,
         title: t.title,
+        description: t.description,
+        projectThreadId: t.project_thread_id,
         status: t.status,
         updatedAt: t.updated_at,
       })),
     }));
   });
+
+  app.get<{ Params: { handle: string; projectName: string } }>(
+    "/projects/:handle/:projectName",
+    async (req, reply) => {
+      const { handle, projectName } = req.params;
+
+      const result = await query<ProjectRow & { owner_handle: string; threads: ThreadRow[] }>(
+        `SELECT
+           p.id,
+           p.name,
+           p.description,
+           p.access_role,
+           p.created_at,
+           u.handle AS owner_handle,
+           COALESCE(
+              (SELECT jsonb_agg(t ORDER BY t.project_thread_id DESC)
+              FROM (
+                SELECT t.id, t.title, t.description, t.project_thread_id, t.status,
+                       t.created_by, t.created_at, t.updated_at
+                FROM threads t
+                WHERE t.project_id = p.id
+              ) t),
+             '[]'::jsonb
+           ) AS threads
+         FROM user_projects p
+         JOIN users u ON u.id = p.owner_id
+         WHERE u.handle = $1 AND p.name = $2 AND p.user_id = $3`,
+        [handle, projectName, req.auth.id],
+      );
+
+      if (result.rowCount === 0) {
+        return reply.code(404).send({ error: "Project not found" });
+      }
+
+      const row = result.rows[0];
+      return {
+        id: row.id,
+        name: row.name,
+        description: row.description,
+        accessRole: row.access_role,
+        ownerHandle: row.owner_handle,
+        createdAt: row.created_at,
+        threads: (row.threads as unknown as ThreadRow[]).map((t) => ({
+          id: t.id,
+          title: t.title,
+          description: t.description,
+          projectThreadId: t.project_thread_id,
+          status: t.status,
+          createdBy: t.created_by,
+          createdAt: t.created_at,
+          updatedAt: t.updated_at,
+        })),
+      };
+    },
+  );
 
   app.post<{ Body: { name: string; description?: string; template?: string } }>(
     "/projects",
@@ -109,11 +173,16 @@ export async function projectRoutes(app: FastifyInstance) {
       }
 
       const row = result.rows[0];
+      const handleResult = await query<{ handle: string }>(
+        "SELECT handle FROM users WHERE id = $1",
+        [req.auth.id],
+      );
       return reply.code(201).send({
         id: row.id,
         name: row.name,
         description: row.description,
         accessRole: "Owner",
+        ownerHandle: handleResult.rows[0].handle,
         createdAt: row.created_at,
         threads: [],
       });

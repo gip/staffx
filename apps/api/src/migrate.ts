@@ -20,6 +20,7 @@ async function migrate() {
     drop table if exists messages cascade;
     drop table if exists actions cascade;
     drop table if exists threads cascade;
+    drop table if exists project_thread_counters cascade;
     drop table if exists project_collaborators cascade;
     drop table if exists projects cascade;
     drop table if exists artifact_files cascade;
@@ -37,6 +38,8 @@ async function migrate() {
     drop function if exists upsert_file_content cascade;
     drop function if exists fork_system cascade;
     drop function if exists thread_current_system cascade;
+    drop function if exists next_project_thread_id cascade;
+    drop function if exists assign_project_thread_id cascade;
     drop function if exists create_thread cascade;
     drop function if exists clone_thread cascade;
     drop function if exists begin_action cascade;
