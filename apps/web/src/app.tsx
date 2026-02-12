@@ -48,6 +48,15 @@ export function App() {
       <Header />
       <Home
         projects={projects}
+        onCheckProjectName={async (name) => {
+          const token = await getAccessTokenSilently();
+          const res = await fetch(`${API_URL}/projects/check-name?name=${encodeURIComponent(name)}`, {
+            headers: { Authorization: `Bearer ${token}` },
+          });
+          if (!res.ok) return true;
+          const data = await res.json();
+          return data.available;
+        }}
         onCreateProject={async (data) => {
           const token = await getAccessTokenSilently();
           const res = await fetch(`${API_URL}/projects`, {
@@ -55,10 +64,12 @@ export function App() {
             headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
             body: JSON.stringify(data),
           });
-          if (res.ok) {
-            const project = await res.json();
-            setProjects((prev) => [project, ...prev]);
+          if (!res.ok) {
+            const body = await res.json().catch(() => ({}));
+            return { error: body.error ?? "Failed to create project" };
           }
+          const project = await res.json();
+          setProjects((prev) => [project, ...prev]);
         }}
       />
     </AuthContext.Provider>
