@@ -188,20 +188,27 @@ function ThreadRoute() {
     <ThreadPage
       detail={detail}
       onUpdateThread={async (payload) => {
-        const res = await apiFetch(
-          `/projects/${encodeURIComponent(handle!)}/${encodeURIComponent(projectName!)}/thread/${encodeURIComponent(threadId!)}`,
-          {
-            method: "PATCH",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(payload),
-          },
-        );
-        if (!res.ok) {
-          return { error: await readError(res, "Failed to update thread") };
+        try {
+          const res = await apiFetch(
+            `/projects/${encodeURIComponent(handle!)}/${encodeURIComponent(projectName!)}/thread/${encodeURIComponent(threadId!)}`,
+            {
+              method: "PATCH",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(payload),
+            },
+          );
+          if (!res.ok) {
+            return { error: await readError(res, "Failed to update thread") };
+          }
+          const data = (await res.json()) as { thread: ThreadDetail };
+          setDetail((prev) => (prev ? { ...prev, thread: data.thread } : prev));
+          return data;
+        } catch (error: unknown) {
+          if (error instanceof Error && error.message.trim()) {
+            return { error: error.message };
+          }
+          return { error: "Failed to update thread" };
         }
-        const data = (await res.json()) as { thread: ThreadDetail };
-        setDetail((prev) => (prev ? { ...prev, thread: data.thread } : prev));
-        return data;
       }}
       onAddMatrixDoc={async (payload) => {
         const res = await apiFetch(

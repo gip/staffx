@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from "react";
+import { Moon, Sun } from "lucide-react";
 import { useAuth } from "./auth-context";
 import { useTheme } from "./theme";
 import { Link } from "./link";
@@ -30,8 +31,8 @@ export function Header() {
         </Link>
       </div>
       <div className="header-right">
-        <button className="btn-icon" onClick={toggle} aria-label="Toggle theme">
-          {theme === "light" ? "☾" : "☀"}
+        <button className="btn-icon btn-icon-theme" onClick={toggle} aria-label="Toggle theme">
+          {theme === "light" ? <Moon size={16} /> : <Sun size={16} />}
         </button>
         {isLoading ? null : !isAuthenticated ? (
           <button className="btn" onClick={login}>Log In</button>
