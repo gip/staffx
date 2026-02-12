@@ -109,6 +109,14 @@ a.header-logo {
 .btn-icon:hover {
   background: var(--border);
 }
+.btn-icon.btn-icon-theme {
+  border: none;
+  color: var(--fg-muted);
+}
+.btn-icon.btn-icon-theme:hover {
+  background: none;
+  color: var(--fg);
+}
 
 .main {
   flex: 1;
@@ -608,7 +616,7 @@ a.project-card {
 }
 
 .thread-view-title {
-  font-size: 48px;
+  font-size: 28px;
   font-weight: 700;
   letter-spacing: -0.03em;
   margin-bottom: 18px;
@@ -630,10 +638,14 @@ a.project-card {
 }
 
 .thread-card-header h3 {
-  font-size: 40px;
+  font-size: 18px;
   font-weight: 600;
   line-height: 1.1;
   letter-spacing: -0.02em;
+}
+
+.thread-collapsible .thread-card-header h3 {
+  cursor: pointer;
 }
 
 .thread-card-actions {
@@ -653,7 +665,7 @@ a.project-card {
 }
 
 .thread-description-text {
-  font-size: 22px;
+  font-size: 14px;
   color: var(--fg-muted);
   line-height: 1.5;
 }
@@ -954,7 +966,7 @@ a.project-card {
 .thread-chat-history-title {
   margin-top: 18px;
   margin-bottom: 10px;
-  font-size: 22px;
+  font-size: 14px;
   font-weight: 600;
   line-height: 1.2;
 }
@@ -1061,17 +1073,8 @@ a.project-card {
     padding: 20px 14px 32px;
   }
 
-  .thread-view-title {
-    font-size: 34px;
-  }
-
   .thread-card {
     padding: 14px;
-  }
-
-  .thread-card-header h3 {
-    font-size: 26px;
-    line-height: 1.2;
   }
 
   .thread-topology-canvas {

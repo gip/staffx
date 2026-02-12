@@ -6,7 +6,6 @@ import {
   Minimize2,
   Pencil,
   Plus,
-  Save,
   Send,
   X,
 } from "lucide-react";
@@ -367,19 +366,28 @@ export function ThreadPage({
     setDescriptionError("");
     setIsSavingDescription(true);
 
-    const result = await onUpdateThread({
-      title: normalizedTitle,
-      description: descriptionDraft.trim() ? descriptionDraft.trim() : null,
-    });
+    try {
+      const result = await onUpdateThread({
+        title: normalizedTitle,
+        description: descriptionDraft.trim() ? descriptionDraft.trim() : null,
+      });
 
-    setIsSavingDescription(false);
-    const error = getErrorMessage(result);
-    if (error) {
-      setDescriptionError(error);
-      return;
+      const error = getErrorMessage(result);
+      if (error) {
+        setDescriptionError(error);
+        return;
+      }
+
+      setIsDescriptionEditing(false);
+    } catch (error: unknown) {
+      if (error instanceof Error && error.message.trim()) {
+        setDescriptionError(error.message);
+      } else {
+        setDescriptionError("Failed to save thread description. Please try again.");
+      }
+    } finally {
+      setIsSavingDescription(false);
     }
-
-    setIsDescriptionEditing(false);
   }
 
   async function handleAddDoc(doc: MatrixDocument) {
@@ -511,7 +519,7 @@ export function ThreadPage({
                   setDescriptionError("");
                 }}
               >
-                <X size={14} /> Cancel
+                Cancel
               </button>
               <button
                 className="btn"
@@ -519,7 +527,7 @@ export function ThreadPage({
                 onClick={handleSaveDescription}
                 disabled={isSavingDescription}
               >
-                <Save size={14} /> {isSavingDescription ? "Saving…" : "Save"}
+                {isSavingDescription ? "Saving…" : "Save"}
               </button>
             </div>
           </div>
@@ -535,7 +543,7 @@ export function ThreadPage({
         className={`thread-card thread-collapsible ${isTopologyFullscreen ? "thread-card--fullscreen" : ""}`}
       >
         <div className="thread-card-header">
-          <h3>Topology View</h3>
+          <h3 onClick={() => setIsTopologyCollapsed((current) => !current)}>Topology View</h3>
           <div className="thread-card-actions">
             <button
               className="btn-icon thread-card-action"
@@ -581,7 +589,7 @@ export function ThreadPage({
         className={`thread-card thread-collapsible ${isMatrixFullscreen ? "thread-card--fullscreen" : ""}`}
       >
         <div className="thread-card-header">
-          <h3>Matrix View</h3>
+          <h3 onClick={() => setIsMatrixCollapsed((current) => !current)}>Matrix View</h3>
           <div className="thread-card-actions">
             <button
               className="btn-icon thread-card-action"
@@ -711,7 +719,7 @@ export function ThreadPage({
 
       <section className="thread-card thread-collapsible">
         <div className="thread-card-header">
-          <h3>Chat View</h3>
+          <h3 onClick={() => setIsChatCollapsed((current) => !current)}>Chat View</h3>
           <div className="thread-card-actions">
             <button
               className="btn-icon thread-card-action"

@@ -9,7 +9,7 @@ import { close } from "./db.js";
 const port = Number(process.env.PORT ?? 3001);
 const app = Fastify({ logger: true });
 
-await app.register(cors, { origin: true });
+await app.register(cors, { origin: true, methods: ["GET", "HEAD", "PUT", "PATCH", "POST", "DELETE"] });
 await app.register(healthRoutes);
 await app.register(meRoutes);
 await app.register(projectRoutes);
