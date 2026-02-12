@@ -9,6 +9,7 @@ import {
   Send,
   X,
 } from "lucide-react";
+import { Marked } from "marked";
 import ReactFlow, {
   Background,
   Controls,
@@ -92,6 +93,8 @@ export interface ThreadDetail {
   title: string;
   description: string | null;
   status: string;
+  createdAt: string;
+  createdByHandle: string;
   ownerHandle: string;
   projectName: string;
   accessRole: string;
@@ -147,6 +150,28 @@ function formatDateTime(value: string) {
     hour: "numeric",
     minute: "2-digit",
   });
+}
+
+const markedInstance = new Marked({
+  breaks: true,
+  gfm: true,
+});
+
+function renderMarkdown(source: string): string {
+  return markedInstance.parse(source) as string;
+}
+
+function timeAgo(value: string) {
+  const seconds = Math.floor((Date.now() - new Date(value).getTime()) / 1000);
+  if (seconds < 60) return "just now";
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes} minute${minutes === 1 ? "" : "s"} ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} hour${hours === 1 ? "" : "s"} ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 30) return `${days} day${days === 1 ? "" : "s"} ago`;
+  const months = Math.floor(days / 30);
+  return `${months} month${months === 1 ? "" : "s"} ago`;
 }
 
 function buildMatrixCellKey(nodeId: string, concern: string) {
@@ -437,8 +462,12 @@ export function ThreadPage({
   const [isMatrixCollapsed, setIsMatrixCollapsed] = useState(true);
   const [isChatCollapsed, setIsChatCollapsed] = useState(false);
   const [isDescriptionEditing, setIsDescriptionEditing] = useState(false);
+  const [isTitleEditing, setIsTitleEditing] = useState(false);
   const [titleDraft, setTitleDraft] = useState(detail.thread.title);
+  const [titleError, setTitleError] = useState("");
+  const [isSavingTitle, setIsSavingTitle] = useState(false);
   const [descriptionDraft, setDescriptionDraft] = useState(detail.thread.description ?? "");
+  const [descriptionTab, setDescriptionTab] = useState<"write" | "preview">("write");
   const [descriptionError, setDescriptionError] = useState("");
   const [isSavingDescription, setIsSavingDescription] = useState(false);
   const [matrixError, setMatrixError] = useState("");
@@ -455,17 +484,30 @@ export function ThreadPage({
     kindFilter: "All" | DocKind;
   } | null>(null);
 
+  const titleInputRef = useRef<HTMLInputElement>(null);
   const topologyPanelRef = useRef<HTMLDivElement>(null);
   const matrixPanelRef = useRef<HTMLDivElement>(null);
   const [isTopologyFullscreen, setIsTopologyFullscreen] = useState(false);
   const [isMatrixFullscreen, setIsMatrixFullscreen] = useState(false);
 
   useEffect(() => {
-    if (!isDescriptionEditing) {
+    if (!isTitleEditing) {
       setTitleDraft(detail.thread.title);
+    }
+  }, [detail.thread.title, isTitleEditing]);
+
+  useEffect(() => {
+    if (!isDescriptionEditing) {
       setDescriptionDraft(detail.thread.description ?? "");
     }
-  }, [detail.thread.title, detail.thread.description, isDescriptionEditing]);
+  }, [detail.thread.description, isDescriptionEditing]);
+
+  useEffect(() => {
+    if (isTitleEditing && titleInputRef.current) {
+      titleInputRef.current.focus();
+      titleInputRef.current.select();
+    }
+  }, [isTitleEditing]);
 
   useEffect(() => {
     const onFullscreenChange = () => {
@@ -533,20 +575,49 @@ export function ThreadPage({
     }
   }
 
-  async function handleSaveDescription() {
+  async function handleSaveTitle() {
     if (!onUpdateThread) return;
     const normalizedTitle = titleDraft.trim();
     if (!normalizedTitle) {
-      setDescriptionError("Title cannot be blank.");
+      setTitleError("Title cannot be blank.");
       return;
     }
+    if (normalizedTitle === detail.thread.title) {
+      setIsTitleEditing(false);
+      setTitleError("");
+      return;
+    }
+
+    setTitleError("");
+    setIsSavingTitle(true);
+
+    try {
+      const result = await onUpdateThread({ title: normalizedTitle });
+      const error = getErrorMessage(result);
+      if (error) {
+        setTitleError(error);
+        return;
+      }
+      setIsTitleEditing(false);
+    } catch (error: unknown) {
+      if (error instanceof Error && error.message.trim()) {
+        setTitleError(error.message);
+      } else {
+        setTitleError("Failed to save title. Please try again.");
+      }
+    } finally {
+      setIsSavingTitle(false);
+    }
+  }
+
+  async function handleSaveDescription() {
+    if (!onUpdateThread) return;
 
     setDescriptionError("");
     setIsSavingDescription(true);
 
     try {
       const result = await onUpdateThread({
-        title: normalizedTitle,
         description: descriptionDraft.trim() ? descriptionDraft.trim() : null,
       });
 
@@ -646,62 +717,123 @@ export function ThreadPage({
 
   return (
     <main className="page thread-view-page">
-      <div className="thread-view-header">
+      <nav className="thread-view-breadcrumb">
         <Link to={`/${detail.thread.ownerHandle}/${detail.thread.projectName}`} className="page-back">
           &larr;
         </Link>
-        <h2 className="page-title">
+        <span className="thread-view-breadcrumb-text">
           <span className="page-title-muted">
-            {detail.thread.ownerHandle} / {detail.thread.projectName} /
-          </span>{" "}
-          #{detail.thread.projectThreadId}
-        </h2>
+            {detail.thread.ownerHandle} / {detail.thread.projectName}
+          </span>
+        </span>
+      </nav>
+
+      <div className="thread-view-title-row">
+        {isTitleEditing ? (
+          <div className="thread-view-title-wrap">
+            <input
+              ref={titleInputRef}
+              className="thread-view-title-input"
+              value={titleDraft}
+              onChange={(e) => setTitleDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  handleSaveTitle();
+                } else if (e.key === "Escape") {
+                  setIsTitleEditing(false);
+                  setTitleDraft(detail.thread.title);
+                  setTitleError("");
+                }
+              }}
+              onBlur={handleSaveTitle}
+              maxLength={200}
+              disabled={isSavingTitle}
+            />
+            {titleError && <p className="field-error">{titleError}</p>}
+          </div>
+        ) : (
+          <>
+            <h1 className="thread-view-title">
+              {detail.thread.title}{" "}
+              <span className="thread-view-title-number">#{detail.thread.projectThreadId}</span>
+            </h1>
+            {detail.permissions.canEdit && (
+              <button
+                className="btn btn-secondary thread-view-edit-btn"
+                type="button"
+                onClick={() => { setIsTitleEditing(true); setTitleError(""); }}
+              >
+                Edit
+              </button>
+            )}
+          </>
+        )}
+      </div>
+
+      <div className="thread-view-meta">
         <span className={`thread-status thread-status--${detail.thread.status}`}>
           {getStatusLabel(detail.thread.status)}
         </span>
+        <span className="thread-view-meta-text">
+          <strong>{detail.thread.createdByHandle}</strong> opened this thread {timeAgo(detail.thread.createdAt)}
+        </span>
       </div>
 
-      <h1 className="thread-view-title">{detail.thread.title}</h1>
-
-      <section className="thread-card">
-        <div className="thread-card-header">
-          <h3>Description</h3>
-          {detail.permissions.canEdit && !isDescriptionEditing && (
-            <button
-              className="btn-icon thread-card-action"
-              type="button"
-              onClick={() => {
-                setIsDescriptionEditing(true);
-                setDescriptionError("");
-              }}
-              aria-label="Edit title and description"
-            >
-              <Pencil size={16} />
-            </button>
-          )}
-        </div>
+      <section className="thread-card thread-description-card">
+        {detail.permissions.canEdit && !isDescriptionEditing && (
+          <button
+            className="btn-icon thread-card-action thread-description-edit"
+            type="button"
+            onClick={() => {
+              setIsDescriptionEditing(true);
+              setDescriptionTab("write");
+              setDescriptionError("");
+            }}
+            aria-label="Edit description"
+          >
+            <Pencil size={16} />
+          </button>
+        )}
 
         {isDescriptionEditing ? (
           <div className="thread-description-editor">
-            <label className="field">
-              <span className="field-label">Title</span>
-              <input
-                className="field-input"
-                value={titleDraft}
-                onChange={(event) => setTitleDraft(event.target.value)}
-                maxLength={200}
-              />
-            </label>
-            <label className="field">
-              <span className="field-label">Description</span>
+            <div className="md-tabs">
+              <button
+                type="button"
+                className={`md-tab${descriptionTab === "write" ? " md-tab--active" : ""}`}
+                onClick={() => setDescriptionTab("write")}
+              >
+                Write
+              </button>
+              <button
+                type="button"
+                className={`md-tab${descriptionTab === "preview" ? " md-tab--active" : ""}`}
+                onClick={() => setDescriptionTab("preview")}
+              >
+                Preview
+              </button>
+            </div>
+            {descriptionTab === "write" ? (
               <textarea
-                className="field-input field-textarea"
-                rows={4}
+                className="field-input field-textarea md-textarea"
+                rows={8}
                 value={descriptionDraft}
                 onChange={(event) => setDescriptionDraft(event.target.value)}
-                placeholder="Add a thread description"
+                placeholder="Add a description (Markdown supported)"
               />
-            </label>
+            ) : (
+              <div className="md-preview">
+                {descriptionDraft.trim() ? (
+                  <div
+                    className="md-body"
+                    dangerouslySetInnerHTML={{ __html: renderMarkdown(descriptionDraft) }}
+                  />
+                ) : (
+                  <p className="thread-description-text">Nothing to preview</p>
+                )}
+              </div>
+            )}
             {descriptionError && <p className="field-error">{descriptionError}</p>}
             <div className="thread-inline-actions">
               <button
@@ -709,7 +841,6 @@ export function ThreadPage({
                 type="button"
                 onClick={() => {
                   setIsDescriptionEditing(false);
-                  setTitleDraft(detail.thread.title);
                   setDescriptionDraft(detail.thread.description ?? "");
                   setDescriptionError("");
                 }}
@@ -726,10 +857,13 @@ export function ThreadPage({
               </button>
             </div>
           </div>
+        ) : detail.thread.description ? (
+          <div
+            className="md-body thread-description-body"
+            dangerouslySetInnerHTML={{ __html: renderMarkdown(detail.thread.description) }}
+          />
         ) : (
-          <p className="thread-description-text">
-            {detail.thread.description ?? "No description provided yet."}
-          </p>
+          <p className="thread-description-text">No description provided yet.</p>
         )}
       </section>
 

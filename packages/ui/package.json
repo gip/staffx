@@ -19,6 +19,7 @@
   },
   "dependencies": {
     "lucide-react": "^0.563.0",
+    "marked": "^17.0.2",
     "reactflow": "^11.11.4"
   }
 }

@@ -12,6 +12,8 @@ interface ThreadContextRow {
   title: string | null;
   description: string | null;
   status: string;
+  created_at: Date;
+  created_by_handle: string;
   project_name: string;
   owner_handle: string;
   access_role: string;
@@ -99,6 +101,8 @@ interface ThreadContext {
   title: string;
   description: string | null;
   status: string;
+  createdAt: Date;
+  createdByHandle: string;
   projectName: string;
   ownerHandle: string;
   accessRole: string;
@@ -169,6 +173,8 @@ async function resolveThreadContext(
        t.title,
        t.description,
        t.status,
+       t.created_at,
+       creator.handle AS created_by_handle,
        p.name AS project_name,
        owner.handle AS owner_handle,
        up.access_role
@@ -176,6 +182,7 @@ async function resolveThreadContext(
      JOIN projects p ON p.id = up.id
      JOIN users owner ON owner.id = p.owner_id
      JOIN threads t ON t.project_id = p.id
+     JOIN users creator ON creator.id = t.created_by
      WHERE up.user_id = $1
        AND owner.handle = $2
        AND p.name = $3
@@ -193,6 +200,8 @@ async function resolveThreadContext(
     title: row.title ?? "Untitled",
     description: row.description,
     status: row.status,
+    createdAt: row.created_at,
+    createdByHandle: row.created_by_handle,
     projectName: row.project_name,
     ownerHandle: row.owner_handle,
     accessRole: row.access_role,
@@ -206,6 +215,8 @@ function buildThreadPayload(context: ThreadContext) {
     title: context.title,
     description: context.description,
     status: context.status,
+    createdAt: context.createdAt,
+    createdByHandle: context.createdByHandle,
     ownerHandle: context.ownerHandle,
     projectName: context.projectName,
     accessRole: context.accessRole,
@@ -594,6 +605,8 @@ export async function threadRoutes(app: FastifyInstance) {
           title: updated.title,
           description: updated.description,
           status: updated.status,
+          createdAt: context.createdAt,
+          createdByHandle: context.createdByHandle,
           ownerHandle: context.ownerHandle,
           projectName: context.projectName,
           accessRole: context.accessRole,
