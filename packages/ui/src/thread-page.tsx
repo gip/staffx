@@ -542,25 +542,20 @@ export function ThreadPage({
         ref={topologyPanelRef}
         className={`thread-card thread-collapsible ${isTopologyFullscreen ? "thread-card--fullscreen" : ""}`}
       >
-        <div className="thread-card-header">
-          <h3 onClick={() => setIsTopologyCollapsed((current) => !current)}>Topology View</h3>
+        <div className="thread-card-header" onClick={() => setIsTopologyCollapsed((current) => !current)}>
+          <h3>Topology View</h3>
           <div className="thread-card-actions">
             <button
               className="btn-icon thread-card-action"
               type="button"
-              onClick={() => toggleFullscreen(topologyPanelRef)}
+              onClick={(e) => { e.stopPropagation(); toggleFullscreen(topologyPanelRef); }}
               aria-label={isTopologyFullscreen ? "Exit fullscreen topology" : "Enter fullscreen topology"}
             >
               {isTopologyFullscreen ? <Minimize2 size={16} /> : <Expand size={16} />}
             </button>
-            <button
-              className="btn-icon thread-card-action"
-              type="button"
-              onClick={() => setIsTopologyCollapsed((current) => !current)}
-              aria-label={isTopologyCollapsed ? "Expand topology" : "Collapse topology"}
-            >
+            <span className="thread-card-action thread-collapse-icon" aria-hidden>
               {isTopologyCollapsed ? <ChevronRight size={16} /> : <ChevronDown size={16} />}
-            </button>
+            </span>
           </div>
         </div>
 
@@ -588,25 +583,20 @@ export function ThreadPage({
         ref={matrixPanelRef}
         className={`thread-card thread-collapsible ${isMatrixFullscreen ? "thread-card--fullscreen" : ""}`}
       >
-        <div className="thread-card-header">
-          <h3 onClick={() => setIsMatrixCollapsed((current) => !current)}>Matrix View</h3>
+        <div className="thread-card-header" onClick={() => setIsMatrixCollapsed((current) => !current)}>
+          <h3>Matrix View</h3>
           <div className="thread-card-actions">
             <button
               className="btn-icon thread-card-action"
               type="button"
-              onClick={() => toggleFullscreen(matrixPanelRef)}
+              onClick={(e) => { e.stopPropagation(); toggleFullscreen(matrixPanelRef); }}
               aria-label={isMatrixFullscreen ? "Exit fullscreen matrix" : "Enter fullscreen matrix"}
             >
               {isMatrixFullscreen ? <Minimize2 size={16} /> : <Expand size={16} />}
             </button>
-            <button
-              className="btn-icon thread-card-action"
-              type="button"
-              onClick={() => setIsMatrixCollapsed((current) => !current)}
-              aria-label={isMatrixCollapsed ? "Expand matrix" : "Collapse matrix"}
-            >
+            <span className="thread-card-action thread-collapse-icon" aria-hidden>
               {isMatrixCollapsed ? <ChevronRight size={16} /> : <ChevronDown size={16} />}
-            </button>
+            </span>
           </div>
         </div>
 
@@ -718,17 +708,12 @@ export function ThreadPage({
       </section>
 
       <section className="thread-card thread-collapsible">
-        <div className="thread-card-header">
-          <h3 onClick={() => setIsChatCollapsed((current) => !current)}>Chat View</h3>
+        <div className="thread-card-header" onClick={() => setIsChatCollapsed((current) => !current)}>
+          <h3>Chat View</h3>
           <div className="thread-card-actions">
-            <button
-              className="btn-icon thread-card-action"
-              type="button"
-              onClick={() => setIsChatCollapsed((current) => !current)}
-              aria-label={isChatCollapsed ? "Expand chat" : "Collapse chat"}
-            >
+            <span className="thread-card-action thread-collapse-icon" aria-hidden>
               {isChatCollapsed ? <ChevronRight size={16} /> : <ChevronDown size={16} />}
-            </button>
+            </span>
           </div>
         </div>
 
