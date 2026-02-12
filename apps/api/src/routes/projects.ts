@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { randomUUID } from "node:crypto";
 import { verifyAuth } from "../auth.js";
-import { query } from "../db.js";
+import pool, { query } from "../db.js";
 
 interface ProjectRow {
   id: string;
@@ -142,7 +142,7 @@ export async function projectRoutes(app: FastifyInstance) {
   app.post<{ Body: { name: string; description?: string; template?: string } }>(
     "/projects",
     async (req, reply) => {
-      const { name, description } = req.body;
+      const { name, description, template } = req.body;
 
       if (!name || typeof name !== "string" || !name.trim()) {
         return reply.code(400).send({ error: "name is required" });
@@ -156,36 +156,94 @@ export async function projectRoutes(app: FastifyInstance) {
         return reply.code(400).send({ error: "name must start/end with a letter or number, no consecutive - or _" });
       }
 
+      const selectedTemplate = template ?? "blank";
+      const shouldCreateInitial = selectedTemplate === "blank";
+
       const id = randomUUID();
-      let result;
+      const client = await pool.connect();
+      let inTransaction = false;
       try {
-        result = await query<ProjectRow>(
+        await client.query("BEGIN");
+        inTransaction = true;
+
+        const result = await client.query<ProjectRow>(
           `INSERT INTO projects (id, name, description, owner_id)
            VALUES ($1, $2, $3, $4)
            RETURNING id, name, description, created_at`,
-          [id, name.trim(), description?.trim() || null, req.auth.id],
+          [id, trimmed, description?.trim() || null, req.auth.id],
         );
+
+        let createdThreads: ThreadRow[] = [];
+        if (shouldCreateInitial) {
+          const systemId = randomUUID();
+          const systemNodeId = randomUUID();
+          await client.query(
+            `INSERT INTO systems (id, name, system_node_id)
+             VALUES ($1, $2, $3)`,
+            [systemId, trimmed, systemNodeId],
+          );
+
+          const threadId = randomUUID();
+          await client.query(
+            "SELECT create_thread($1, $2, $3, $4, $5, $6)",
+            [threadId, id, req.auth.id, systemId, "Creating the project", null],
+          );
+
+          const threadResult = await client.query<ThreadRow>(
+            `SELECT t.id, t.title, t.description, t.project_thread_id, t.status, t.updated_at
+             FROM threads t
+             WHERE t.id = $1`,
+            [threadId],
+          );
+          createdThreads = threadResult.rows;
+        }
+
+        const row = result.rows[0];
+        const handleResult = await client.query<{ handle: string }>(
+          "SELECT handle FROM users WHERE id = $1",
+          [req.auth.id],
+        );
+
+        await client.query("COMMIT");
+        inTransaction = false;
+
+        return reply.code(201).send({
+          id: row.id,
+          name: row.name,
+          description: row.description,
+          accessRole: "Owner",
+          ownerHandle: handleResult.rows[0].handle,
+          createdAt: row.created_at,
+          threads: createdThreads.map((t) => ({
+            id: t.id,
+            title: t.title,
+            description: t.description,
+            projectThreadId: t.project_thread_id,
+            status: t.status,
+            updatedAt: t.updated_at,
+          })),
+        });
       } catch (err: unknown) {
-        if (err instanceof Error && "code" in err && (err as { code: string }).code === "23505") {
+        if (inTransaction) {
+          try {
+            await client.query("ROLLBACK");
+          } catch {
+            // Best effort rollback; preserve the original error.
+          }
+        }
+        if (
+          err instanceof Error &&
+          "code" in err &&
+          (err as { code: string }).code === "23505" &&
+          "constraint" in err &&
+          (err as { constraint?: string }).constraint === "idx_projects_owner_name"
+        ) {
           return reply.code(409).send({ error: "A project with this name already exists" });
         }
         throw err;
+      } finally {
+        client.release();
       }
-
-      const row = result.rows[0];
-      const handleResult = await query<{ handle: string }>(
-        "SELECT handle FROM users WHERE id = $1",
-        [req.auth.id],
-      );
-      return reply.code(201).send({
-        id: row.id,
-        name: row.name,
-        description: row.description,
-        accessRole: "Owner",
-        ownerHandle: handleResult.rows[0].handle,
-        createdAt: row.created_at,
-        threads: [],
-      });
     },
   );
 }
