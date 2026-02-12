@@ -176,11 +176,16 @@ export async function projectRoutes(app: FastifyInstance) {
         let createdThreads: ThreadRow[] = [];
         if (shouldCreateInitial) {
           const systemId = randomUUID();
-          const systemNodeId = randomUUID();
+          const rootNodeId = randomUUID();
           await client.query(
-            `INSERT INTO systems (id, name, system_node_id)
+            `INSERT INTO systems (id, name, root_node_id)
              VALUES ($1, $2, $3)`,
-            [systemId, trimmed, systemNodeId],
+            [systemId, trimmed, rootNodeId],
+          );
+          await client.query(
+            `INSERT INTO nodes (id, system_id, kind, name, parent_id)
+             VALUES ($1, $2, 'Root'::node_kind, $3, NULL)`,
+            [rootNodeId, systemId, trimmed],
           );
 
           const threadId = randomUUID();

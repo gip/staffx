@@ -23,7 +23,7 @@ create table if not exists users (
 -- OPENSHIP ENUMS
 -- ============================================================
 
-create type node_kind as enum ('System', 'Host', 'Container', 'Process', 'Library');
+create type node_kind as enum ('Root', 'Host', 'Container', 'Process', 'Library');
 create type edge_type as enum ('Runtime', 'Dataflow', 'Dependency');
 create type doc_kind as enum ('Feature', 'Spec', 'Skill');
 create type ref_type as enum ('Feature', 'Spec', 'Skill');
@@ -37,7 +37,7 @@ create table systems (
   id              text primary key,
   name            text not null,
   spec_version    text not null default 'openship/v1',
-  system_node_id  text not null,
+  root_node_id    text not null,
   metadata        jsonb not null default '{}',
   created_at      timestamptz not null default now(),
   updated_at      timestamptz not null default now()
@@ -78,6 +78,13 @@ create table nodes (
 
 create index idx_nodes_parent on nodes (system_id, parent_id);
 create index idx_nodes_kind on nodes (system_id, kind);
+create unique index idx_nodes_single_root on nodes (system_id) where kind = 'Root';
+
+alter table systems
+  add constraint fk_system_root_node
+  foreign key (id, root_node_id)
+  references nodes(system_id, id)
+  deferrable initially deferred;
 
 -- ============================================================
 -- EDGES
@@ -346,17 +353,82 @@ begin
 end;
 $$ language plpgsql;
 
+create or replace function validate_system_root_node()
+returns trigger as $$
+declare
+  v_system_id text;
+  v_root_id text;
+  v_root_count integer;
+  v_root_kind node_kind;
+  v_root_parent text;
+begin
+  if TG_TABLE_NAME = 'systems' then
+    if TG_OP = 'DELETE' then
+      v_system_id := old.id;
+    else
+      v_system_id := new.id;
+    end if;
+  else
+    if TG_OP = 'DELETE' then
+      v_system_id := old.system_id;
+    else
+      v_system_id := new.system_id;
+    end if;
+  end if;
+
+  if v_system_id is null then
+    return null;
+  end if;
+
+  select s.root_node_id into v_root_id
+  from systems s
+  where s.id = v_system_id;
+
+  if not found then
+    -- The system row may have been deleted in the same transaction.
+    return null;
+  end if;
+
+  select count(*) into v_root_count
+  from nodes n
+  where n.system_id = v_system_id and n.kind = 'Root';
+
+  if v_root_count <> 1 then
+    raise exception 'System % must have exactly one Root node, found %', v_system_id, v_root_count;
+  end if;
+
+  select n.kind, n.parent_id
+    into v_root_kind, v_root_parent
+  from nodes n
+  where n.system_id = v_system_id and n.id = v_root_id;
+
+  if not found then
+    raise exception 'System % root_node_id % must reference an existing node', v_system_id, v_root_id;
+  end if;
+
+  if v_root_kind <> 'Root' then
+    raise exception 'System % root node % must have kind Root', v_system_id, v_root_id;
+  end if;
+
+  if v_root_parent is not null then
+    raise exception 'System % root node % must have parent_id NULL', v_system_id, v_root_id;
+  end if;
+
+  return null;
+end;
+$$ language plpgsql;
+
 create or replace function fork_system(
   source_system_id text,
   new_system_id text,
   new_system_name text default null
 ) returns text as $$
 begin
-  insert into systems (id, name, spec_version, system_node_id, metadata)
+  insert into systems (id, name, spec_version, root_node_id, metadata)
   select new_system_id,
          coalesce(new_system_name, name),
          spec_version,
-         system_node_id,
+         root_node_id,
          metadata
   from systems where id = source_system_id;
 
@@ -598,6 +670,14 @@ create trigger trg_threads_updated   before update on threads   for each row exe
 create trigger trg_threads_assign_project_thread_id
   before insert on threads
   for each row execute function assign_project_thread_id();
+create constraint trigger trg_validate_system_root_on_systems
+  after insert or update of id, root_node_id on systems
+  deferrable initially deferred
+  for each row execute function validate_system_root_node();
+create constraint trigger trg_validate_system_root_on_nodes
+  after insert or update of id, system_id, kind, parent_id or delete on nodes
+  deferrable initially deferred
+  for each row execute function validate_system_root_node();
 
 -- ============================================================
 -- VIEWS

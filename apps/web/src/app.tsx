@@ -9,11 +9,34 @@ import {
   ThreadPage,
   setNavigate,
   type AuthUser,
+  type ChatMessage,
+  type MatrixCell,
   type Project,
-  type Thread,
+  type ThreadDetail,
+  type ThreadDetailPayload,
 } from "@staffx/ui";
 
 const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:3001";
+
+function upsertMatrixCell(cells: MatrixCell[], nextCell: MatrixCell): MatrixCell[] {
+  const index = cells.findIndex(
+    (cell) => cell.nodeId === nextCell.nodeId && cell.concern === nextCell.concern,
+  );
+  if (index === -1) return [...cells, nextCell];
+  return cells.map((cell, idx) => (idx === index ? nextCell : cell));
+}
+
+function mergeChatMessages(current: ChatMessage[], incoming: ChatMessage[]) {
+  const existing = new Set(current.map((message) => message.id));
+  const next = incoming.filter((message) => !existing.has(message.id));
+  return [...current, ...next];
+}
+
+async function readError(res: Response, fallback: string) {
+  const body = await res.json().catch(() => ({}));
+  if (typeof body.error === "string" && body.error) return body.error;
+  return fallback;
+}
 
 function useApi() {
   const { getAccessTokenSilently } = useAuth0();
@@ -123,25 +146,24 @@ function ThreadRoute() {
   }>();
   const { isAuthenticated } = useAuth0();
   const apiFetch = useApi();
-  const [thread, setThread] = useState<Thread | null>(null);
+  const [detail, setDetail] = useState<ThreadDetailPayload | null>(null);
   const [notFound, setNotFound] = useState(false);
 
   useEffect(() => {
     if (!isAuthenticated || !handle || !projectName || !threadId) return;
+    setNotFound(false);
+    setDetail(null);
 
-    apiFetch(`/projects/${encodeURIComponent(handle!)}/${encodeURIComponent(projectName!)}`)
+    apiFetch(`/projects/${encodeURIComponent(handle)}/${encodeURIComponent(projectName)}/thread/${encodeURIComponent(threadId)}`)
       .then(async (res) => {
+        if (res.status === 404) {
+          setNotFound(true);
+          return;
+        }
         if (!res.ok) {
-          setNotFound(true);
-          return;
+          throw new Error(await readError(res, "Failed to load thread"));
         }
-        const project: Project = await res.json();
-        const found = project.threads.find((t) => t.projectThreadId === Number(threadId));
-        if (!found) {
-          setNotFound(true);
-          return;
-        }
-        setThread(found);
+        setDetail(await res.json());
       })
       .catch(() => setNotFound(true));
   }, [isAuthenticated, handle, projectName, threadId, apiFetch]);
@@ -154,7 +176,7 @@ function ThreadRoute() {
     );
   }
 
-  if (!thread) {
+  if (!detail) {
     return (
       <main className="main">
         <p className="status-text">Loading…</p>
@@ -162,7 +184,101 @@ function ThreadRoute() {
     );
   }
 
-  return <ThreadPage thread={thread} ownerHandle={handle!} projectName={projectName!} />;
+  return (
+    <ThreadPage
+      detail={detail}
+      onUpdateThread={async (payload) => {
+        const res = await apiFetch(
+          `/projects/${encodeURIComponent(handle!)}/${encodeURIComponent(projectName!)}/thread/${encodeURIComponent(threadId!)}`,
+          {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          },
+        );
+        if (!res.ok) {
+          return { error: await readError(res, "Failed to update thread") };
+        }
+        const data = (await res.json()) as { thread: ThreadDetail };
+        setDetail((prev) => (prev ? { ...prev, thread: data.thread } : prev));
+        return data;
+      }}
+      onAddMatrixDoc={async (payload) => {
+        const res = await apiFetch(
+          `/projects/${encodeURIComponent(handle!)}/${encodeURIComponent(projectName!)}/thread/${encodeURIComponent(threadId!)}/matrix/refs`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          },
+        );
+        if (!res.ok) {
+          return { error: await readError(res, "Failed to add matrix document") };
+        }
+        const data = (await res.json()) as { systemId: string; cell: MatrixCell };
+        setDetail((prev) => (
+          prev
+            ? {
+                ...prev,
+                systemId: data.systemId,
+                matrix: { ...prev.matrix, cells: upsertMatrixCell(prev.matrix.cells, data.cell) },
+              }
+            : prev
+        ));
+        return data;
+      }}
+      onRemoveMatrixDoc={async (payload) => {
+        const res = await apiFetch(
+          `/projects/${encodeURIComponent(handle!)}/${encodeURIComponent(projectName!)}/thread/${encodeURIComponent(threadId!)}/matrix/refs`,
+          {
+            method: "DELETE",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          },
+        );
+        if (!res.ok) {
+          return { error: await readError(res, "Failed to remove matrix document") };
+        }
+        const data = (await res.json()) as { systemId: string; cell: MatrixCell };
+        setDetail((prev) => (
+          prev
+            ? {
+                ...prev,
+                systemId: data.systemId,
+                matrix: { ...prev.matrix, cells: upsertMatrixCell(prev.matrix.cells, data.cell) },
+              }
+            : prev
+        ));
+        return data;
+      }}
+      onSendChatMessage={async (payload) => {
+        const res = await apiFetch(
+          `/projects/${encodeURIComponent(handle!)}/${encodeURIComponent(projectName!)}/thread/${encodeURIComponent(threadId!)}/chat/messages`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          },
+        );
+        if (!res.ok) {
+          return { error: await readError(res, "Failed to send chat message") };
+        }
+        const data = (await res.json()) as { messages: ChatMessage[] };
+        setDetail((prev) => (
+          prev
+            ? {
+                ...prev,
+                chat: {
+                  ...prev.chat,
+                  messages: mergeChatMessages(prev.chat.messages, data.messages),
+                },
+              }
+            : prev
+        ));
+        return data;
+      }}
+    />
+  );
 }
 
 export function App() {

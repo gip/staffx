@@ -9,7 +9,8 @@ Reference for the OpenShip schema. Source of truth: `apps/api/src/migrations/001
 An **immutable snapshot** of an entire architecture description. Everything (nodes, edges, concerns, documents, artifacts) is scoped to a `system_id`. When changes happen, the system is **forked** via `fork_system()` into a new snapshot rather than mutated in place. This gives full version history.
 
 - Table: `systems`
-- Key fields: `id` (text PK), `name`, `spec_version` (default `openship/v1`), `system_node_id`, `metadata` (jsonb)
+- Key fields: `id` (text PK), `name`, `spec_version` (default `openship/v1`), `root_node_id`, `metadata` (jsonb)
+- Root invariant: each system has exactly one root node, `systems.root_node_id` must reference it, and that root node must have `parent_id = NULL`
 
 ### Node
 
@@ -17,7 +18,7 @@ A component in the architecture graph. Nodes form a **tree** (via `parent_id`, s
 
 | Kind | Purpose |
 |------|---------|
-| `System` | Top-level system boundary |
+| `Root` | Top-level root boundary for the system snapshot |
 | `Host` | Machine / VM / server |
 | `Container` | Docker container, app runtime |
 | `Process` | Running process or service |
