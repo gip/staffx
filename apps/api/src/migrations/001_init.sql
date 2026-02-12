@@ -1,6 +1,8 @@
 -- StaffX full schema init (dev-only, destructive)
 -- Order: users → openship core → projects → threads
 
+create extension if not exists pgcrypto;
+
 -- ============================================================
 -- USERS
 -- ============================================================

@@ -76,23 +76,37 @@ async function findOrCreateUser(domain: string, payload: Auth0Payload, token: st
   const profile = await fetchUserProfile(domain, token);
 
   const isGitHub = payload.sub.startsWith("github|");
-  const handle = isGitHub && profile.nickname ? profile.nickname : generateHandle();
   const githubHandle = isGitHub ? (profile.nickname ?? null) : null;
 
-  const result = await query<UserRow>(
-    `INSERT INTO users (auth0_id, email, name, picture, handle, github_handle, updated_at)
-     VALUES ($1, $2, $3, $4, $5, $6, now())
-     ON CONFLICT (auth0_id) DO UPDATE SET
-       email = EXCLUDED.email,
-       name = EXCLUDED.name,
-       picture = EXCLUDED.picture,
-       github_handle = EXCLUDED.github_handle,
-       updated_at = now()
-     RETURNING *`,
-    [payload.sub, profile.email ?? null, profile.name ?? null, profile.picture ?? null, handle, githubHandle],
-  );
+  const maxAttempts = 3;
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    const handle = isGitHub && profile.nickname ? profile.nickname : generateHandle();
 
-  return mapRow(result.rows[0]);
+    try {
+      const result = await query<UserRow>(
+        `INSERT INTO users (auth0_id, email, name, picture, handle, github_handle, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, now())
+         ON CONFLICT (auth0_id) DO UPDATE SET
+           email = EXCLUDED.email,
+           name = EXCLUDED.name,
+           picture = EXCLUDED.picture,
+           github_handle = EXCLUDED.github_handle,
+           updated_at = now()
+         RETURNING *`,
+        [payload.sub, profile.email ?? null, profile.name ?? null, profile.picture ?? null, handle, githubHandle],
+      );
+
+      return mapRow(result.rows[0]);
+    } catch (err: unknown) {
+      const isHandleConflict =
+        err instanceof Error && "code" in err && (err as { code: string }).code === "23505" &&
+        "constraint" in err && (err as { constraint: string }).constraint === "users_handle_key";
+
+      if (!isHandleConflict || attempt === maxAttempts - 1) throw err;
+    }
+  }
+
+  throw new Error("Failed to create user after handle collision retries");
 }
 
 const AUTH0_DOMAIN = process.env.AUTH0_DOMAIN;
@@ -115,12 +129,19 @@ export async function verifyAuth(req: FastifyRequest, reply: FastifyReply) {
 
   const token = header.slice(7);
 
+  let auth0Payload: Auth0Payload;
   try {
     const { payload } = await jwtVerify(token, jwks, { issuer, audience });
-    const auth0Payload = payload as Auth0Payload;
-    req.auth = await findOrCreateUser(domain, auth0Payload, token);
+    auth0Payload = payload as Auth0Payload;
   } catch (err) {
     req.log.warn({ err }, "JWT verification failed");
     return reply.code(401).send({ error: "Invalid token" });
+  }
+
+  try {
+    req.auth = await findOrCreateUser(domain, auth0Payload, token);
+  } catch (err) {
+    req.log.error({ err }, "User lookup/creation failed");
+    return reply.code(500).send({ error: "Internal server error" });
   }
 }

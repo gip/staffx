@@ -85,7 +85,7 @@ An **output** produced for a specific node + concern cell.
 
 ### File Contents & Artifact Files
 
-A **content-addressed file store**. Files are stored once globally, keyed by `sha256(file_path + '\0' + file_content)`.
+A **content-addressed file store**. Files are stored once globally, keyed by `sha256(file_path + '\n' + file_content)`.
 
 - `file_contents`: global table, PK is the hash
 - `artifact_files`: join table linking `(system_id, artifact_id)` → `file_hash`
@@ -164,7 +164,7 @@ Project
 ### Content Deduplication
 
 - **Documents**: content-addressed by spec-defined hash, stored once per `(system_id, hash)`
-- **Files**: content-addressed by `sha256(path + content)`, stored once globally in `file_contents`
+- **Files**: content-addressed by `sha256(path + '\n' + content)`, stored once globally in `file_contents`
 - `fork_system()` deep-copies all system-scoped data but file contents are shared globally
 
 ## Key Functions
