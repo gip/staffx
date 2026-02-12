@@ -644,8 +644,14 @@ a.project-card {
   letter-spacing: -0.02em;
 }
 
-.thread-collapsible .thread-card-header h3 {
+.thread-collapsible .thread-card-header {
   cursor: pointer;
+}
+
+.thread-collapse-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .thread-card-actions {
