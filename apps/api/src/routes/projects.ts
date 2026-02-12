@@ -1,7 +1,15 @@
 import type { FastifyInstance } from "fastify";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import type { PoolClient } from "pg";
 import { verifyAuth } from "../auth.js";
 import pool, { query } from "../db.js";
+import {
+  BLANK_TEMPLATE_ID,
+  getTemplateById,
+  isKnownTemplateId,
+  type TemplateDefinition,
+  type TemplateDocument,
+} from "../templates/index.js";
 
 interface ProjectRow {
   id: string;
@@ -20,6 +28,110 @@ interface ThreadRow {
   created_by: string | null;
   created_at: Date;
   updated_at: Date;
+}
+
+function computeDocumentHash(document: Pick<TemplateDocument, "kind" | "title" | "language" | "text">) {
+  const payload = [document.kind, document.title, document.language, document.text].join("\n");
+  return `sha256:${createHash("sha256").update(payload, "utf8").digest("hex")}`;
+}
+
+async function seedSystemTemplate(
+  client: PoolClient,
+  systemId: string,
+  rootNodeId: string,
+  template: TemplateDefinition,
+) {
+  const nodeIds = new Map<string, string>([["root", rootNodeId]]);
+  for (const node of template.nodes) {
+    if (nodeIds.has(node.key)) {
+      throw new Error(`Template "${template.id}" has duplicate node key "${node.key}"`);
+    }
+    nodeIds.set(node.key, randomUUID());
+  }
+
+  for (const node of template.nodes) {
+    const nodeId = nodeIds.get(node.key);
+    const parentKey = node.parentKey ?? "root";
+    const parentNodeId = nodeIds.get(parentKey);
+    if (!nodeId || !parentNodeId) {
+      throw new Error(
+        `Template "${template.id}" references unknown parent "${parentKey}" for node "${node.key}"`,
+      );
+    }
+
+    await client.query(
+      `INSERT INTO nodes (id, system_id, kind, name, parent_id)
+       VALUES ($1, $2, $3::node_kind, $4, $5)`,
+      [nodeId, systemId, node.kind, node.name, parentNodeId],
+    );
+  }
+
+  for (const edge of template.edges) {
+    const fromNodeId = nodeIds.get(edge.fromKey);
+    const toNodeId = nodeIds.get(edge.toKey);
+    if (!fromNodeId || !toNodeId) {
+      throw new Error(
+        `Template "${template.id}" edge references unknown nodes "${edge.fromKey}" -> "${edge.toKey}"`,
+      );
+    }
+
+    const metadata = edge.protocol ? JSON.stringify({ protocol: edge.protocol }) : "{}";
+    await client.query(
+      `INSERT INTO edges (id, system_id, type, from_node_id, to_node_id, metadata)
+       VALUES ($1, $2, $3::edge_type, $4, $5, $6::jsonb)`,
+      [randomUUID(), systemId, edge.type, fromNodeId, toNodeId, metadata],
+    );
+  }
+
+  const concernNames = new Set<string>();
+  for (const concern of template.concerns) {
+    concernNames.add(concern.name);
+    await client.query(
+      `INSERT INTO concerns (system_id, name, position, is_baseline, scope)
+       VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT (system_id, name) DO NOTHING`,
+      [systemId, concern.name, concern.position, concern.isBaseline, concern.scope ?? null],
+    );
+  }
+
+  const documentHashes = new Map<string, string>();
+  for (const document of template.documents) {
+    if (documentHashes.has(document.key)) {
+      throw new Error(`Template "${template.id}" has duplicate document key "${document.key}"`);
+    }
+    const hash = computeDocumentHash(document);
+    documentHashes.set(document.key, hash);
+
+    await client.query(
+      `INSERT INTO documents (hash, system_id, kind, title, language, text)
+       VALUES ($1, $2, $3::doc_kind, $4, $5, $6)
+       ON CONFLICT (system_id, hash) DO NOTHING`,
+      [hash, systemId, document.kind, document.title, document.language, document.text],
+    );
+  }
+
+  for (const ref of template.matrixRefs) {
+    const nodeId = nodeIds.get(ref.nodeKey);
+    const docHash = documentHashes.get(ref.documentKey);
+    if (!nodeId) {
+      throw new Error(`Template "${template.id}" matrix ref references unknown node "${ref.nodeKey}"`);
+    }
+    if (!docHash) {
+      throw new Error(
+        `Template "${template.id}" matrix ref references unknown document "${ref.documentKey}"`,
+      );
+    }
+    if (!concernNames.has(ref.concern)) {
+      throw new Error(`Template "${template.id}" matrix ref references unknown concern "${ref.concern}"`);
+    }
+
+    await client.query(
+      `INSERT INTO matrix_refs (system_id, node_id, concern, ref_type, doc_hash)
+       VALUES ($1, $2, $3, $4::ref_type, $5)
+       ON CONFLICT DO NOTHING`,
+      [systemId, nodeId, ref.concern, ref.refType, docHash],
+    );
+  }
 }
 
 export async function projectRoutes(app: FastifyInstance) {
@@ -156,8 +268,11 @@ export async function projectRoutes(app: FastifyInstance) {
         return reply.code(400).send({ error: "name must start/end with a letter or number, no consecutive - or _" });
       }
 
-      const selectedTemplate = template ?? "blank";
-      const shouldCreateInitial = selectedTemplate === "blank";
+      const selectedTemplateId = template ?? BLANK_TEMPLATE_ID;
+      if (!isKnownTemplateId(selectedTemplateId)) {
+        return reply.code(400).send({ error: "Invalid template" });
+      }
+      const selectedTemplate = getTemplateById(selectedTemplateId);
 
       const id = randomUUID();
       const client = await pool.connect();
@@ -173,35 +288,36 @@ export async function projectRoutes(app: FastifyInstance) {
           [id, trimmed, description?.trim() || null, req.auth.id],
         );
 
-        let createdThreads: ThreadRow[] = [];
-        if (shouldCreateInitial) {
-          const systemId = randomUUID();
-          const rootNodeId = randomUUID();
-          await client.query(
-            `INSERT INTO systems (id, name, root_node_id)
-             VALUES ($1, $2, $3)`,
-            [systemId, trimmed, rootNodeId],
-          );
-          await client.query(
-            `INSERT INTO nodes (id, system_id, kind, name, parent_id)
-             VALUES ($1, $2, 'Root'::node_kind, $3, NULL)`,
-            [rootNodeId, systemId, trimmed],
-          );
+        const systemId = randomUUID();
+        const rootNodeId = randomUUID();
+        await client.query(
+          `INSERT INTO systems (id, name, root_node_id)
+           VALUES ($1, $2, $3)`,
+          [systemId, trimmed, rootNodeId],
+        );
+        await client.query(
+          `INSERT INTO nodes (id, system_id, kind, name, parent_id)
+           VALUES ($1, $2, 'Root'::node_kind, $3, NULL)`,
+          [rootNodeId, systemId, trimmed],
+        );
 
-          const threadId = randomUUID();
-          await client.query(
-            "SELECT create_thread($1, $2, $3, $4, $5, $6)",
-            [threadId, id, req.auth.id, systemId, "Creating the project", null],
-          );
-
-          const threadResult = await client.query<ThreadRow>(
-            `SELECT t.id, t.title, t.description, t.project_thread_id, t.status, t.updated_at
-             FROM threads t
-             WHERE t.id = $1`,
-            [threadId],
-          );
-          createdThreads = threadResult.rows;
+        if (selectedTemplate) {
+          await seedSystemTemplate(client, systemId, rootNodeId, selectedTemplate);
         }
+
+        const threadId = randomUUID();
+        await client.query(
+          "SELECT create_thread($1, $2, $3, $4, $5, $6)",
+          [threadId, id, req.auth.id, systemId, "Creating the project", null],
+        );
+
+        const threadResult = await client.query<ThreadRow>(
+          `SELECT t.id, t.title, t.description, t.project_thread_id, t.status, t.updated_at
+           FROM threads t
+           WHERE t.id = $1`,
+          [threadId],
+        );
+        const createdThreads = threadResult.rows;
 
         const row = result.rows[0];
         const handleResult = await client.query<{ handle: string }>(

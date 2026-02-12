@@ -1,0 +1,267 @@
+import type { TemplateDefinition } from "./index.js";
+
+export const templateWebserverPostgresAuth0GoogleVercel: TemplateDefinition = {
+  id: "webserver-postgres-auth0-google-vercel",
+  label: "Webserver + Postgres + Auth0 Google login + Vercel",
+  description: "Browser + React frontend, webserver, Postgres, Auth0+Google, and Vercel hosting.",
+  nodes: [
+    {
+      key: "browser_host",
+      name: "Browser",
+      kind: "Host",
+      parentKey: "root",
+    },
+    {
+      key: "react_frontend",
+      name: "React App",
+      kind: "Process",
+      parentKey: "browser_host",
+    },
+    {
+      key: "vercel_host",
+      name: "Vercel",
+      kind: "Host",
+      parentKey: "root",
+    },
+    {
+      key: "webserver_process",
+      name: "Webserver",
+      kind: "Process",
+      parentKey: "vercel_host",
+    },
+    {
+      key: "postgres_host",
+      name: "Postgres Host",
+      kind: "Host",
+      parentKey: "root",
+    },
+    {
+      key: "postgres_process",
+      name: "Postgres",
+      kind: "Process",
+      parentKey: "postgres_host",
+    },
+    {
+      key: "auth0_host",
+      name: "Auth0 Identity",
+      kind: "Host",
+      parentKey: "root",
+    },
+    {
+      key: "auth0_process",
+      name: "Auth0 Service",
+      kind: "Process",
+      parentKey: "auth0_host",
+    },
+    {
+      key: "google_host",
+      name: "Google Identity",
+      kind: "Host",
+      parentKey: "root",
+    },
+    {
+      key: "google_oauth_process",
+      name: "Google OAuth",
+      kind: "Process",
+      parentKey: "google_host",
+    },
+  ],
+  edges: [
+    {
+      fromKey: "react_frontend",
+      toKey: "webserver_process",
+      type: "Runtime",
+      protocol: "HTTPS",
+    },
+    {
+      fromKey: "webserver_process",
+      toKey: "postgres_process",
+      type: "Dataflow",
+      protocol: "PG Wire",
+    },
+    {
+      fromKey: "webserver_process",
+      toKey: "auth0_process",
+      type: "Runtime",
+      protocol: "HTTPS",
+    },
+    {
+      fromKey: "react_frontend",
+      toKey: "auth0_process",
+      type: "Runtime",
+      protocol: "HTTPS",
+    },
+    {
+      fromKey: "auth0_process",
+      toKey: "google_oauth_process",
+      type: "Runtime",
+      protocol: "HTTPS",
+    },
+  ],
+  concerns: [
+    {
+      name: "Architecture",
+      position: 1,
+      isBaseline: true,
+      scope: "Template baseline",
+    },
+  ],
+  documents: [
+    {
+      key: "spec_stack_overview",
+      kind: "Spec",
+      title: "Stack overview",
+      language: "en",
+      text:
+        "The system is composed of host-wrapped runtime components: Browser/React frontend, Vercel/Webserver backend, Postgres Host/Postgres database, Auth0 Identity/Auth0 Service, and Google Identity/Google OAuth.",
+    },
+    {
+      key: "spec_browser_host",
+      kind: "Spec",
+      title: "Browser host",
+      language: "en",
+      text:
+        "The browser host runs the React application process and acts as the user-facing execution environment for interactive UI behavior.",
+    },
+    {
+      key: "spec_react_frontend",
+      kind: "Spec",
+      title: "React frontend process",
+      language: "en",
+      text:
+        "The React process renders application UI, calls the backend over HTTPS, and drives login initiation through Auth0.",
+    },
+    {
+      key: "spec_vercel_host",
+      kind: "Spec",
+      title: "Vercel host",
+      language: "en",
+      text:
+        "Vercel hosts the webserver process and provides deployment lifecycle controls, public HTTPS ingress, and runtime isolation.",
+    },
+    {
+      key: "spec_webserver_process",
+      kind: "Spec",
+      title: "Webserver process",
+      language: "en",
+      text:
+        "The webserver process serves backend APIs consumed by the frontend over HTTPS and reads/writes persistent records in Postgres over PG Wire.",
+    },
+    {
+      key: "spec_postgres_host",
+      kind: "Spec",
+      title: "Postgres host",
+      language: "en",
+      text:
+        "Postgres Host encapsulates database runtime concerns including process isolation, network exposure, and operational configuration for persistence.",
+    },
+    {
+      key: "spec_postgres_process",
+      kind: "Spec",
+      title: "Postgres process",
+      language: "en",
+      text:
+        "The Postgres process stores transactional data and accepts backend connections over PG Wire with credentialed access.",
+    },
+    {
+      key: "spec_auth0_host",
+      kind: "Spec",
+      title: "Auth0 identity host",
+      language: "en",
+      text:
+        "Auth0 Identity provides the managed identity boundary that encapsulates OAuth/OIDC flows and token management capabilities.",
+    },
+    {
+      key: "spec_auth0_process",
+      kind: "Spec",
+      title: "Auth0 service process",
+      language: "en",
+      text:
+        "The Auth0 service process executes login flows, issues tokens, and federates outbound authentication requests to Google OAuth.",
+    },
+    {
+      key: "spec_google_host",
+      kind: "Spec",
+      title: "Google identity host",
+      language: "en",
+      text:
+        "Google Identity is an external identity boundary that hosts the Google OAuth service used by Auth0 social login federation.",
+    },
+    {
+      key: "spec_google_oauth_process",
+      kind: "Spec",
+      title: "Google OAuth process",
+      language: "en",
+      text:
+        "Google OAuth authenticates end users and returns identity assertions to Auth0 over HTTPS for federated sign-in.",
+    },
+  ],
+  matrixRefs: [
+    {
+      nodeKey: "root",
+      concern: "Architecture",
+      refType: "Spec",
+      documentKey: "spec_stack_overview",
+    },
+    {
+      nodeKey: "browser_host",
+      concern: "Architecture",
+      refType: "Spec",
+      documentKey: "spec_browser_host",
+    },
+    {
+      nodeKey: "react_frontend",
+      concern: "Architecture",
+      refType: "Spec",
+      documentKey: "spec_react_frontend",
+    },
+    {
+      nodeKey: "vercel_host",
+      concern: "Architecture",
+      refType: "Spec",
+      documentKey: "spec_vercel_host",
+    },
+    {
+      nodeKey: "webserver_process",
+      concern: "Architecture",
+      refType: "Spec",
+      documentKey: "spec_webserver_process",
+    },
+    {
+      nodeKey: "postgres_host",
+      concern: "Architecture",
+      refType: "Spec",
+      documentKey: "spec_postgres_host",
+    },
+    {
+      nodeKey: "postgres_process",
+      concern: "Architecture",
+      refType: "Spec",
+      documentKey: "spec_postgres_process",
+    },
+    {
+      nodeKey: "auth0_host",
+      concern: "Architecture",
+      refType: "Spec",
+      documentKey: "spec_auth0_host",
+    },
+    {
+      nodeKey: "auth0_process",
+      concern: "Architecture",
+      refType: "Spec",
+      documentKey: "spec_auth0_process",
+    },
+    {
+      nodeKey: "google_host",
+      concern: "Architecture",
+      refType: "Spec",
+      documentKey: "spec_google_host",
+    },
+    {
+      nodeKey: "google_oauth_process",
+      concern: "Architecture",
+      refType: "Spec",
+      documentKey: "spec_google_oauth_process",
+    },
+  ],
+};
