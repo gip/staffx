@@ -5,6 +5,7 @@ import { verifyAuth } from "../auth.js";
 import pool, { query } from "../db.js";
 import {
   BLANK_TEMPLATE_ID,
+  DEFAULT_CONCERNS,
   getTemplateById,
   isKnownTemplateId,
   type TemplateDefinition,
@@ -33,6 +34,21 @@ interface ThreadRow {
 function computeDocumentHash(document: Pick<TemplateDocument, "kind" | "title" | "language" | "text">) {
   const payload = [document.kind, document.title, document.language, document.text].join("\n");
   return `sha256:${createHash("sha256").update(payload, "utf8").digest("hex")}`;
+}
+
+async function seedSystemConcerns(
+  client: PoolClient,
+  systemId: string,
+  concerns: Array<{ name: string; position: number; isBaseline: boolean; scope?: string | null }>,
+) {
+  for (const concern of concerns) {
+    await client.query(
+      `INSERT INTO concerns (system_id, name, position, is_baseline, scope)
+       VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT (system_id, name) DO NOTHING`,
+      [systemId, concern.name, concern.position, concern.isBaseline, concern.scope ?? null],
+    );
+  }
 }
 
 async function seedSystemTemplate(
@@ -83,16 +99,8 @@ async function seedSystemTemplate(
     );
   }
 
-  const concernNames = new Set<string>();
-  for (const concern of template.concerns) {
-    concernNames.add(concern.name);
-    await client.query(
-      `INSERT INTO concerns (system_id, name, position, is_baseline, scope)
-       VALUES ($1, $2, $3, $4, $5)
-       ON CONFLICT (system_id, name) DO NOTHING`,
-      [systemId, concern.name, concern.position, concern.isBaseline, concern.scope ?? null],
-    );
-  }
+  await seedSystemConcerns(client, systemId, template.concerns);
+  const concernNames = new Set(template.concerns.map((concern) => concern.name));
 
   const documentHashes = new Map<string, string>();
   for (const document of template.documents) {
@@ -155,6 +163,18 @@ async function resolveProject(
   if (result.rowCount === 0) return null;
   const row = result.rows[0];
   return { projectId: row.id, accessRole: row.access_role, ownerId: row.owner_id };
+}
+
+async function resolveProjectSystemId(projectId: string): Promise<string | null> {
+  const result = await query<{ system_id: string }>(
+    `SELECT thread_current_system(t.id) AS system_id
+     FROM threads t
+     WHERE t.project_id = $1
+     ORDER BY t.project_thread_id ASC
+     LIMIT 1`,
+    [projectId],
+  );
+  return result.rows[0]?.system_id ?? null;
 }
 
 export async function projectRoutes(app: FastifyInstance) {
@@ -326,6 +346,15 @@ export async function projectRoutes(app: FastifyInstance) {
 
         if (selectedTemplate) {
           await seedSystemTemplate(client, systemId, rootNodeId, selectedTemplate);
+        } else {
+          await seedSystemConcerns(
+            client,
+            systemId,
+            DEFAULT_CONCERNS.map((concern) => ({
+              ...concern,
+              scope: null,
+            })),
+          );
         }
 
         const threadId = randomUUID();
@@ -445,9 +474,27 @@ export async function projectRoutes(app: FastifyInstance) {
         ),
       ]);
 
+      const systemId = await resolveProjectSystemId(project.projectId);
+      const concernsResult = systemId
+        ? await query<{
+          name: string;
+          position: number;
+          is_baseline: boolean;
+          scope: string | null;
+        }>(`SELECT name, position, is_baseline, scope FROM concerns WHERE system_id = $1 ORDER BY position`, [
+          systemId,
+        ])
+        : { rows: [] as { name: string; position: number; is_baseline: boolean; scope: string | null }[] };
+
       return {
         accessRole: project.accessRole,
         projectRoles: rolesResult.rows.map((r) => r.name),
+        concerns: concernsResult.rows.map((r) => ({
+          name: r.name,
+          position: r.position,
+          isBaseline: r.is_baseline,
+          scope: r.scope,
+        })),
         collaborators: collabResult.rows.map((r) => ({
           handle: r.handle,
           name: r.name,
@@ -456,6 +503,96 @@ export async function projectRoutes(app: FastifyInstance) {
           projectRoles: r.project_roles ?? [],
         })),
       };
+    },
+  );
+
+  app.post<{
+    Params: { handle: string; projectName: string };
+    Body: { name: string };
+  }>(
+    "/projects/:handle/:projectName/concerns",
+    async (req, reply) => {
+      const project = await resolveProject(req.params.handle, req.params.projectName, req.auth.id);
+      if (!project) return reply.code(404).send({ error: "Project not found" });
+      if (project.accessRole !== "Owner") return reply.code(403).send({ error: "Only the owner can manage concerns" });
+
+      const { name } = req.body;
+      if (!name || typeof name !== "string" || !name.trim()) {
+        return reply.code(400).send({ error: "name is required" });
+      }
+
+      const trimmed = name.trim();
+      const systemId = await resolveProjectSystemId(project.projectId);
+      if (!systemId) {
+        return reply.code(404).send({ error: "Project system not found" });
+      }
+
+      const positionResult = await query<{ max: number | null }>(
+        "SELECT MAX(position) AS max FROM concerns WHERE system_id = $1",
+        [systemId],
+      );
+      const nextPosition = (positionResult.rows[0].max ?? -1) + 1;
+
+      try {
+        await query(
+          "INSERT INTO concerns (system_id, name, position, is_baseline, scope) VALUES ($1, $2, $3, $4, $5)",
+          [systemId, trimmed, nextPosition, false, null],
+        );
+      } catch (err: unknown) {
+        if (err instanceof Error && "code" in err && (err as { code: string }).code === "23505") {
+          return reply.code(409).send({ error: "A concern with this name already exists" });
+        }
+        throw err;
+      }
+
+      return reply.code(201).send({
+        name: trimmed,
+        position: nextPosition,
+        isBaseline: false,
+        scope: null,
+      });
+    },
+  );
+
+  app.delete<{ Params: { handle: string; projectName: string; concernName: string } }>(
+    "/projects/:handle/:projectName/concerns/:concernName",
+    async (req, reply) => {
+      const project = await resolveProject(req.params.handle, req.params.projectName, req.auth.id);
+      if (!project) return reply.code(404).send({ error: "Project not found" });
+      if (project.accessRole !== "Owner") return reply.code(403).send({ error: "Only the owner can manage concerns" });
+
+      const concernName = req.params.concernName;
+      const systemId = await resolveProjectSystemId(project.projectId);
+      if (!systemId) {
+        return reply.code(404).send({ error: "Project system not found" });
+      }
+
+      const [matrixRefs, artifacts] = await Promise.all([
+        query<{ count: string }>(
+          "SELECT COUNT(*) AS count FROM matrix_refs WHERE system_id = $1 AND concern = $2",
+          [systemId, concernName],
+        ),
+        query<{ count: string }>(
+          "SELECT COUNT(*) AS count FROM artifacts WHERE system_id = $1 AND concern = $2",
+          [systemId, concernName],
+        ),
+      ]);
+
+      const referenced = Number(matrixRefs.rows[0].count) + Number(artifacts.rows[0].count);
+      if (referenced > 0) {
+        return reply.code(409).send({
+          error: "Cannot delete concern while it is still linked to matrix docs or artifacts",
+          referenced,
+        });
+      }
+
+      const result = await query(
+        "DELETE FROM concerns WHERE system_id = $1 AND name = $2",
+        [systemId, concernName],
+      );
+      if (result.rowCount === 0) return reply.code(404).send({ error: "Concern not found" });
+
+      return reply.code(204).send();
     },
   );
 

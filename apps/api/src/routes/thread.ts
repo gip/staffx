@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { FastifyInstance, FastifyReply } from "fastify";
 import pool, { query } from "../db.js";
 import { verifyAuth } from "../auth.js";
@@ -60,6 +60,7 @@ interface MatrixDocumentRow {
   kind: "Feature" | "Spec" | "Skill";
   title: string;
   language: string;
+  text: string;
 }
 
 interface ArtifactRow {
@@ -137,6 +138,36 @@ interface MatrixRefBody {
   refType: "Feature" | "Spec" | "Skill";
 }
 
+type DocKind = "Feature" | "Spec" | "Skill";
+
+interface MatrixDocumentCreateBody {
+  title: string;
+  kind: DocKind;
+  language: string;
+  name: string;
+  description: string;
+  body: string;
+  attach?: {
+    nodeId: string;
+    concern: string;
+    refType: DocKind;
+  };
+}
+
+interface MatrixDocumentReplaceBody {
+  title?: string;
+  name?: string;
+  description?: string;
+  language?: string;
+  body?: string;
+}
+
+interface ParsedDocumentText {
+  name: string;
+  description: string;
+  body: string;
+}
+
 interface TopologyLayoutBody {
   positions: Array<{
     nodeId: string;
@@ -158,6 +189,166 @@ function parseThreadId(threadId: string): number | null {
   const parsed = Number(threadId);
   if (!Number.isInteger(parsed) || parsed <= 0) return null;
   return parsed;
+}
+
+function computeDocumentHash(document: Pick<MatrixDocumentCreateBody, "kind" | "title" | "language" | "body">) {
+  const payload = [document.kind, document.title, document.language, document.body].join("\n");
+  return `sha256:${createHash("sha256").update(payload, "utf8").digest("hex")}`;
+}
+
+function deriveDocumentName(title: string) {
+  return title
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "");
+}
+
+function isValidDocumentName(name: string) {
+  return /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(name);
+}
+
+function normalizeDocumentText(rawText: string) {
+  return rawText ?? "";
+}
+
+function parseDocumentText(rawText: string): ParsedDocumentText {
+  const text = normalizeDocumentText(rawText).replace(/\r\n/g, "\n");
+  if (!text.startsWith("---\n")) {
+    return { name: "", description: "", body: text.trim() };
+  }
+
+  const match = text.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
+  if (!match) {
+    return { name: "", description: "", body: text.trim() };
+  }
+
+  const frontMatter = match[1];
+  const body = match[2].trim();
+  const parsed: ParsedDocumentText = { name: "", description: "", body };
+
+  for (const line of frontMatter.split("\n")) {
+    const [key, rawValue] = line.split(":", 2);
+    if (!key || rawValue === undefined) continue;
+    const trimmedKey = key.trim();
+    const trimmedValue = rawValue.trim();
+    if (trimmedKey === "name") {
+      parsed.name = trimmedValue;
+    } else if (trimmedKey === "description") {
+      parsed.description = trimmedValue;
+    }
+  }
+
+  return parsed;
+}
+
+function buildDocumentText({ name, description, body }: { name: string; description: string; body: string }) {
+  const normalizedDescription = description.trim().replace(/\r?\n/g, " ");
+  const normalizedBody = body.trim();
+  return [
+    "---",
+    `name: ${name}`,
+    `description: ${normalizedDescription}`,
+    "---",
+    normalizedBody,
+  ].join("\n");
+}
+
+function normalizeMatrixDocumentCreateBody(body: unknown): MatrixDocumentCreateBody | null {
+  if (!body || typeof body !== "object") return null;
+  const parsed = body as Partial<MatrixDocumentCreateBody>;
+
+  if (
+    typeof parsed.title !== "string" ||
+    typeof parsed.kind !== "string" ||
+    typeof parsed.language !== "string" ||
+    typeof parsed.name !== "string" ||
+    typeof parsed.description !== "string" ||
+    typeof parsed.body !== "string"
+  ) {
+    return null;
+  }
+
+  const title = parsed.title.trim();
+  const kind = parsed.kind;
+  const language = parsed.language.trim() || "en";
+  const name = parsed.name.trim();
+  const description = parsed.description.trim();
+  const bodyText = parsed.body;
+
+  if (!title) return null;
+  if (!["Feature", "Spec", "Skill"].includes(kind)) return null;
+  if (!language) return null;
+  if (!isValidDocumentName(name)) return null;
+
+  let attach: { nodeId: string; concern: string; refType: DocKind } | undefined;
+  if (parsed.attach) {
+    if (typeof parsed.attach !== "object") return null;
+    const attachParsed = parsed.attach as Partial<{ nodeId: string; concern: string; refType: string }>;
+    if (
+      typeof attachParsed.nodeId !== "string" ||
+      typeof attachParsed.concern !== "string" ||
+      typeof attachParsed.refType !== "string"
+    ) {
+      return null;
+    }
+    const nodeId = attachParsed.nodeId.trim();
+    const concern = attachParsed.concern.trim();
+    const refType = attachParsed.refType;
+    if (!nodeId || !concern) return null;
+    if (!["Feature", "Spec", "Skill"].includes(refType)) return null;
+    attach = { nodeId, concern, refType: refType as DocKind };
+  }
+
+  return {
+    title,
+    kind: kind as DocKind,
+    language,
+    name,
+    description,
+    body: bodyText,
+    attach,
+  };
+}
+
+function normalizeMatrixDocumentReplaceBody(body: unknown): MatrixDocumentReplaceBody | null {
+  if (!body || typeof body !== "object") return null;
+  const parsed = body as Partial<MatrixDocumentReplaceBody>;
+  const hasAny =
+    typeof parsed.title !== "undefined" ||
+    typeof parsed.name !== "undefined" ||
+    typeof parsed.description !== "undefined" ||
+    typeof parsed.language !== "undefined" ||
+    typeof parsed.body !== "undefined";
+
+  if (!hasAny) return null;
+
+  const normalized: MatrixDocumentReplaceBody = {};
+  if (typeof parsed.title !== "undefined") {
+    if (typeof parsed.title !== "string") return null;
+    const title = parsed.title.trim();
+    if (!title) return null;
+    normalized.title = title;
+  }
+  if (typeof parsed.name !== "undefined") {
+    if (typeof parsed.name !== "string" || !isValidDocumentName(parsed.name.trim())) return null;
+    normalized.name = parsed.name.trim();
+  }
+  if (typeof parsed.description !== "undefined") {
+    if (typeof parsed.description !== "string") return null;
+    normalized.description = parsed.description.trim();
+  }
+  if (typeof parsed.language !== "undefined") {
+    if (typeof parsed.language !== "string" || !parsed.language.trim()) return null;
+    normalized.language = parsed.language.trim();
+  }
+  if (typeof parsed.body !== "undefined") {
+    if (typeof parsed.body !== "string") return null;
+    normalized.body = parsed.body;
+  }
+
+  return normalized;
 }
 
 async function resolveThreadContext(
@@ -421,7 +612,7 @@ export async function threadRoutes(app: FastifyInstance) {
             [systemId],
           ),
           query<MatrixDocumentRow>(
-            `SELECT hash, kind, title, language
+            `SELECT hash, kind, title, language, text
              FROM documents
              WHERE system_id = $1
              ORDER BY kind, title, hash`,
@@ -532,6 +723,7 @@ export async function threadRoutes(app: FastifyInstance) {
             kind: row.kind,
             title: row.title,
             language: row.language,
+            text: row.text,
           })),
         },
         chat: {
@@ -792,6 +984,246 @@ export async function threadRoutes(app: FastifyInstance) {
 
       const cell = await getMatrixCell(systemId, payload.nodeId, payload.concern);
       return { systemId, cell };
+    },
+  );
+
+  app.post<{ Params: { handle: string; projectName: string; threadId: string }; Body: MatrixDocumentCreateBody }>(
+    "/projects/:handle/:projectName/thread/:threadId/matrix/documents",
+    async (req, reply) => {
+      const { handle, projectName, threadId } = req.params;
+      const context = await requireContext(reply, req.auth.id, handle, projectName, threadId);
+      if (!context) return;
+
+      if (!canEdit(context.accessRole)) {
+        return reply.code(403).send({ error: "Forbidden" });
+      }
+
+      const payload = normalizeMatrixDocumentCreateBody(req.body);
+      if (!payload) {
+        return reply.code(400).send({ error: "Invalid matrix document payload" });
+      }
+
+      const text = buildDocumentText({
+        name: payload.name,
+        description: payload.description,
+        body: payload.body,
+      });
+      const hash = computeDocumentHash({
+        kind: payload.kind,
+        title: payload.title,
+        language: payload.language,
+        body: text,
+      });
+
+      const client = await pool.connect();
+      let inTransaction = false;
+
+      try {
+        await client.query("BEGIN");
+        inTransaction = true;
+
+        const actionId = randomUUID();
+        const beginResult = await client.query<BeginActionRow>(
+          `SELECT begin_action($1, $2, $3::action_type, $4) AS output_system_id`,
+          [context.threadId, actionId, "Edit", "Matrix doc create"],
+        );
+        const outputSystemId = beginResult.rows[0]?.output_system_id;
+        if (!outputSystemId) {
+          throw new Error("Failed to create action output system");
+        }
+
+        const insertResult = await client.query<MatrixDocumentRow>(
+          `INSERT INTO documents (hash, system_id, kind, title, language, text)
+           VALUES ($1, $2, $3::doc_kind, $4, $5, $6)
+           ON CONFLICT (system_id, hash) DO NOTHING
+           RETURNING hash, kind, title, language, text`,
+          [hash, outputSystemId, payload.kind, payload.title, payload.language, text],
+        );
+
+        const shouldAttach = Boolean(payload.attach);
+        if (payload.attach) {
+          const insertRefResult = await client.query<ChangedRow>(
+            `INSERT INTO matrix_refs (system_id, node_id, concern, ref_type, doc_hash)
+             VALUES ($1, $2, $3, $4::ref_type, $5)
+             ON CONFLICT DO NOTHING
+             RETURNING 1 AS changed`,
+            [outputSystemId, payload.attach.nodeId, payload.attach.concern, payload.attach.refType, hash],
+          );
+
+          if (insertResult.rowCount === 0 && insertRefResult.rowCount === 0) {
+            await client.query("SELECT commit_action_empty($1, $2)", [context.threadId, actionId]);
+          }
+
+        } else if (insertResult.rowCount === 0) {
+          await client.query("SELECT commit_action_empty($1, $2)", [context.threadId, actionId]);
+        }
+
+        await client.query("COMMIT");
+        inTransaction = false;
+
+        const systemId = await getThreadSystemId(context.threadId);
+        if (!systemId) {
+          return reply.code(500).send({ error: "Unable to resolve thread system" });
+        }
+
+        const nextDocument = insertResult.rows[0] ?? {
+          hash,
+          kind: payload.kind,
+          title: payload.title,
+          language: payload.language,
+          text,
+        };
+
+        const response: { systemId: string; document: MatrixDocumentRow; cell?: MatrixCell } = {
+          systemId,
+          document: nextDocument,
+        };
+        if (shouldAttach && payload.attach) {
+          response.cell = await getMatrixCell(systemId, payload.attach.nodeId, payload.attach.concern);
+        }
+        return response;
+      } catch (error: unknown) {
+        if (inTransaction) {
+          try {
+            await client.query("ROLLBACK");
+          } catch {
+            // Best effort rollback.
+          }
+        }
+        if (
+          error instanceof Error &&
+          "code" in error &&
+          (error as { code?: string }).code === "23503"
+        ) {
+          return reply.code(400).send({ error: "Invalid node, concern, or document reference" });
+        }
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
+  );
+
+  app.patch<{
+    Params: { handle: string; projectName: string; threadId: string; documentHash: string };
+    Body: MatrixDocumentReplaceBody;
+  }>(
+    "/projects/:handle/:projectName/thread/:threadId/matrix/documents/:documentHash",
+    async (req, reply) => {
+      const { handle, projectName, threadId, documentHash } = req.params;
+      const context = await requireContext(reply, req.auth.id, handle, projectName, threadId);
+      if (!context) return;
+
+      if (!canEdit(context.accessRole)) {
+        return reply.code(403).send({ error: "Forbidden" });
+      }
+
+      const trimmedHash = documentHash.trim();
+      const payload = normalizeMatrixDocumentReplaceBody(req.body);
+      if (!trimmedHash || !payload) {
+        return reply.code(400).send({ error: "Invalid matrix document patch payload" });
+      }
+
+      const client = await pool.connect();
+      let inTransaction = false;
+
+      try {
+        await client.query("BEGIN");
+        inTransaction = true;
+
+        const actionId = randomUUID();
+        const beginResult = await client.query<BeginActionRow>(
+          `SELECT begin_action($1, $2, $3::action_type, $4) AS output_system_id`,
+          [context.threadId, actionId, "Edit", "Matrix doc replace"],
+        );
+        const outputSystemId = beginResult.rows[0]?.output_system_id;
+        if (!outputSystemId) {
+          throw new Error("Failed to create action output system");
+        }
+
+        const existingResult = await client.query<MatrixDocumentRow>(
+          `SELECT hash, kind, title, language, text
+           FROM documents
+           WHERE system_id = $1 AND hash = $2`,
+          [outputSystemId, trimmedHash],
+        );
+        if (existingResult.rowCount === 0) {
+          await client.query("ROLLBACK");
+          inTransaction = false;
+          return reply.code(404).send({ error: "Document not found" });
+        }
+
+        const existing = existingResult.rows[0];
+        const parsedExisting = parseDocumentText(existing.text);
+        const nextTitle = payload.title ?? existing.title;
+        const nextLanguage = payload.language ?? existing.language;
+        const existingName = parsedExisting.name;
+        const sanitizedExistingName = existingName && isValidDocumentName(existingName) ? existingName : deriveDocumentName(nextTitle);
+        const nextName = payload.name ?? sanitizedExistingName;
+        const nextDescription = payload.description ?? parsedExisting.description;
+        const nextBody = payload.body ?? parsedExisting.body;
+        const nextText = buildDocumentText({
+          name: nextName,
+          description: nextDescription,
+          body: nextBody,
+        });
+        const nextHash = computeDocumentHash({
+          kind: existing.kind,
+          title: nextTitle,
+          language: nextLanguage,
+          body: nextText,
+        });
+
+        const insertResult = await client.query<MatrixDocumentRow>(
+          `INSERT INTO documents (hash, system_id, kind, title, language, text, supersedes)
+           VALUES ($1, $2, $3::doc_kind, $4, $5, $6, $7)
+           ON CONFLICT (system_id, hash) DO NOTHING
+           RETURNING hash, kind, title, language, text`,
+          [nextHash, outputSystemId, existing.kind, nextTitle, nextLanguage, nextText, existing.hash],
+        );
+
+        const updateRefsResult = await client.query<ChangedRow>(
+          `UPDATE matrix_refs
+           SET doc_hash = $3
+           WHERE system_id = $1
+             AND doc_hash = $2`,
+          [outputSystemId, existing.hash, nextHash],
+        );
+
+        const changed = (insertResult.rowCount ?? 0) > 0 || (updateRefsResult.rowCount ?? 0) > 0;
+        if (!changed) {
+          await client.query("SELECT commit_action_empty($1, $2)", [context.threadId, actionId]);
+        }
+
+        await client.query("COMMIT");
+        inTransaction = false;
+
+        const nextDocument = insertResult.rows[0] ?? {
+          hash: nextHash,
+          kind: existing.kind,
+          title: nextTitle,
+          language: nextLanguage,
+          text: nextText,
+        };
+
+        return {
+          systemId: outputSystemId,
+          oldHash: existing.hash,
+          document: nextDocument,
+          replacedRefs: updateRefsResult.rowCount ?? 0,
+        };
+      } catch (error) {
+        if (inTransaction) {
+          try {
+            await client.query("ROLLBACK");
+          } catch {
+            // Best effort rollback;
+          }
+        }
+        throw error;
+      } finally {
+        client.release();
+      }
     },
   );
 

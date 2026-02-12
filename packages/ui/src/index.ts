@@ -13,9 +13,10 @@ export {
   type MatrixCell,
   type MatrixDocument,
   type ArtifactRef,
+  type MatrixCellDoc,
   type ChatMessage,
 } from "./thread-page";
 export { UserProfilePage, type UserProfile, type UserProfileProject } from "./user-profile";
-export { ProjectSettingsPage, type Collaborator, type SearchResult } from "./project-settings";
+export { ProjectSettingsPage, type Collaborator, type SearchResult, type Concern } from "./project-settings";
 export { Link, setNavigate } from "./link";
 export { Logo } from "./logo";

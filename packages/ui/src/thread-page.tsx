@@ -77,6 +77,7 @@ export interface MatrixDocument {
   kind: DocKind;
   title: string;
   language: string;
+  text: string;
 }
 
 export interface ChatMessage {
@@ -132,16 +133,132 @@ interface MatrixRefInput {
   refType: DocKind;
 }
 
+interface MatrixDocumentCreateInput {
+  title: string;
+  kind: DocKind;
+  language: string;
+  name: string;
+  description: string;
+  body: string;
+  attach?: {
+    nodeId: string;
+    concern: string;
+    refType: DocKind;
+  };
+}
+
+interface MatrixDocumentReplaceInput {
+  title?: string;
+  name?: string;
+  description?: string;
+  language?: string;
+  body?: string;
+}
+
+interface MatrixDocumentParsedText {
+  name: string;
+  description: string;
+  body: string;
+}
+
+interface MatrixDocumentCreateResponse {
+  systemId: string;
+  document: MatrixDocument;
+  cell?: MatrixCell;
+}
+
+interface MatrixDocumentReplaceResponse {
+  systemId: string;
+  oldHash: string;
+  document: MatrixDocument;
+  replacedRefs: number;
+}
+
+interface MatrixDocGroup {
+  feature: MatrixCellDoc[];
+  spec: MatrixCellDoc[];
+  skill: MatrixCellDoc[];
+}
+
+type MatrixDocumentModalSource = "matrix-cell" | "topology-node";
+
+type MatrixDocumentModalMode = "browse" | "create" | "edit";
+
+interface MatrixDocumentModal {
+  source: MatrixDocumentModalSource;
+  nodeId: string;
+  refType: DocKind;
+  concern: string;
+  kindFilter: "All" | DocKind;
+}
+
 interface ThreadPageProps {
   detail: ThreadDetailPayload;
   onUpdateThread?: (payload: { title?: string; description?: string | null }) => Promise<MutationResult<{ thread: ThreadDetail }>>;
   onSaveTopologyLayout?: (payload: { positions: Array<{ nodeId: string; x: number; y: number }> }) => Promise<MutationResult<{ systemId: string }>>;
   onAddMatrixDoc?: (payload: MatrixRefInput) => Promise<MutationResult<{ systemId: string; cell: MatrixCell }>>;
   onRemoveMatrixDoc?: (payload: MatrixRefInput) => Promise<MutationResult<{ systemId: string; cell: MatrixCell }>>;
+  onCreateMatrixDocument?: (payload: MatrixDocumentCreateInput) => Promise<MutationResult<MatrixDocumentCreateResponse>>;
+  onReplaceMatrixDocument?: (documentHash: string, payload: MatrixDocumentReplaceInput) => Promise<MutationResult<MatrixDocumentReplaceResponse>>;
   onSendChatMessage?: (payload: { content: string }) => Promise<MutationResult<{ messages: ChatMessage[] }>>;
 }
 
 const DOC_TYPES: DocKind[] = ["Feature", "Spec", "Skill"];
+const DOC_KIND_TO_KEY: Record<DocKind, keyof MatrixDocGroup> = {
+  Feature: "feature",
+  Spec: "spec",
+  Skill: "skill",
+};
+function chunkIntoPairs<T>(items: T[]): T[][] {
+  const rows: T[][] = [];
+  for (let index = 0; index < items.length; index += 2) {
+    rows.push(items.slice(index, index + 2));
+  }
+  return rows;
+}
+const MATRIX_DOC_NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+const normalizeConcernName = (value: string) => value.trim().toLowerCase();
+const DEFAULT_DOCUMENT_LANGUAGE = "en";
+
+function parseDocumentText(rawText: string): MatrixDocumentParsedText {
+  const text = (rawText ?? "").replace(/\r\n/g, "\n");
+  if (!text.startsWith("---\n")) {
+    return { name: "", description: "", body: text.trim() };
+  }
+
+  const match = text.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
+  if (!match) {
+    return { name: "", description: "", body: text.trim() };
+  }
+
+  const frontMatter = match[1] ?? "";
+  const body = (match[2] ?? "").trim();
+  const parsed: MatrixDocumentParsedText = { name: "", description: "", body };
+
+  for (const line of frontMatter.split("\n")) {
+    const [rawKey, rawValue] = line.split(":", 2);
+    if (!rawKey || rawValue === undefined) continue;
+    const key = rawKey.trim();
+    const value = rawValue.trim();
+    if (key === "name") parsed.name = value;
+    else if (key === "description") parsed.description = value;
+  }
+
+  return parsed;
+}
+
+function isValidDocumentName(name: string) {
+  return MATRIX_DOC_NAME_PATTERN.test(name);
+}
+
+function deriveDocumentName(title: string) {
+  return title
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "");
+}
 
 function formatDateTime(value: string) {
   return new Date(value).toLocaleString(undefined, {
@@ -203,10 +320,22 @@ interface FlowLayoutModel {
   nestedChildrenByHost: Map<string, TopologyNode[]>;
 }
 
-interface TopologyFlowNodeData {
+interface TopologyNestedChildData {
+  id: string;
   name: string;
   kind: string;
-  nestedChildren: TopologyNode[];
+  documents: MatrixDocGroup;
+}
+
+interface TopologyFlowNodeData {
+  nodeId: string;
+  name: string;
+  kind: string;
+  nestedChildren: TopologyNestedChildData[];
+  documents: MatrixDocGroup;
+  canEdit: boolean;
+  onOpenDocPicker: (nodeId: string, refType: DocKind) => void;
+  onEditDoc: (doc: MatrixCellDoc, nodeId: string, concern: string) => void;
 }
 
 interface FlowEndpoint {
@@ -215,8 +344,62 @@ interface FlowEndpoint {
 }
 
 function TopologyFlowNode({ data }: NodeProps<TopologyFlowNodeData>) {
+  const resolveBadgeKindClass = (kind: string) => {
+    const normalizedKind = kind.toLowerCase().replace(/\s+/g, "-");
+    return ["host", "process", "container", "library"].includes(normalizedKind)
+      ? `thread-topology-node-badge--${normalizedKind}`
+      : "thread-topology-node-badge--other";
+  };
+
+  const nodeKindClass = resolveBadgeKindClass(data.kind);
+
+  const renderDocSections = (nodeLabel: string, nodeId: string, nodeDocuments: MatrixDocGroup) => (
+    <div className="thread-topology-doc-sections">
+      {DOC_TYPES.map((type) => {
+        const key = DOC_KIND_TO_KEY[type];
+        const docs = nodeDocuments[key];
+        const docRows = chunkIntoPairs(docs);
+        return (
+          <div key={type} className="thread-topology-doc-section">
+            <div className="thread-topology-doc-section-header">
+              <span className="matrix-doc-group-label">{type}</span>
+              {data.canEdit && (
+                <button
+                  className="btn-icon thread-topology-doc-add"
+                  type="button"
+                  aria-label={`Add ${type} document to ${nodeLabel}`}
+                  onClick={() => data.onOpenDocPicker(nodeId, type)}
+                  title="Add document"
+                >
+                  <Plus size={12} />
+                </button>
+              )}
+            </div>
+            <div className="thread-topology-doc-list">
+              {docRows.map((row, rowIndex) => (
+                <div key={`${nodeId}-${type}-row-${rowIndex}`} className="matrix-doc-row">
+                  {row.map((doc) => (
+                    <button
+                      className={`matrix-doc-chip matrix-doc-chip--${type.toLowerCase()}`}
+                      type="button"
+                      key={`${nodeId}-${doc.hash}-${doc.refType}`}
+                      onClick={() => data.onEditDoc(doc, nodeId, "")}
+                      disabled={!data.canEdit}
+                    >
+                      <span>{doc.title}</span>
+                    </button>
+                  ))}
+                </div>
+              ))}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
   return (
     <div className="thread-topology-node">
+      <span className={`thread-topology-node-badge ${nodeKindClass}`}>{data.kind}</span>
       <Handle
         type="target"
         position={Position.Left}
@@ -234,10 +417,19 @@ function TopologyFlowNode({ data }: NodeProps<TopologyFlowNodeData>) {
 
       <strong>{data.name}</strong>
       <span>{data.kind}</span>
+
+      {renderDocSections(data.name, data.nodeId, data.documents)}
+
       {data.nestedChildren.length > 0 && (
         <div className="thread-topology-nested-list">
           {data.nestedChildren.map((child) => (
-            <div className="thread-topology-nested-item" key={child.id}>
+            <div
+              className={`thread-topology-nested-item ${
+                child.kind.toLowerCase() === "process" ? "thread-topology-nested-item--process" : ""
+              }`}
+              key={child.id}
+            >
+              <span className={`thread-topology-node-badge ${resolveBadgeKindClass(child.kind)}`}>{child.kind}</span>
               <Handle
                 type="target"
                 position={Position.Left}
@@ -254,6 +446,7 @@ function TopologyFlowNode({ data }: NodeProps<TopologyFlowNodeData>) {
               />
               <strong>{child.name}</strong>
               <span>{child.kind}</span>
+              {renderDocSections(child.name, child.id, child.documents)}
             </div>
           ))}
         </div>
@@ -309,7 +502,13 @@ function buildFlowLayoutModel(nodes: TopologyNode[]): FlowLayoutModel {
   };
 }
 
-function buildFlowNodes(model: FlowLayoutModel): Node[] {
+function buildFlowNodes(
+  model: FlowLayoutModel,
+  nodeDocuments: Map<string, MatrixDocGroup>,
+  onOpenDocPicker: (nodeId: string, refType: DocKind) => void,
+  onEditDoc: (doc: MatrixCellDoc, nodeId: string, concern: string) => void,
+  canEdit: boolean,
+): Node[] {
   if (model.visibleNodes.length === 0) return [];
 
   const children = new Map<string, TopologyNode[]>();
@@ -366,7 +565,12 @@ function buildFlowNodes(model: FlowLayoutModel): Node[] {
   }
 
   return model.visibleNodes.map((node) => {
-    const nestedChildren = model.nestedChildrenByHost.get(node.id) ?? [];
+    const nestedChildren = (model.nestedChildrenByHost.get(node.id) ?? []).map((child) => ({
+      id: child.id,
+      name: child.name,
+      kind: child.kind,
+      documents: nodeDocuments.get(child.id) ?? { feature: [], spec: [], skill: [] },
+    }));
     const hasSavedPosition =
       typeof node.layoutX === "number" &&
       Number.isFinite(node.layoutX) &&
@@ -379,9 +583,18 @@ function buildFlowNodes(model: FlowLayoutModel): Node[] {
       type: "topology",
       position: hasSavedPosition ? { x: node.layoutX as number, y: node.layoutY as number } : defaultPosition,
       data: {
+        nodeId: node.id,
         name: node.name,
         kind: node.kind,
         nestedChildren,
+        documents: nodeDocuments.get(node.id) ?? {
+          feature: [],
+          spec: [],
+          skill: [],
+        },
+        canEdit,
+        onOpenDocPicker,
+        onEditDoc,
       },
       style: {
         borderRadius: 10,
@@ -389,7 +602,7 @@ function buildFlowNodes(model: FlowLayoutModel): Node[] {
         background: "var(--bg-secondary)",
         color: "var(--fg)",
         minWidth: nestedChildren.length > 0 ? 240 : 180,
-        padding: 10,
+        padding: 8,
         boxShadow: "none",
       },
     };
@@ -456,6 +669,8 @@ export function ThreadPage({
   onSaveTopologyLayout,
   onAddMatrixDoc,
   onRemoveMatrixDoc,
+  onCreateMatrixDocument,
+  onReplaceMatrixDocument,
   onSendChatMessage,
 }: ThreadPageProps) {
   const [isTopologyCollapsed, setIsTopologyCollapsed] = useState(false);
@@ -477,12 +692,22 @@ export function ThreadPage({
   const [isSendingChat, setIsSendingChat] = useState(false);
   const [topologyError, setTopologyError] = useState("");
   const [isSavingTopologyLayout, setIsSavingTopologyLayout] = useState(false);
-  const [docPicker, setDocPicker] = useState<{
-    nodeId: string;
-    concern: string;
-    search: string;
-    kindFilter: "All" | DocKind;
-  } | null>(null);
+  const [documentModal, setDocumentModal] = useState<(MatrixDocumentModal & {
+    mode: MatrixDocumentModalMode;
+    selectedConcern: string;
+  }) | null>(null);
+  const [docPickerSearch, setDocPickerSearch] = useState("");
+  const [docPickerKindFilter, setDocPickerKindFilter] = useState<"All" | DocKind>("All");
+  const [docModalMarkdownTab, setDocModalMarkdownTab] = useState<"write" | "preview">("write");
+  const [docModalName, setDocModalName] = useState("");
+  const [docModalTitle, setDocModalTitle] = useState("");
+  const [docModalDescription, setDocModalDescription] = useState("");
+  const [docModalLanguage, setDocModalLanguage] = useState("en");
+  const [docModalBody, setDocModalBody] = useState("");
+  const [docModalValidationError, setDocModalValidationError] = useState("");
+  const [docModalEditHash, setDocModalEditHash] = useState<string | null>(null);
+  const [isDocumentModalBusy, setIsDocumentModalBusy] = useState(false);
+  const [documentModalError, setDocumentModalError] = useState("");
 
   const titleInputRef = useRef<HTMLInputElement>(null);
   const topologyPanelRef = useRef<HTMLDivElement>(null);
@@ -519,8 +744,160 @@ export function ThreadPage({
     return () => document.removeEventListener("fullscreenchange", onFullscreenChange);
   }, []);
 
+  const nodeDocumentGroups = useMemo(() => {
+    const groups = new Map<string, MatrixDocGroup>();
+    const seenHashes = new Map<string, { feature: Set<string>; spec: Set<string>; skill: Set<string> }>();
+    for (const node of detail.topology.nodes) {
+      groups.set(node.id, {
+        feature: [],
+        spec: [],
+        skill: [],
+      });
+      seenHashes.set(node.id, {
+        feature: new Set(),
+        spec: new Set(),
+        skill: new Set(),
+      });
+    }
+
+    for (const cell of detail.matrix.cells) {
+      const nodeGroup = groups.get(cell.nodeId);
+      const nodeSeen = seenHashes.get(cell.nodeId);
+      if (!nodeGroup || !nodeSeen) continue;
+
+      for (const doc of cell.docs) {
+        const key = DOC_KIND_TO_KEY[doc.refType];
+        if (nodeSeen[key].has(doc.hash)) continue;
+        nodeSeen[key].add(doc.hash);
+        nodeGroup[key].push(doc);
+      }
+    }
+
+    return groups;
+  }, [detail.topology.nodes, detail.matrix.cells]);
+
+  const resetDocumentModal = useCallback(() => {
+    setDocumentModal(null);
+    setDocPickerSearch("");
+    setDocPickerKindFilter("All");
+    setDocModalMarkdownTab("write");
+    setDocModalName("");
+    setDocModalTitle("");
+    setDocModalDescription("");
+    setDocModalLanguage(DEFAULT_DOCUMENT_LANGUAGE);
+    setDocModalBody("");
+    setDocModalValidationError("");
+    setDocModalEditHash(null);
+    setDocumentModalError("");
+    setIsDocumentModalBusy(false);
+  }, []);
+
+  const openDocumentPicker = useCallback(
+    (next: MatrixDocumentModal, mode: MatrixDocumentModalMode, editHash: string | null = null) => {
+      const initialConcern = next.concern ?? "";
+      setDocumentModal({
+        ...next,
+        selectedConcern: initialConcern,
+        mode,
+      });
+      setDocPickerSearch("");
+      setDocPickerKindFilter(next.kindFilter);
+      setDocModalMarkdownTab("write");
+      setDocumentModalError("");
+      setDocModalValidationError("");
+      setDocModalEditHash(editHash);
+
+      if (mode === "create") {
+        setDocModalName("");
+        setDocModalTitle("");
+        setDocModalDescription("");
+        setDocModalLanguage(DEFAULT_DOCUMENT_LANGUAGE);
+        setDocModalBody("");
+      } else if (mode === "edit") {
+        const existingDocument = detail.matrix.documents.find((doc) => doc.hash === editHash);
+        const parsed = existingDocument ? parseDocumentText(existingDocument.text) : { name: "", description: "", body: "" };
+        const existingName = parsed.name && isValidDocumentName(parsed.name) ? parsed.name : "";
+        setDocModalName(existingName || deriveDocumentName(existingDocument?.title ?? ""));
+        setDocModalTitle(existingDocument?.title ?? "");
+        setDocModalDescription(parsed.description);
+        setDocModalLanguage(existingDocument?.language ?? "en");
+        setDocModalBody(parsed.body);
+      } else {
+        setDocModalName("");
+        setDocModalTitle("");
+        setDocModalDescription("");
+        setDocModalLanguage(DEFAULT_DOCUMENT_LANGUAGE);
+        setDocModalBody("");
+      }
+    },
+    [detail.matrix.documents],
+  );
+
+  const openMatrixCellDocumentPicker = useCallback(
+    (nodeId: string, concern: string, refType: DocKind) => {
+      openDocumentPicker(
+        {
+          source: "matrix-cell",
+          nodeId,
+          refType,
+          concern,
+          kindFilter: "All",
+        },
+        "browse",
+      );
+    },
+    [openDocumentPicker],
+  );
+
+  const openTopologyDocumentPicker = useCallback(
+    (nodeId: string, refType: DocKind) => {
+      const firstConcern = detail.matrix.concerns[0]?.name ?? "";
+      const matchingConcern = detail.matrix.concerns.find((concern) => normalizeConcernName(concern.name) === normalizeConcernName(refType))?.name;
+      const selectedConcern = matchingConcern ?? (detail.matrix.concerns.length === 1 ? firstConcern : "");
+      openDocumentPicker(
+        {
+          source: "topology-node",
+          nodeId,
+          refType,
+          concern: selectedConcern,
+          kindFilter: refType,
+        },
+        "browse",
+      );
+    },
+    [detail.matrix.concerns, openDocumentPicker],
+  );
+
+  const openEditDocumentModal = useCallback(
+    (doc: MatrixCellDoc, nodeId: string, concern: string) => {
+      if (!detail.matrix.documents.some((current) => current.hash === doc.hash)) return;
+      openDocumentPicker(
+        {
+          source: "matrix-cell",
+          nodeId,
+          refType: doc.refType,
+          concern,
+          kindFilter: "All",
+        },
+        "edit",
+        doc.hash,
+      );
+    },
+    [detail.matrix.documents, openDocumentPicker],
+  );
+
   const flowLayoutModel = useMemo(() => buildFlowLayoutModel(detail.topology.nodes), [detail.topology.nodes]);
-  const initialFlowNodes = useMemo(() => buildFlowNodes(flowLayoutModel), [flowLayoutModel]);
+  const initialFlowNodes = useMemo(
+    () =>
+      buildFlowNodes(
+        flowLayoutModel,
+        nodeDocumentGroups,
+        openTopologyDocumentPicker,
+        openEditDocumentModal,
+        detail.permissions.canEdit,
+      ),
+    [flowLayoutModel, nodeDocumentGroups, openTopologyDocumentPicker, openEditDocumentModal, detail.permissions.canEdit],
+  );
   const [flowNodes, setFlowNodes, onFlowNodesChange] = useNodesState(initialFlowNodes);
   const flowEdges = useMemo(() => buildFlowEdges(detail.topology.edges, flowLayoutModel), [detail.topology.edges, flowLayoutModel]);
 
@@ -537,29 +914,40 @@ export function ThreadPage({
   }, [detail.matrix.cells]);
 
   const activeCell = useMemo(() => {
-    if (!docPicker) return null;
-    return cellsByKey.get(buildMatrixCellKey(docPicker.nodeId, docPicker.concern)) ?? null;
-  }, [docPicker, cellsByKey]);
+    if (!documentModal) return null;
+    return cellsByKey.get(buildMatrixCellKey(documentModal.nodeId, documentModal.selectedConcern)) ?? null;
+  }, [documentModal, cellsByKey]);
 
   const availableDocs = useMemo(() => {
-    if (!docPicker) return [];
+    if (!documentModal || documentModal.mode !== "browse") return [];
 
     const existingRefs = new Set(
-      (activeCell?.docs ?? []).map((doc) => `${doc.hash}:${doc.refType}`),
+      documentModal.source === "topology-node"
+        ? detail.matrix.cells
+            .filter((cell) => cell.nodeId === documentModal.nodeId)
+            .flatMap((cell) =>
+              cell.docs
+                .filter((doc) =>
+                  documentModal.kindFilter === "All" || doc.refType === documentModal.kindFilter,
+                )
+                .map((doc) => `${doc.hash}:${doc.refType}`),
+            )
+        : (activeCell?.docs ?? []).map((doc) => `${doc.hash}:${doc.refType}`),
     );
-    const query = docPicker.search.trim().toLowerCase();
+    const query = docPickerSearch.trim().toLowerCase();
 
     return detail.matrix.documents.filter((doc) => {
       if (existingRefs.has(`${doc.hash}:${doc.kind}`)) return false;
-      if (docPicker.kindFilter !== "All" && doc.kind !== docPicker.kindFilter) return false;
+      if (docPickerKindFilter !== "All" && doc.kind !== docPickerKindFilter) return false;
       if (!query) return true;
       return (
         doc.title.toLowerCase().includes(query) ||
         doc.hash.toLowerCase().includes(query) ||
-        doc.language.toLowerCase().includes(query)
+        doc.language.toLowerCase().includes(query) ||
+        doc.text.toLowerCase().includes(query)
       );
     });
-  }, [detail.matrix.documents, docPicker, activeCell]);
+  }, [activeCell, detail.matrix.cells, detail.matrix.documents, documentModal, docPickerKindFilter, docPickerSearch]);
 
   async function toggleFullscreen(ref: { current: HTMLDivElement | null }) {
     if (!ref.current) return;
@@ -639,15 +1027,45 @@ export function ThreadPage({
     }
   }
 
-  async function handleAddDoc(doc: MatrixDocument) {
-    if (!docPicker || !onAddMatrixDoc) return;
-    const mutationKey = `add:${docPicker.nodeId}:${docPicker.concern}:${doc.hash}:${doc.kind}`;
+  function switchToDocumentCreateMode() {
+    if (!documentModal || !detail.permissions.canEdit) return;
+    openDocumentPicker(
+      {
+        source: documentModal.source,
+        nodeId: documentModal.nodeId,
+        refType: documentModal.refType,
+        concern: documentModal.selectedConcern,
+        kindFilter: documentModal.refType,
+      },
+      "create",
+    );
+    setDocModalTitle("");
+    setDocModalDescription("");
+    setDocModalName("");
+    setDocModalBody("");
+    setDocModalLanguage(DEFAULT_DOCUMENT_LANGUAGE);
+  }
+
+  async function handleAttachDocument(doc: MatrixDocument) {
+    if (!documentModal || !onAddMatrixDoc) return;
+    const concern = documentModal.selectedConcern;
+    if (documentModal.source === "topology-node" && !concern) {
+      setDocModalValidationError("Choose a concern before attaching.");
+      return;
+    }
+    if (!concern) {
+      setDocModalValidationError("Missing concern.");
+      return;
+    }
+
+    const mutationKey = `add:${documentModal.nodeId}:${concern}:${doc.hash}:${doc.kind}`;
     setActiveMatrixMutation(mutationKey);
     setMatrixError("");
+    setDocumentModalError("");
 
     const result = await onAddMatrixDoc({
-      nodeId: docPicker.nodeId,
-      concern: docPicker.concern,
+      nodeId: documentModal.nodeId,
+      concern,
       docHash: doc.hash,
       refType: doc.kind,
     });
@@ -656,10 +1074,11 @@ export function ThreadPage({
     const error = getErrorMessage(result);
     if (error) {
       setMatrixError(error);
+      setDocumentModalError(error);
       return;
     }
 
-    setDocPicker(null);
+    resetDocumentModal();
   }
 
   async function handleRemoveDoc(nodeId: string, concern: string, doc: MatrixCellDoc) {
@@ -680,6 +1099,174 @@ export function ThreadPage({
     if (error) {
       setMatrixError(error);
     }
+  }
+
+  async function handleCreateAndAttachDocument() {
+    if (!documentModal || !onCreateMatrixDocument) return;
+
+    const concern = documentModal.selectedConcern;
+    if (documentModal.source === "topology-node" && !concern) {
+      setDocModalValidationError("Choose a concern before creating.");
+      return;
+    }
+    if (!concern) {
+      setDocModalValidationError("Missing concern.");
+      return;
+    }
+
+    const title = docModalTitle.trim();
+    const name = docModalName.trim();
+    const description = docModalDescription.trim();
+    const language = DEFAULT_DOCUMENT_LANGUAGE;
+    const body = docModalBody;
+
+    if (!title) {
+      setDocModalValidationError("Title is required.");
+      return;
+    }
+    if (!name || !isValidDocumentName(name)) {
+      setDocModalValidationError("Name must be lower-case letters/numbers with dashes and no consecutive or edge dashes.");
+      return;
+    }
+
+    const payload: MatrixDocumentCreateInput = {
+      title,
+      kind: documentModal.refType,
+      language,
+      name,
+      description,
+      body,
+      attach: {
+        nodeId: documentModal.nodeId,
+        concern,
+        refType: documentModal.refType,
+      },
+    };
+
+    setIsDocumentModalBusy(true);
+    setDocumentModalError("");
+    setDocModalValidationError("");
+
+    const result = await onCreateMatrixDocument(payload);
+    setIsDocumentModalBusy(false);
+
+    const error = getErrorMessage(result);
+    if (error) {
+      setDocumentModalError(error);
+      return;
+    }
+
+    resetDocumentModal();
+  }
+
+  async function handleReplaceDocument() {
+    if (!documentModal || !docModalEditHash || !onReplaceMatrixDocument) return;
+
+    const existing = detail.matrix.documents.find((entry) => entry.hash === docModalEditHash);
+    if (!existing) {
+      setDocumentModalError("Source document not found.");
+      return;
+    }
+
+    const title = docModalTitle.trim();
+    const name = docModalName.trim();
+    const description = docModalDescription.trim();
+    const language = docModalLanguage.trim() || "en";
+    const body = docModalBody;
+
+    if (!title) {
+      setDocModalValidationError("Title is required.");
+      return;
+    }
+    if (!name || !isValidDocumentName(name)) {
+      setDocModalValidationError("Name must be lower-case letters/numbers with dashes and no consecutive or edge dashes.");
+      return;
+    }
+
+    const parsed = parseDocumentText(existing.text);
+    const next: MatrixDocumentReplaceInput = {};
+    if (title !== existing.title) next.title = title;
+    const nextName = name === (parsed.name || deriveDocumentName(existing.title)) ? undefined : name;
+    if (typeof nextName === "string") next.name = nextName;
+    const nextDescription = description === (parsed.description || "") ? undefined : description;
+    if (typeof nextDescription === "string") next.description = nextDescription;
+    if (language !== existing.language) next.language = language;
+    if (body !== parsed.body) next.body = body;
+
+    if (Object.keys(next).length === 0) {
+      setDocModalValidationError("No changes to save.");
+      return;
+    }
+
+    setIsDocumentModalBusy(true);
+    setDocumentModalError("");
+    setDocModalValidationError("");
+
+    const result = await onReplaceMatrixDocument(docModalEditHash, next);
+    setIsDocumentModalBusy(false);
+
+    const error = getErrorMessage(result);
+    if (error) {
+      setDocumentModalError(error);
+      return;
+    }
+
+    resetDocumentModal();
+  }
+
+  async function handleUnlinkDocument() {
+    if (!documentModal || !docModalEditHash || !onRemoveMatrixDoc) return;
+
+    const references = detail.matrix.cells.flatMap((cell) =>
+      cell.docs
+        .filter((doc) => doc.hash === docModalEditHash)
+        .map((doc) => ({
+          nodeId: cell.nodeId,
+          concern: cell.concern,
+          docHash: doc.hash,
+          refType: doc.refType,
+        })),
+    );
+
+    if (references.length === 0) {
+      setDocModalValidationError("This document is not linked to any matrix cell.");
+      return;
+    }
+
+    const dedupedReferences = Array.from(
+      new Map(
+        references.map((reference) => [
+          `${reference.nodeId}::${reference.concern}::${reference.refType}`,
+          reference,
+        ]),
+      ).values(),
+    );
+
+    setIsDocumentModalBusy(true);
+    setDocumentModalError("");
+    setDocModalValidationError("");
+    setMatrixError("");
+    setActiveMatrixMutation(`unlink:${docModalEditHash}`);
+
+    let errorMessage = "";
+    for (const reference of dedupedReferences) {
+      const result = await onRemoveMatrixDoc(reference);
+      const nextError = getErrorMessage(result);
+      if (nextError) {
+        errorMessage = nextError;
+        break;
+      }
+    }
+
+    setActiveMatrixMutation("");
+    setIsDocumentModalBusy(false);
+
+    if (errorMessage) {
+      setDocumentModalError(errorMessage);
+      return;
+    }
+
+    resetDocumentModal();
   }
 
   async function handleSendChat() {
@@ -972,30 +1559,50 @@ export function ThreadPage({
                               {DOC_TYPES.map((type) => {
                                 const docs = cell.docs.filter((doc) => doc.refType === type);
                                 if (docs.length === 0) return null;
+                                const docRows = chunkIntoPairs(docs);
                                 return (
                                   <div key={type} className="matrix-doc-group">
                                     <span className="matrix-doc-group-label">{type}</span>
                                     <div className="matrix-doc-list">
-                                      {docs.map((doc) => {
-                                        const removeKey = `remove:${node.id}:${concern.name}:${doc.hash}:${doc.refType}`;
-                                        const isMutating = activeMatrixMutation === removeKey;
-                                        return (
-                                          <div key={`${doc.hash}:${doc.refType}`} className={`matrix-doc-chip matrix-doc-chip--${doc.refType.toLowerCase()}`}>
-                                            <span>{doc.title}</span>
-                                            {detail.permissions.canEdit && (
+                                      {docRows.map((row, rowIndex) => (
+                                        <div
+                                          key={`${type}-row-${rowIndex}`}
+                                          className="matrix-doc-row"
+                                        >
+                                          {row.map((doc) => {
+                                            const removeKey = `remove:${node.id}:${concern.name}:${doc.hash}:${doc.refType}`;
+                                            const isMutating = activeMatrixMutation === removeKey;
+                                            return (
                                               <button
-                                                className="matrix-doc-remove"
+                                                key={`${doc.hash}:${doc.refType}`}
+                                                className={`matrix-doc-chip matrix-doc-chip--${doc.refType.toLowerCase()}`}
                                                 type="button"
-                                                onClick={() => handleRemoveDoc(node.id, concern.name, doc)}
-                                                disabled={isMutating}
-                                                aria-label={`Remove ${doc.title}`}
+                                                onClick={() => {
+                                                  if (detail.permissions.canEdit) {
+                                                    openEditDocumentModal(doc, node.id, concern.name);
+                                                  }
+                                                }}
                                               >
-                                                ×
+                                                <span>{doc.title}</span>
+                                                {detail.permissions.canEdit && (
+                                                  <button
+                                                    className="matrix-doc-remove"
+                                                    type="button"
+                                                    onClick={(event) => {
+                                                      event.stopPropagation();
+                                                      handleRemoveDoc(node.id, concern.name, doc);
+                                                    }}
+                                                    disabled={isMutating}
+                                                    aria-label={`Remove ${doc.title}`}
+                                                  >
+                                                    ×
+                                                  </button>
+                                                )}
                                               </button>
-                                            )}
-                                          </div>
-                                        );
-                                      })}
+                                            );
+                                          })}
+                                        </div>
+                                      ))}
                                     </div>
                                   </div>
                                 );
@@ -1016,12 +1623,7 @@ export function ThreadPage({
                                   className="matrix-add-doc-btn"
                                   type="button"
                                   onClick={() =>
-                                    setDocPicker({
-                                      nodeId: node.id,
-                                      concern: concern.name,
-                                      search: "",
-                                      kindFilter: "All",
-                                    })
+                                    openMatrixCellDocumentPicker(node.id, concern.name, DOC_TYPES[0] as DocKind)
                                   }
                                 >
                                   <Plus size={13} /> Add doc
@@ -1099,72 +1701,251 @@ export function ThreadPage({
         )}
       </section>
 
-      {docPicker && (
-        <div className="modal-overlay" onClick={() => setDocPicker(null)}>
+      {documentModal && (
+        <div className="modal-overlay" onClick={resetDocumentModal}>
           <div className="modal thread-doc-picker" onClick={(event) => event.stopPropagation()}>
             <div className="thread-doc-picker-header">
-              <h3 className="modal-title">Add Document</h3>
+              <h3 className="modal-title">
+                {documentModal.mode === "create"
+                  ? "Create Document"
+                  : documentModal.mode === "edit"
+                    ? "Edit Document"
+                    : "Add Document"}
+              </h3>
               <button
                 className="btn-icon thread-card-action"
                 type="button"
-                onClick={() => setDocPicker(null)}
+                onClick={resetDocumentModal}
                 aria-label="Close add document dialog"
               >
                 <X size={16} />
               </button>
             </div>
             <p className="thread-doc-picker-context">
-              Node: <strong>{docPicker.nodeId}</strong> · Concern: <strong>{docPicker.concern}</strong>
+              Node: <strong>{documentModal.nodeId || "selected node"}</strong> · Concern:{" "}
+              <strong>{documentModal.selectedConcern || "Select concern"}</strong>
             </p>
-            <div className="thread-doc-picker-filters">
-              <input
-                className="field-input"
-                value={docPicker.search}
-                onChange={(event) => setDocPicker((current) => (current ? { ...current, search: event.target.value } : current))}
-                placeholder="Search title, hash, language"
-              />
-              <select
-                className="field-input"
-                value={docPicker.kindFilter}
-                onChange={(event) => {
-                  const nextValue = event.target.value as "All" | DocKind;
-                  setDocPicker((current) => (current ? { ...current, kindFilter: nextValue } : current));
-                }}
-              >
-                <option value="All">All kinds</option>
-                {DOC_TYPES.map((type) => (
-                  <option key={type} value={type}>
-                    {type}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div className="thread-doc-picker-list">
-              {availableDocs.length === 0 ? (
-                <p className="matrix-empty">No documents available for this cell.</p>
-              ) : (
-                availableDocs.map((doc) => {
-                  const addKey = `add:${docPicker.nodeId}:${docPicker.concern}:${doc.hash}:${doc.kind}`;
-                  const isMutating = activeMatrixMutation === addKey;
-                  return (
-                    <div key={doc.hash} className="thread-doc-picker-row">
-                      <div>
-                        <strong>{doc.title}</strong>
-                        <p>{doc.kind} · {doc.language}</p>
-                      </div>
+            {documentModal.source === "topology-node" && detail.matrix.concerns.length > 0 && (
+              <div className="thread-doc-concern">
+                <label className="field-label">Concern</label>
+                <select
+                  className="field-input"
+                  value={documentModal.selectedConcern}
+                  onChange={(event) => {
+                    const nextConcern = event.target.value;
+                    setDocumentModal((current) =>
+                      current
+                        ? {
+                            ...current,
+                            concern: nextConcern,
+                            selectedConcern: nextConcern,
+                          }
+                        : current,
+                    );
+                  }}
+                >
+                  <option value="">Select a concern</option>
+                  {detail.matrix.concerns.map((concern) => (
+                    <option key={concern.name} value={concern.name}>
+                      {concern.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+
+            {documentModal.mode === "browse" ? (
+              <>
+                <div className="thread-doc-picker-filters">
+                  <input
+                    className="field-input"
+                    value={docPickerSearch}
+                    onChange={(event) => setDocPickerSearch(event.target.value)}
+                    placeholder="Search title, hash, language"
+                  />
+                  <select
+                    className="field-input"
+                    value={docPickerKindFilter}
+                    onChange={(event) => {
+                      const nextValue = event.target.value as "All" | DocKind;
+                      setDocPickerKindFilter(nextValue);
+                    }}
+                  >
+                    <option value="All">All kinds</option>
+                    {DOC_TYPES.map((type) => (
+                      <option key={type} value={type}>
+                        {type}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                {onCreateMatrixDocument && (
+                  <div className="thread-inline-actions">
+                    <button
+                      className="btn btn-secondary"
+                      type="button"
+                      onClick={switchToDocumentCreateMode}
+                      disabled={
+                        documentModal.source === "topology-node" &&
+                        !documentModal.selectedConcern
+                      }
+                    >
+                      + Create New Document
+                    </button>
+                  </div>
+                )}
+
+                <div className="thread-doc-picker-list">
+                  {availableDocs.length === 0 ? (
+                    <p className="matrix-empty">No documents available for this cell.</p>
+                  ) : (
+                    availableDocs.map((doc) => {
+                      const addKey = `add:${documentModal.nodeId}:${documentModal.selectedConcern}:${doc.hash}:${doc.kind}`;
+                      const isMutating = activeMatrixMutation === addKey;
+                      return (
+                        <div key={doc.hash} className="thread-doc-picker-row">
+                          <div>
+                            <strong>{doc.title}</strong>
+                            <p>{doc.kind} · {doc.language}</p>
+                          </div>
+                          <button
+                            className="btn"
+                            type="button"
+                            onClick={() => handleAttachDocument(doc)}
+                            disabled={
+                              isMutating ||
+                              (documentModal.source === "topology-node" && !documentModal.selectedConcern)
+                            }
+                          >
+                            {isMutating ? "Adding…" : "Add"}
+                          </button>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="thread-doc-form-fields">
+                  <div className="field">
+                    <label className="field-label">Name</label>
+                    <input
+                      className="field-input"
+                      value={docModalName}
+                      onChange={(event) => {
+                        setDocModalName(event.target.value);
+                        setDocModalValidationError("");
+                      }}
+                      placeholder="e.g. login-sso-spec"
+                    />
+                  </div>
+                  <div className="field">
+                    <label className="field-label">Title</label>
+                    <input
+                      className="field-input"
+                      value={docModalTitle}
+                      onChange={(event) => {
+                        setDocModalTitle(event.target.value);
+                        setDocModalValidationError("");
+                      }}
+                    />
+                  </div>
+                  <div className="field">
+                    <label className="field-label">Description</label>
+                    <textarea
+                      className="field-input field-textarea md-textarea"
+                      rows={3}
+                      value={docModalDescription}
+                      onChange={(event) => {
+                        setDocModalDescription(event.target.value);
+                        setDocModalValidationError("");
+                      }}
+                    />
+                  </div>
+                  <div className="thread-doc-form-markdown">
+                    <div className="md-tabs">
                       <button
-                        className="btn"
                         type="button"
-                        onClick={() => handleAddDoc(doc)}
-                        disabled={isMutating}
+                        className={`md-tab${docModalMarkdownTab === "write" ? " md-tab--active" : ""}`}
+                        onClick={() => setDocModalMarkdownTab("write")}
                       >
-                        {isMutating ? "Adding…" : "Add"}
+                        Edit
+                      </button>
+                      <button
+                        type="button"
+                        className={`md-tab${docModalMarkdownTab === "preview" ? " md-tab--active" : ""}`}
+                        onClick={() => setDocModalMarkdownTab("preview")}
+                      >
+                        View
                       </button>
                     </div>
-                  );
-                })
-              )}
-            </div>
+                    {docModalMarkdownTab === "write" ? (
+                      <textarea
+                        className="field-input field-textarea md-textarea"
+                        rows={8}
+                        value={docModalBody}
+                        onChange={(event) => setDocModalBody(event.target.value)}
+                        placeholder="Write document markdown"
+                      />
+                    ) : (
+                      <div className="md-preview">
+                        {docModalBody.trim() ? (
+                          <div
+                            className="md-body"
+                            dangerouslySetInnerHTML={{ __html: renderMarkdown(docModalBody) }}
+                          />
+                        ) : (
+                          <p className="thread-description-text">Nothing to preview</p>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                </div>
+                <div className="thread-inline-actions">
+                  <button
+                    className="btn btn-secondary"
+                    type="button"
+                    onClick={() => {
+                      if (documentModal.mode === "create") {
+                        setDocumentModal((current) => (current ? { ...current, mode: "browse" } : current));
+                      } else {
+                        resetDocumentModal();
+                      }
+                    }}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    className="btn"
+                    type="button"
+                    onClick={documentModal.mode === "create" ? handleCreateAndAttachDocument : handleReplaceDocument}
+                    disabled={isDocumentModalBusy}
+                  >
+                    {isDocumentModalBusy
+                      ? "Saving…"
+                      : documentModal.mode === "create"
+                        ? "Create document"
+                        : "Save changes"}
+                  </button>
+                  {documentModal.mode === "edit" && (
+                    <button
+                      className="btn-secondary"
+                      type="button"
+                      onClick={handleUnlinkDocument}
+                      disabled={isDocumentModalBusy}
+                    >
+                      {isDocumentModalBusy ? "Unlinking…" : "Unlink"}
+                    </button>
+                  )}
+                </div>
+              </>
+            )}
+
+            {(documentModalError || docModalValidationError) && (
+              <p className="field-error">{documentModalError || docModalValidationError}</p>
+            )}
           </div>
         </div>
       )}

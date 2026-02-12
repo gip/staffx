@@ -997,8 +997,57 @@ a.project-card {
 .thread-topology-node {
   display: flex;
   flex-direction: column;
-  gap: 5px;
+  gap: 4px;
   position: relative;
+  overflow: visible;
+  padding-top: 6px;
+}
+
+.thread-topology-node-badge {
+  position: absolute;
+  top: -31px;
+  left: 10px;
+  z-index: 3;
+  font-size: 10px;
+  line-height: 1;
+  border-radius: 6px 6px 0 0;
+  padding: 4px 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-weight: 700;
+  color: var(--fg);
+  border-bottom: 1px solid transparent;
+  background-clip: padding-box;
+}
+
+.thread-topology-node-badge--host {
+  background: #2f71ff;
+  border: 1px solid #1749cc;
+  color: #ffffff;
+}
+
+.thread-topology-node-badge--process {
+  background: #3faf60;
+  border: 1px solid #1e6e39;
+  color: #ffffff;
+}
+
+.thread-topology-node-badge--container {
+  background: #b98920;
+  border: 1px solid #8a5f00;
+  color: #ffffff;
+}
+
+.thread-topology-node-badge--library {
+  background: #7f63d2;
+  border: 1px solid #5e44a8;
+  color: #ffffff;
+}
+
+.thread-topology-node-badge--other {
+  background: #7a7a7a;
+  border: 1px solid #515151;
+  color: #ffffff;
 }
 
 .thread-topology-node strong {
@@ -1012,15 +1061,70 @@ a.project-card {
   color: var(--fg-muted);
 }
 
+.thread-topology-doc-sections {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.thread-topology-doc-section {
+  border-top: 1px solid color-mix(in srgb, var(--border) 78%, transparent);
+  padding-top: 8px;
+}
+
+.thread-topology-doc-section:first-child {
+  border-top: none;
+  padding-top: 0;
+}
+
+.thread-topology-doc-section-header {
+  margin-bottom: 6px;
+  display: inline-flex;
+  justify-content: flex-start;
+  align-items: center;
+  gap: 8px;
+}
+
+.thread-topology-doc-list {
+  display: block;
+}
+
+.matrix-doc-row {
+  display: flex;
+  gap: 6px;
+  flex-wrap: nowrap;
+  margin-top: 4px;
+}
+
+.matrix-doc-row:first-child {
+  margin-top: 0;
+}
+
+.thread-topology-doc-add {
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  padding: 0;
+  border: 1px solid var(--border);
+  color: var(--fg-muted);
+  background: var(--bg);
+}
+
+.thread-topology-doc-add:hover {
+  border-color: var(--fg-muted);
+  color: var(--fg);
+}
+
 .thread-topology-nested-list {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  margin-top: 4px;
+  margin-top: 12px;
   padding: 8px;
-  border: 1px solid var(--border);
+  border: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
   border-radius: 8px;
-  background: var(--bg);
+  background: transparent;
 }
 
 .thread-topology-nested-item {
@@ -1028,18 +1132,22 @@ a.project-card {
   flex-direction: column;
   gap: 3px;
   padding: 6px 8px;
-  border: 1px solid color-mix(in srgb, var(--border) 80%, transparent);
   border-radius: 7px;
   background: var(--bg-secondary);
   position: relative;
 }
 
+.thread-topology-nested-item--process {
+  margin-top: 14px;
+}
+
 .thread-topology-handle {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  border: 1px solid var(--border);
-  background: var(--bg);
+  width: 0;
+  height: 0;
+  border: none;
+  background: transparent;
+  opacity: 0;
+  pointer-events: none;
 }
 
 .thread-topology-handle--host {
@@ -1154,15 +1262,15 @@ a.project-card {
 }
 
 .matrix-doc-list {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
+  display: block;
 }
 
 .matrix-doc-chip {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  width: fit-content;
+  flex: 0 0 auto;
   border: 1px solid var(--border);
   border-radius: 999px;
   padding: 3px 8px;
@@ -1321,7 +1429,8 @@ a.project-card {
 }
 
 .thread-doc-picker {
-  max-width: 760px;
+  width: min(980px, calc(100vw - 40px));
+  max-width: 980px;
 }
 
 .thread-doc-picker-header {
@@ -1368,6 +1477,22 @@ a.project-card {
   margin-top: 4px;
   font-size: 12px;
   color: var(--fg-muted);
+}
+
+.thread-doc-form-fields {
+  display: grid;
+  gap: 10px;
+}
+
+.thread-doc-form-markdown {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.thread-doc-concern {
+  display: grid;
+  gap: 6px;
 }
 
 /* Profile page */
@@ -1584,6 +1709,13 @@ a.project-card {
   margin-bottom: 12px;
 }
 
+.concerns-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
 .roles-add-form {
   display: flex;
   align-items: center;
@@ -1595,6 +1727,33 @@ a.project-card {
   width: 180px;
   padding: 6px 10px;
   font-size: 13px;
+}
+
+.concern-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 10px;
+  font-size: 11px;
+  font-weight: 500;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--fg-muted);
+  white-space: nowrap;
+}
+
+.concern-tag-remove {
+  border: none;
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+  padding: 0;
+}
+
+.concern-tag-remove:hover {
+  color: var(--fg);
 }
 
 .collab-project-roles {
@@ -1649,5 +1808,24 @@ a.project-card {
 
   .thread-doc-picker-filters {
     grid-template-columns: 1fr;
+  }
+
+  .thread-doc-picker {
+    width: calc(100vw - 24px);
+  }
+
+  .thread-topology-doc-section {
+    padding-top: 6px;
+  }
+
+  .thread-doc-picker .thread-inline-actions {
+    flex-wrap: wrap;
+    flex-direction: column;
+  }
+
+  .thread-doc-picker .thread-inline-actions .btn,
+  .thread-doc-picker .thread-inline-actions .btn-secondary {
+    width: 100%;
+    justify-content: center;
   }
 }
