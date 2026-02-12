@@ -5,6 +5,7 @@ import { net } from "electron";
 
 const AUTH0_DOMAIN = import.meta.env.VITE_AUTH0_DOMAIN ?? "";
 const AUTH0_CLIENT_ID = import.meta.env.VITE_AUTH0_CLIENT_ID ?? "";
+const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:3001";
 const CALLBACK_PORT = 17823;
 const REDIRECT_URI = `http://127.0.0.1:${CALLBACK_PORT}`;
 
@@ -64,6 +65,7 @@ export async function login() {
     client_id: AUTH0_CLIENT_ID,
     redirect_uri: REDIRECT_URI,
     scope: "openid profile email",
+    audience: import.meta.env.VITE_AUTH0_AUDIENCE ?? "",
     code_challenge: codeChallenge,
     code_challenge_method: "S256",
     prompt: "login",
@@ -75,6 +77,7 @@ export async function login() {
   try {
     const code = await codePromise;
     await exchangeCode(code);
+    await syncUser();
     return true;
   } catch (err) {
     console.error("Login failed:", err);
@@ -105,6 +108,21 @@ async function exchangeCode(code: string): Promise<void> {
   const data = (await response.json()) as { access_token: string };
   accessToken = data.access_token;
   codeVerifier = null;
+}
+
+async function syncUser(): Promise<void> {
+  if (!accessToken) return;
+
+  try {
+    const res = await net.fetch(`${API_URL}/me`, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    if (!res.ok) {
+      console.error("Failed to sync user:", res.status, await res.text());
+    }
+  } catch (err) {
+    console.error("Failed to sync user:", err);
+  }
 }
 
 export async function logout() {

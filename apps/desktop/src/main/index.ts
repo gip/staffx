@@ -38,8 +38,8 @@ ipcMain.on("auth:login", async () => {
 });
 
 ipcMain.on("auth:logout", async () => {
-  if (mainWindow) notifyRenderer(mainWindow);
   await logout();
+  if (mainWindow) notifyRenderer(mainWindow);
 });
 
 app.whenReady().then(createWindow);
