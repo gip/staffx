@@ -38,9 +38,11 @@ pnpm workspaces monorepo with four packages:
 
 ### Database
 - PostgreSQL, connected via `pg.Pool` in `apps/api/src/db.ts`
-- Migrations are plain `.sql` files in `apps/api/src/migrations/`, executed in sorted order
-- `pnpm migrate` is destructive (drops tables) — dev-only, no migration tracking
+- Single init script: `apps/api/src/migrations/001_init.sql` — `pnpm migrate` drops everything and recreates (dev-only)
 - User upsert on `auth0_id` conflict in `apps/api/src/auth.ts`
+
+### OpenShip Domain Model
+See [docs/openship-schema.md](docs/openship-schema.md) for the full schema reference — systems, nodes, edges, concerns, documents, the concern matrix, projects, threads, actions, and content-addressed file storage.
 
 ### Electron-specific
 - Preload must output CJS (`lib.formats: ["cjs"]`) in `electron.vite.config.ts`

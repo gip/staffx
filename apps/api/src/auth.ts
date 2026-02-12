@@ -1,5 +1,6 @@
 import { createRemoteJWKSet, jwtVerify, type JWTPayload } from "jose";
 import type { FastifyRequest, FastifyReply } from "fastify";
+import { uniqueNamesGenerator, colors, animals } from "unique-names-generator";
 import { query } from "./db.js";
 
 interface Auth0Payload extends JWTPayload {
@@ -12,6 +13,7 @@ interface UserRow {
   email: string | null;
   name: string | null;
   picture: string | null;
+  handle: string;
   github_handle: string | null;
   created_at: Date;
   updated_at: Date;
@@ -23,6 +25,7 @@ export interface AuthUser {
   email: string | null;
   name: string | null;
   picture: string | null;
+  handle: string;
   githubHandle: string | null;
   createdAt: Date;
   updatedAt: Date;
@@ -41,10 +44,15 @@ function mapRow(row: UserRow): AuthUser {
     email: row.email,
     name: row.name,
     picture: row.picture,
+    handle: row.handle,
     githubHandle: row.github_handle,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
+}
+
+function generateHandle(): string {
+  return uniqueNamesGenerator({ dictionaries: [colors, animals], separator: "-" });
 }
 
 async function fetchUserProfile(
@@ -67,9 +75,13 @@ async function findOrCreateUser(domain: string, payload: Auth0Payload, token: st
 
   const profile = await fetchUserProfile(domain, token);
 
+  const isGitHub = payload.sub.startsWith("github|");
+  const handle = isGitHub && profile.nickname ? profile.nickname : generateHandle();
+  const githubHandle = isGitHub ? (profile.nickname ?? null) : null;
+
   const result = await query<UserRow>(
-    `INSERT INTO users (auth0_id, email, name, picture, github_handle, updated_at)
-     VALUES ($1, $2, $3, $4, $5, now())
+    `INSERT INTO users (auth0_id, email, name, picture, handle, github_handle, updated_at)
+     VALUES ($1, $2, $3, $4, $5, $6, now())
      ON CONFLICT (auth0_id) DO UPDATE SET
        email = EXCLUDED.email,
        name = EXCLUDED.name,
@@ -77,7 +89,7 @@ async function findOrCreateUser(domain: string, payload: Auth0Payload, token: st
        github_handle = EXCLUDED.github_handle,
        updated_at = now()
      RETURNING *`,
-    [payload.sub, profile.email ?? null, profile.name ?? null, profile.picture ?? null, profile.nickname ?? null],
+    [payload.sub, profile.email ?? null, profile.name ?? null, profile.picture ?? null, handle, githubHandle],
   );
 
   return mapRow(result.rows[0]);

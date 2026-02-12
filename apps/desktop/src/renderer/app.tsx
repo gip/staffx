@@ -42,12 +42,13 @@ export function App() {
       value={{
         isAuthenticated,
         isLoading,
+        user: null,
         login: () => window.electronAPI.auth.login(),
         logout: () => window.electronAPI.auth.logout(),
       }}
     >
       <Header />
-      <Home />
+      <Home projects={[]} />
     </AuthContext.Provider>
   );
 }
