@@ -5,9 +5,13 @@ import {
   Header,
   Home,
   ProjectPage,
+  ProjectSettingsPage,
   ThreadPage,
+  UserProfilePage,
   setNavigate,
   type AuthUser,
+  type Collaborator,
+  type UserProfile,
   type ChatMessage,
   type MatrixCell,
   type Project,
@@ -153,6 +157,48 @@ function HomeRoute({
   );
 }
 
+function ProfileRoute({ isAuthenticated }: { isAuthenticated: boolean }) {
+  const { handle } = useParams<{ handle: string }>();
+  const apiFetch = useApi();
+  const [profile, setProfile] = useState<UserProfile | null>(null);
+  const [notFound, setNotFound] = useState(false);
+
+  useEffect(() => {
+    if (!isAuthenticated || !handle) return;
+
+    setNotFound(false);
+    setProfile(null);
+
+    apiFetch(`/users/${encodeURIComponent(handle)}`)
+      .then(async (res) => {
+        if (!res.ok) {
+          setNotFound(true);
+          return;
+        }
+        setProfile(await res.json());
+      })
+      .catch(() => setNotFound(true));
+  }, [isAuthenticated, handle, apiFetch]);
+
+  if (notFound) {
+    return (
+      <main className="main">
+        <p className="status-text">User not found</p>
+      </main>
+    );
+  }
+
+  if (!profile) {
+    return (
+      <main className="main">
+        <p className="status-text">Loading…</p>
+      </main>
+    );
+  }
+
+  return <UserProfilePage profile={profile} />;
+}
+
 function ProjectRoute({ isAuthenticated }: { isAuthenticated: boolean }) {
   const { handle, project: projectName } = useParams<{ handle: string; project: string }>();
   const apiFetch = useApi();
@@ -193,6 +239,120 @@ function ProjectRoute({ isAuthenticated }: { isAuthenticated: boolean }) {
   }
 
   return <ProjectPage project={project} />;
+}
+
+function SettingsRoute({ isAuthenticated }: { isAuthenticated: boolean }) {
+  const { handle, project: projectName } = useParams<{ handle: string; project: string }>();
+  const apiFetch = useApi();
+  const [data, setData] = useState<{ accessRole: string; collaborators: Collaborator[]; projectRoles: string[] } | null>(null);
+  const [notFound, setNotFound] = useState(false);
+
+  useEffect(() => {
+    if (!isAuthenticated || !handle || !projectName) return;
+
+    apiFetch(`/projects/${encodeURIComponent(handle)}/${encodeURIComponent(projectName)}/collaborators`)
+      .then(async (res) => {
+        if (!res.ok) {
+          setNotFound(true);
+          return;
+        }
+        setData(await res.json());
+      })
+      .catch(() => setNotFound(true));
+  }, [isAuthenticated, handle, projectName, apiFetch]);
+
+  if (notFound) {
+    return (
+      <main className="main">
+        <p className="status-text">Project not found</p>
+      </main>
+    );
+  }
+
+  if (!data) {
+    return (
+      <main className="main">
+        <p className="status-text">Loading…</p>
+      </main>
+    );
+  }
+
+  return (
+    <ProjectSettingsPage
+      projectOwnerHandle={handle!}
+      projectName={projectName!}
+      accessRole={data.accessRole}
+      collaborators={data.collaborators}
+      projectRoles={data.projectRoles}
+      onSearchUsers={async (q) => {
+        const res = await apiFetch(`/users/search?q=${encodeURIComponent(q)}`);
+        if (!res.ok) return [];
+        return res.json();
+      }}
+      onAddCollaborator={async (targetHandle, role, projectRoles) => {
+        const res = await apiFetch(
+          `/projects/${encodeURIComponent(handle!)}/${encodeURIComponent(projectName!)}/collaborators`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ handle: targetHandle, role, projectRoles }),
+          },
+        );
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}));
+          return { error: body.error ?? "Failed to add collaborator" };
+        }
+      }}
+      onRemoveCollaborator={async (targetHandle) => {
+        const res = await apiFetch(
+          `/projects/${encodeURIComponent(handle!)}/${encodeURIComponent(projectName!)}/collaborators/${encodeURIComponent(targetHandle)}`,
+          { method: "DELETE" },
+        );
+        if (!res.ok && res.status !== 204) {
+          const body = await res.json().catch(() => ({}));
+          return { error: body.error ?? "Failed to remove collaborator" };
+        }
+      }}
+      onAddRole={async (name) => {
+        const res = await apiFetch(
+          `/projects/${encodeURIComponent(handle!)}/${encodeURIComponent(projectName!)}/roles`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ name }),
+          },
+        );
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}));
+          return { error: body.error ?? "Failed to add role" };
+        }
+      }}
+      onDeleteRole={async (name) => {
+        const res = await apiFetch(
+          `/projects/${encodeURIComponent(handle!)}/${encodeURIComponent(projectName!)}/roles/${encodeURIComponent(name)}`,
+          { method: "DELETE" },
+        );
+        if (!res.ok && res.status !== 204) {
+          const body = await res.json().catch(() => ({}));
+          return { error: body.error ?? "Failed to delete role" };
+        }
+      }}
+      onUpdateMemberRoles={async (targetHandle, projectRoles) => {
+        const res = await apiFetch(
+          `/projects/${encodeURIComponent(handle!)}/${encodeURIComponent(projectName!)}/collaborators/${encodeURIComponent(targetHandle)}/roles`,
+          {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ projectRoles }),
+          },
+        );
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}));
+          return { error: body.error ?? "Failed to update roles" };
+        }
+      }}
+    />
+  );
 }
 
 function ThreadRoute({ isAuthenticated }: { isAuthenticated: boolean }) {
@@ -441,6 +601,8 @@ export function App() {
       <Routes>
         <Route path="/" element={<HomeRoute projects={projects} setProjects={setProjects} />} />
         <Route path="/:handle/:project" element={<ProjectRoute isAuthenticated={isAuthenticated} />} />
+        <Route path="/:handle/:project/settings" element={<SettingsRoute isAuthenticated={isAuthenticated} />} />
+        <Route path="/:handle" element={<ProfileRoute isAuthenticated={isAuthenticated} />} />
         <Route
           path="/:handle/:project/thread/:threadId"
           element={<ThreadRoute isAuthenticated={isAuthenticated} />}

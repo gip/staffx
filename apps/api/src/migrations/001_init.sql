@@ -226,6 +226,26 @@ create table project_collaborators (
 
 create index idx_collaborators_user on project_collaborators (user_id);
 
+create table project_roles (
+  project_id  text not null references projects(id) on delete cascade,
+  name        text not null,
+  position    int not null default 0,
+  created_at  timestamptz not null default now(),
+  primary key (project_id, name)
+);
+create index idx_project_roles_order on project_roles (project_id, position);
+
+create table project_member_roles (
+  project_id  text not null,
+  user_id     uuid not null references users(id) on delete cascade,
+  role_name   text not null,
+  created_at  timestamptz not null default now(),
+  primary key (project_id, user_id, role_name),
+  foreign key (project_id, role_name) references project_roles(project_id, name) on delete cascade
+);
+create index idx_member_roles_user on project_member_roles (user_id);
+create index idx_member_roles_role on project_member_roles (project_id, role_name);
+
 -- ============================================================
 -- THREADS
 -- ============================================================
