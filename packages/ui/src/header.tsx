@@ -57,6 +57,11 @@ export function Header() {
                 <Link to="/" className="dropdown-item" onClick={() => setMenuOpen(false)}>
                   Home Page
                 </Link>
+                {user?.handle && (
+                  <Link to={`/${user.handle}`} className="dropdown-item" onClick={() => setMenuOpen(false)}>
+                    Profile
+                  </Link>
+                )}
                 <button className="dropdown-item" onClick={() => { setMenuOpen(false); logout(); }}>
                   Log Out
                 </button>

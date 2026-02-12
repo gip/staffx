@@ -134,6 +134,29 @@ async function seedSystemTemplate(
   }
 }
 
+interface ResolvedProject {
+  projectId: string;
+  accessRole: string;
+  ownerId: string;
+}
+
+async function resolveProject(
+  handle: string,
+  projectName: string,
+  viewerUserId: string,
+): Promise<ResolvedProject | null> {
+  const result = await query<{ id: string; access_role: string; owner_id: string }>(
+    `SELECT p.id, p.access_role, p.owner_id
+     FROM user_projects p
+     JOIN users u ON u.id = p.owner_id
+     WHERE u.handle = $1 AND p.name = $2 AND p.user_id = $3`,
+    [handle, projectName, viewerUserId],
+  );
+  if (result.rowCount === 0) return null;
+  const row = result.rows[0];
+  return { projectId: row.id, accessRole: row.access_role, ownerId: row.owner_id };
+}
+
 export async function projectRoutes(app: FastifyInstance) {
   app.addHook("preHandler", verifyAuth);
 
@@ -319,6 +342,21 @@ export async function projectRoutes(app: FastifyInstance) {
         );
         const createdThreads = threadResult.rows;
 
+        // Seed default project roles
+        await client.query(
+          `INSERT INTO project_roles (project_id, name, position) VALUES
+           ($1, 'Product', 0), ($1, 'Implementation', 1), ($1, 'Quality', 2),
+           ($1, 'Deployment', 3), ($1, 'All', 4)`,
+          [id],
+        );
+
+        // Assign owner the "All" role
+        await client.query(
+          `INSERT INTO project_member_roles (project_id, user_id, role_name)
+           VALUES ($1, $2, 'All')`,
+          [id, req.auth.id],
+        );
+
         const row = result.rows[0];
         const handleResult = await client.query<{ handle: string }>(
           "SELECT handle FROM users WHERE id = $1",
@@ -365,6 +403,288 @@ export async function projectRoutes(app: FastifyInstance) {
       } finally {
         client.release();
       }
+    },
+  );
+
+  // ── Collaborators ────────────────────────────────────────────
+
+  app.get<{ Params: { handle: string; projectName: string } }>(
+    "/projects/:handle/:projectName/collaborators",
+    async (req, reply) => {
+      const project = await resolveProject(req.params.handle, req.params.projectName, req.auth.id);
+      if (!project) return reply.code(404).send({ error: "Project not found" });
+
+      const [collabResult, rolesResult] = await Promise.all([
+        query<{
+          handle: string;
+          name: string | null;
+          picture: string | null;
+          role: string;
+          project_roles: string[] | null;
+        }>(
+          `SELECT u.handle, u.name, u.picture, 'Owner' AS role,
+                  ARRAY(SELECT pmr.role_name FROM project_member_roles pmr
+                        JOIN project_roles pr ON pr.project_id = pmr.project_id AND pr.name = pmr.role_name
+                        WHERE pmr.project_id = $2 AND pmr.user_id = u.id
+                        ORDER BY pr.position) AS project_roles
+           FROM users u WHERE u.id = $1
+           UNION ALL
+           SELECT u.handle, u.name, u.picture, pc.role::text AS role,
+                  ARRAY(SELECT pmr.role_name FROM project_member_roles pmr
+                        JOIN project_roles pr ON pr.project_id = pmr.project_id AND pr.name = pmr.role_name
+                        WHERE pmr.project_id = $2 AND pmr.user_id = u.id
+                        ORDER BY pr.position) AS project_roles
+           FROM project_collaborators pc
+           JOIN users u ON u.id = pc.user_id
+           WHERE pc.project_id = $2`,
+          [project.ownerId, project.projectId],
+        ),
+        query<{ name: string }>(
+          `SELECT name FROM project_roles WHERE project_id = $1 ORDER BY position`,
+          [project.projectId],
+        ),
+      ]);
+
+      return {
+        accessRole: project.accessRole,
+        projectRoles: rolesResult.rows.map((r) => r.name),
+        collaborators: collabResult.rows.map((r) => ({
+          handle: r.handle,
+          name: r.name,
+          picture: r.picture,
+          role: r.role,
+          projectRoles: r.project_roles ?? [],
+        })),
+      };
+    },
+  );
+
+  app.post<{
+    Params: { handle: string; projectName: string };
+    Body: { handle: string; role?: string; projectRoles?: string[] };
+  }>(
+    "/projects/:handle/:projectName/collaborators",
+    async (req, reply) => {
+      const project = await resolveProject(req.params.handle, req.params.projectName, req.auth.id);
+      if (!project) return reply.code(404).send({ error: "Project not found" });
+      if (project.accessRole !== "Owner") return reply.code(403).send({ error: "Only the owner can add collaborators" });
+
+      const { handle: targetHandle, role, projectRoles } = req.body;
+      if (!targetHandle) return reply.code(400).send({ error: "handle is required" });
+      if (!projectRoles || !Array.isArray(projectRoles) || projectRoles.length === 0) {
+        return reply.code(400).send({ error: "At least one project role is required" });
+      }
+
+      const collabRole = role === "Viewer" ? "Viewer" : "Editor";
+
+      const userResult = await query<{ id: string; handle: string; name: string | null; picture: string | null }>(
+        "SELECT id, handle, name, picture FROM users WHERE handle = $1",
+        [targetHandle],
+      );
+      if (userResult.rowCount === 0) return reply.code(404).send({ error: "User not found" });
+
+      const target = userResult.rows[0];
+      if (target.id === project.ownerId) return reply.code(400).send({ error: "Cannot add the owner as a collaborator" });
+
+      // Validate role names exist
+      const validRoles = await query<{ name: string }>(
+        "SELECT name FROM project_roles WHERE project_id = $1",
+        [project.projectId],
+      );
+      const validSet = new Set(validRoles.rows.map((r) => r.name));
+      for (const rn of projectRoles) {
+        if (!validSet.has(rn)) return reply.code(400).send({ error: `Invalid project role: ${rn}` });
+      }
+
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        await client.query(
+          "INSERT INTO project_collaborators (project_id, user_id, role) VALUES ($1, $2, $3::collaborator_role)",
+          [project.projectId, target.id, collabRole],
+        );
+        await client.query(
+          `INSERT INTO project_member_roles (project_id, user_id, role_name)
+           SELECT $1, $2, unnest($3::text[])`,
+          [project.projectId, target.id, projectRoles],
+        );
+        await client.query("COMMIT");
+      } catch (err: unknown) {
+        await client.query("ROLLBACK").catch(() => {});
+        if (err instanceof Error && "code" in err && (err as { code: string }).code === "23505") {
+          return reply.code(409).send({ error: "User is already a collaborator" });
+        }
+        throw err;
+      } finally {
+        client.release();
+      }
+
+      return reply.code(201).send({
+        handle: target.handle,
+        name: target.name,
+        picture: target.picture,
+        role: collabRole,
+        projectRoles,
+      });
+    },
+  );
+
+  app.delete<{ Params: { handle: string; projectName: string; collaboratorHandle: string } }>(
+    "/projects/:handle/:projectName/collaborators/:collaboratorHandle",
+    async (req, reply) => {
+      const project = await resolveProject(req.params.handle, req.params.projectName, req.auth.id);
+      if (!project) return reply.code(404).send({ error: "Project not found" });
+      if (project.accessRole !== "Owner") return reply.code(403).send({ error: "Only the owner can remove collaborators" });
+
+      const userResult = await query<{ id: string }>(
+        "SELECT id FROM users WHERE handle = $1",
+        [req.params.collaboratorHandle],
+      );
+      if (userResult.rowCount === 0) return reply.code(404).send({ error: "User not found" });
+
+      const targetId = userResult.rows[0].id;
+      await query(
+        "DELETE FROM project_member_roles WHERE project_id = $1 AND user_id = $2",
+        [project.projectId, targetId],
+      );
+      const result = await query(
+        "DELETE FROM project_collaborators WHERE project_id = $1 AND user_id = $2",
+        [project.projectId, targetId],
+      );
+      if (result.rowCount === 0) return reply.code(404).send({ error: "Not a collaborator" });
+
+      return reply.code(204).send();
+    },
+  );
+
+  // ── Project Roles ────────────────────────────────────────────
+
+  app.post<{
+    Params: { handle: string; projectName: string };
+    Body: { name: string };
+  }>(
+    "/projects/:handle/:projectName/roles",
+    async (req, reply) => {
+      const project = await resolveProject(req.params.handle, req.params.projectName, req.auth.id);
+      if (!project) return reply.code(404).send({ error: "Project not found" });
+      if (project.accessRole !== "Owner") return reply.code(403).send({ error: "Only the owner can manage roles" });
+
+      const { name } = req.body;
+      if (!name || typeof name !== "string" || !name.trim()) {
+        return reply.code(400).send({ error: "name is required" });
+      }
+
+      const maxPos = await query<{ max: number | null }>(
+        "SELECT MAX(position) AS max FROM project_roles WHERE project_id = $1",
+        [project.projectId],
+      );
+      const nextPos = (maxPos.rows[0].max ?? -1) + 1;
+
+      try {
+        await query(
+          "INSERT INTO project_roles (project_id, name, position) VALUES ($1, $2, $3)",
+          [project.projectId, name.trim(), nextPos],
+        );
+      } catch (err: unknown) {
+        if (err instanceof Error && "code" in err && (err as { code: string }).code === "23505") {
+          return reply.code(409).send({ error: "A role with this name already exists" });
+        }
+        throw err;
+      }
+
+      return reply.code(201).send({ name: name.trim(), position: nextPos });
+    },
+  );
+
+  app.delete<{ Params: { handle: string; projectName: string; roleName: string } }>(
+    "/projects/:handle/:projectName/roles/:roleName",
+    async (req, reply) => {
+      const project = await resolveProject(req.params.handle, req.params.projectName, req.auth.id);
+      if (!project) return reply.code(404).send({ error: "Project not found" });
+      if (project.accessRole !== "Owner") return reply.code(403).send({ error: "Only the owner can manage roles" });
+
+      const assignedCount = await query<{ count: string }>(
+        "SELECT COUNT(*) AS count FROM project_member_roles WHERE project_id = $1 AND role_name = $2",
+        [project.projectId, req.params.roleName],
+      );
+      if (Number(assignedCount.rows[0].count) > 0) {
+        return reply.code(409).send({ error: "Cannot delete role while users are still assigned to it" });
+      }
+
+      const result = await query(
+        "DELETE FROM project_roles WHERE project_id = $1 AND name = $2",
+        [project.projectId, req.params.roleName],
+      );
+      if (result.rowCount === 0) return reply.code(404).send({ error: "Role not found" });
+
+      return reply.code(204).send();
+    },
+  );
+
+  app.put<{
+    Params: { handle: string; projectName: string; collaboratorHandle: string };
+    Body: { projectRoles: string[] };
+  }>(
+    "/projects/:handle/:projectName/collaborators/:collaboratorHandle/roles",
+    async (req, reply) => {
+      const project = await resolveProject(req.params.handle, req.params.projectName, req.auth.id);
+      if (!project) return reply.code(404).send({ error: "Project not found" });
+      if (project.accessRole !== "Owner") return reply.code(403).send({ error: "Only the owner can manage roles" });
+
+      const { projectRoles } = req.body;
+      if (!projectRoles || !Array.isArray(projectRoles) || projectRoles.length === 0) {
+        return reply.code(400).send({ error: "At least one project role is required" });
+      }
+
+      // Resolve target user
+      const userResult = await query<{ id: string }>(
+        "SELECT id FROM users WHERE handle = $1",
+        [req.params.collaboratorHandle],
+      );
+      if (userResult.rowCount === 0) return reply.code(404).send({ error: "User not found" });
+      const targetId = userResult.rows[0].id;
+
+      // Must be owner or collaborator
+      const isOwner = targetId === project.ownerId;
+      if (!isOwner) {
+        const collabCheck = await query(
+          "SELECT 1 FROM project_collaborators WHERE project_id = $1 AND user_id = $2",
+          [project.projectId, targetId],
+        );
+        if (collabCheck.rowCount === 0) return reply.code(404).send({ error: "Not a project member" });
+      }
+
+      // Validate role names
+      const validRoles = await query<{ name: string }>(
+        "SELECT name FROM project_roles WHERE project_id = $1",
+        [project.projectId],
+      );
+      const validSet = new Set(validRoles.rows.map((r) => r.name));
+      for (const rn of projectRoles) {
+        if (!validSet.has(rn)) return reply.code(400).send({ error: `Invalid project role: ${rn}` });
+      }
+
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        await client.query(
+          "DELETE FROM project_member_roles WHERE project_id = $1 AND user_id = $2",
+          [project.projectId, targetId],
+        );
+        await client.query(
+          `INSERT INTO project_member_roles (project_id, user_id, role_name)
+           SELECT $1, $2, unnest($3::text[])`,
+          [project.projectId, targetId, projectRoles],
+        );
+        await client.query("COMMIT");
+      } catch (err) {
+        await client.query("ROLLBACK").catch(() => {});
+        throw err;
+      } finally {
+        client.release();
+      }
+
+      return { projectRoles };
     },
   );
 }

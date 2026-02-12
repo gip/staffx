@@ -1,3 +1,4 @@
+import { Settings } from "lucide-react";
 import { Link } from "./link";
 import type { Project, Thread } from "./home";
 
@@ -21,6 +22,11 @@ export function ProjectPage({ project }: ProjectPageProps) {
           <span className="page-title-muted">{project.ownerHandle} / </span>
           {project.name}
         </h2>
+        <div className="page-header-actions">
+          <Link to={`/${project.ownerHandle}/${project.name}/settings`} className="btn-icon">
+            <Settings size={16} />
+          </Link>
+        </div>
       </div>
 
       {project.description && (

@@ -4,6 +4,7 @@ import { healthRoutes } from "./routes/health.js";
 import { meRoutes } from "./routes/me.js";
 import { projectRoutes } from "./routes/projects.js";
 import { threadRoutes } from "./routes/thread.js";
+import { userRoutes } from "./routes/users.js";
 import { close } from "./db.js";
 
 const port = Number(process.env.PORT ?? 3001);
@@ -14,6 +15,7 @@ await app.register(healthRoutes);
 await app.register(meRoutes);
 await app.register(projectRoutes);
 await app.register(threadRoutes);
+await app.register(userRoutes);
 
 try {
   await app.listen({ port, host: "0.0.0.0" });

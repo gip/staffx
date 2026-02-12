@@ -15,5 +15,7 @@ export {
   type ArtifactRef,
   type ChatMessage,
 } from "./thread-page";
+export { UserProfilePage, type UserProfile, type UserProfileProject } from "./user-profile";
+export { ProjectSettingsPage, type Collaborator, type SearchResult } from "./project-settings";
 export { Link, setNavigate } from "./link";
 export { Logo } from "./logo";
