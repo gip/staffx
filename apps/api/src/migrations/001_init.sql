@@ -230,6 +230,8 @@ create type change_operation as enum ('Create', 'Update', 'Delete');
 create table threads (
   id               text primary key,
   title            text,
+  description      text,
+  project_thread_id int check (project_thread_id > 0),
   project_id       text not null references projects(id) on delete cascade,
   created_by       uuid not null references users(id),
   seed_system_id   text not null references systems(id),
@@ -241,10 +243,18 @@ create table threads (
 );
 
 create index idx_threads_project on threads (project_id);
+create unique index idx_threads_project_thread_id
+  on threads (project_id, project_thread_id)
+  where project_thread_id is not null;
 create index idx_threads_created_by on threads (created_by);
 create index idx_threads_seed on threads (seed_system_id);
 create index idx_threads_source on threads (source_thread_id) where source_thread_id is not null;
 create index idx_threads_status on threads (status);
+
+create table project_thread_counters (
+  project_id      text primary key references projects(id) on delete cascade,
+  next_thread_id  integer not null check (next_thread_id > 0)
+);
 
 -- ============================================================
 -- ACTIONS
@@ -397,16 +407,47 @@ returns text as $$
   );
 $$ language sql stable;
 
+create or replace function next_project_thread_id(p_project_id text)
+returns integer as $$
+declare
+  v_allocated_id integer;
+begin
+  insert into project_thread_counters (project_id, next_thread_id)
+  values (p_project_id, 2)
+  on conflict (project_id) do update
+    set next_thread_id = project_thread_counters.next_thread_id + 1
+  returning next_thread_id - 1 into v_allocated_id;
+
+  return v_allocated_id;
+end;
+$$ language plpgsql;
+
+create or replace function assign_project_thread_id()
+returns trigger as $$
+begin
+  if new.title is null or btrim(new.title) = '' then
+    raise exception 'Thread title is required';
+  end if;
+
+  if new.project_thread_id is null then
+    new.project_thread_id := next_project_thread_id(new.project_id);
+  end if;
+
+  return new;
+end;
+$$ language plpgsql;
+
 create or replace function create_thread(
   p_thread_id text,
   p_project_id text,
   p_created_by uuid,
   p_seed_system_id text,
-  p_title text default null
+  p_title text,
+  p_description text default null
 ) returns text as $$
 begin
-  insert into threads (id, title, project_id, created_by, seed_system_id, status)
-  values (p_thread_id, p_title, p_project_id, p_created_by, p_seed_system_id, 'open');
+  insert into threads (id, title, description, project_id, created_by, seed_system_id, status)
+  values (p_thread_id, p_title, p_description, p_project_id, p_created_by, p_seed_system_id, 'open');
 
   return p_thread_id;
 end;
@@ -417,15 +458,16 @@ create or replace function clone_thread(
   p_source_thread_id text,
   p_project_id text,
   p_created_by uuid,
-  p_title text default null
+  p_title text,
+  p_description text default null
 ) returns text as $$
 declare
   v_current_system text;
 begin
   v_current_system := thread_current_system(p_source_thread_id);
 
-  insert into threads (id, title, project_id, created_by, seed_system_id, source_thread_id, status)
-  values (p_new_thread_id, p_title, p_project_id, p_created_by, v_current_system, p_source_thread_id, 'open');
+  insert into threads (id, title, description, project_id, created_by, seed_system_id, source_thread_id, status)
+  values (p_new_thread_id, p_title, p_description, p_project_id, p_created_by, v_current_system, p_source_thread_id, 'open');
 
   return p_new_thread_id;
 end;
@@ -553,6 +595,9 @@ create trigger trg_edges_updated     before update on edges     for each row exe
 create trigger trg_artifacts_updated before update on artifacts for each row execute function set_updated_at();
 create trigger trg_projects_updated  before update on projects  for each row execute function set_updated_at();
 create trigger trg_threads_updated   before update on threads   for each row execute function set_updated_at();
+create trigger trg_threads_assign_project_thread_id
+  before insert on threads
+  for each row execute function assign_project_thread_id();
 
 -- ============================================================
 -- VIEWS

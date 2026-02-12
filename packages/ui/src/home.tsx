@@ -1,14 +1,27 @@
 import { useState, useEffect, useRef } from "react";
 import { Plus } from "lucide-react";
 import { useAuth } from "./auth-context";
+import { Link } from "./link";
+
+export interface Thread {
+  id: string;
+  title: string | null;
+  description: string | null;
+  projectThreadId: number | null;
+  status: string;
+  createdBy?: string;
+  createdAt?: string;
+  updatedAt: string;
+}
 
 export interface Project {
   id: string;
   name: string;
   description: string | null;
   accessRole: string;
+  ownerHandle: string;
   createdAt: string;
-  threads: { id: string; title: string | null; status: string; updatedAt: string }[];
+  threads: Thread[];
 }
 
 const TEMPLATES = [
@@ -171,19 +184,22 @@ export function Home({ projects, onCreateProject, onCheckProjectName }: HomeProp
       ) : (
         <div className="project-grid">
           {projects.map((p) => (
-            <div key={p.id} className="project-card">
+            <Link key={p.id} to={`/${p.ownerHandle}/${p.name}`} className="project-card">
               <div className="project-card-name">
-                {user?.githubHandle ? `${user.githubHandle} / ` : ""}{p.name}
+                {p.ownerHandle} / {p.name}
               </div>
               <span className="project-card-role">{p.accessRole}</span>
               {p.threads.length > 0 && (
                 <ul className="project-card-threads">
                   {p.threads.map((t) => (
-                    <li key={t.id}>{t.title ?? "Untitled thread"}</li>
+                    <li key={t.id}>
+                      {t.projectThreadId != null ? `#${t.projectThreadId} ` : ""}
+                      {t.title ?? "Untitled thread"}
+                    </li>
                   ))}
                 </ul>
               )}
-            </div>
+            </Link>
           ))}
         </div>
       )}

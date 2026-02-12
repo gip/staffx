@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from "react";
 import { useAuth } from "./auth-context";
 import { useTheme } from "./theme";
+import { Link } from "./link";
 
 export function Header() {
   const { isAuthenticated, isLoading, user, login, logout } = useAuth();
@@ -22,7 +23,7 @@ export function Header() {
   return (
     <header className="header">
       <div className="header-left">
-        <span className="header-logo">StaffX</span>
+        <Link to="/" className="header-logo">StaffX</Link>
       </div>
       <div className="header-right">
         <button className="btn-icon" onClick={toggle} aria-label="Toggle theme">
@@ -48,9 +49,9 @@ export function Header() {
                   {user?.email && <span className="dropdown-email">{user.email}</span>}
                 </div>
                 <div className="dropdown-divider" />
-                <button className="dropdown-item" onClick={() => { setMenuOpen(false); window.location.hash = ""; window.location.reload(); }}>
+                <Link to="/" className="dropdown-item" onClick={() => setMenuOpen(false)}>
                   Home Page
-                </button>
+                </Link>
                 <button className="dropdown-item" onClick={() => { setMenuOpen(false); logout(); }}>
                   Log Out
                 </button>

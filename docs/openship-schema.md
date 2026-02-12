@@ -107,7 +107,10 @@ A **workspace** owned by a user that groups threads together.
 
 A **conversation/editing session** within a project. Starts from a `seed_system_id` (initial snapshot) and transforms it through a sequence of actions. Can be **cloned** from another thread.
 
-- Table: `threads` — text PK
+- Table: `threads` — global text PK (`id`) plus project-scoped integer (`project_thread_id`)
+- `title`: required thread name
+- `description`: optional thread description
+- `project_thread_id`: monotonic increasing per project (gaps allowed, no reuse)
 - `seed_system_id`: the starting system snapshot
 - `source_thread_id`: if cloned, points to the origin thread
 - `status`: `'open'` or `'closed'`
