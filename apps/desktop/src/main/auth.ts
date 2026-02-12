@@ -29,6 +29,10 @@ export function getAuthState() {
   return { isAuthenticated: accessToken !== null };
 }
 
+export function getAccessToken(): string | null {
+  return accessToken;
+}
+
 function waitForAuthCode(): Promise<string> {
   return new Promise((resolve, reject) => {
     callbackServer = createServer((req, res) => {

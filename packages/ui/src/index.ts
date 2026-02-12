@@ -1,4 +1,4 @@
-export { AuthContext, useAuth, type AuthContextValue } from "./auth-context";
+export { AuthContext, useAuth, type AuthContextValue, type AuthUser } from "./auth-context";
 export { ThemeProvider, useTheme } from "./theme";
 export { Header } from "./header";
-export { Home } from "./home";
+export { Home, type Project } from "./home";

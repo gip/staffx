@@ -1,6 +1,6 @@
 import { app, BrowserWindow, ipcMain } from "electron";
 import { join } from "node:path";
-import { getAuthState, login, logout, notifyRenderer } from "./auth.js";
+import { getAccessToken, getAuthState, login, logout, notifyRenderer } from "./auth.js";
 
 let mainWindow: BrowserWindow | null = null;
 
@@ -28,6 +28,7 @@ function createWindow() {
 
 // IPC handlers
 ipcMain.handle("auth:get-state", () => getAuthState());
+ipcMain.handle("auth:get-token", () => getAccessToken());
 
 ipcMain.on("auth:login", async () => {
   const success = await login();
