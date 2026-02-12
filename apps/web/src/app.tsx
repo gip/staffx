@@ -58,7 +58,10 @@ export function App() {
           if (res.ok) {
             const project = await res.json();
             setProjects((prev) => [project, ...prev]);
+            return null;
           }
+          const body = await res.json().catch(() => null);
+          return body?.error ?? "Failed to create project";
         }}
       />
     </AuthContext.Provider>

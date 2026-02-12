@@ -79,12 +79,20 @@ export async function projectRoutes(app: FastifyInstance) {
       }
 
       const id = randomUUID();
-      const result = await query<ProjectRow>(
-        `INSERT INTO projects (id, name, description, owner_id)
-         VALUES ($1, $2, $3, $4)
-         RETURNING id, name, description, created_at`,
-        [id, name.trim(), description?.trim() || null, req.auth.id],
-      );
+      let result;
+      try {
+        result = await query<ProjectRow>(
+          `INSERT INTO projects (id, name, description, owner_id)
+           VALUES ($1, $2, $3, $4)
+           RETURNING id, name, description, created_at`,
+          [id, name.trim(), description?.trim() || null, req.auth.id],
+        );
+      } catch (err: any) {
+        if (err.code === "23505") {
+          return reply.code(409).send({ error: "A project with this name already exists" });
+        }
+        throw err;
+      }
 
       const row = result.rows[0];
       return reply.code(201).send({

@@ -91,7 +91,7 @@ export function App() {
         projects={projects}
         onCreateProject={async (data) => {
           const token = await window.electronAPI.auth.getAccessToken();
-          if (!token) return;
+          if (!token) return "Not authenticated";
           const res = await fetch(`${API_URL}/projects`, {
             method: "POST",
             headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
@@ -100,7 +100,10 @@ export function App() {
           if (res.ok) {
             const project = await res.json();
             setProjects((prev) => [project, ...prev]);
+            return null;
           }
+          const body = await res.json().catch(() => null);
+          return body?.error ?? "Failed to create project";
         }}
       />
     </AuthContext.Provider>

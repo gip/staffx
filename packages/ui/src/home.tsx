@@ -17,7 +17,7 @@ const TEMPLATES = [
 
 interface CreateModalProps {
   onClose: () => void;
-  onCreate: (data: { name: string; description: string; template: string }) => void;
+  onCreate: (data: { name: string; description: string; template: string }) => Promise<string | null>;
 }
 
 function CreateProjectModal({ onClose, onCreate }: CreateModalProps) {
@@ -25,6 +25,7 @@ function CreateProjectModal({ onClose, onCreate }: CreateModalProps) {
   const [description, setDescription] = useState("");
   const [template, setTemplate] = useState("blank");
   const [submitting, setSubmitting] = useState(false);
+  const [serverError, setServerError] = useState("");
 
   const nameTrimmed = name.trim();
   const nameValid = /^[a-zA-Z0-9]([a-zA-Z0-9_-]*[a-zA-Z0-9])?$/.test(nameTrimmed) && !/[-_]{2}/.test(nameTrimmed);
@@ -35,11 +36,16 @@ function CreateProjectModal({ onClose, onCreate }: CreateModalProps) {
       : "";
   const canSubmit = nameTrimmed.length > 0 && nameValid && name === nameTrimmed && !submitting;
 
-  function handleSubmit(e: React.FormEvent) {
+  async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!canSubmit) return;
     setSubmitting(true);
-    onCreate({ name: name.trim(), description: description.trim(), template });
+    setServerError("");
+    const error = await onCreate({ name: name.trim(), description: description.trim(), template });
+    if (error) {
+      setServerError(error);
+      setSubmitting(false);
+    }
   }
 
   return (
@@ -53,11 +59,12 @@ function CreateProjectModal({ onClose, onCreate }: CreateModalProps) {
             className={`field-input${nameError ? " field-input--error" : ""}`}
             type="text"
             value={name}
-            onChange={(e) => setName(e.target.value)}
+            onChange={(e) => { setName(e.target.value); setServerError(""); }}
             placeholder="my-project"
             autoFocus
           />
           {nameError && <span className="field-error">{nameError}</span>}
+          {serverError && <span className="field-error">{serverError}</span>}
         </label>
 
         <fieldset className="field">
@@ -106,7 +113,7 @@ function CreateProjectModal({ onClose, onCreate }: CreateModalProps) {
 
 interface HomeProps {
   projects: Project[];
-  onCreateProject?: (data: { name: string; description: string; template: string }) => Promise<void>;
+  onCreateProject?: (data: { name: string; description: string; template: string }) => Promise<string | null>;
 }
 
 export function Home({ projects, onCreateProject }: HomeProps) {
@@ -167,8 +174,9 @@ export function Home({ projects, onCreateProject }: HomeProps) {
         <CreateProjectModal
           onClose={() => setShowCreate(false)}
           onCreate={async (data) => {
-            await onCreateProject?.(data);
-            setShowCreate(false);
+            const error = await onCreateProject?.(data) ?? null;
+            if (!error) setShowCreate(false);
+            return error;
           }}
         />
       )}

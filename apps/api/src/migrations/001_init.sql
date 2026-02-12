@@ -203,7 +203,8 @@ create table projects (
   description text,
   owner_id    uuid not null references users(id),
   created_at  timestamptz not null default now(),
-  updated_at  timestamptz not null default now()
+  updated_at  timestamptz not null default now(),
+  unique (owner_id, name)
 );
 
 create index idx_projects_owner on projects (owner_id);
