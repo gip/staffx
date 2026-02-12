@@ -21,6 +21,8 @@ async function migrate() {
     drop table if exists actions cascade;
     drop table if exists threads cascade;
     drop table if exists project_thread_counters cascade;
+    drop table if exists project_member_roles cascade;
+    drop table if exists project_roles cascade;
     drop table if exists project_collaborators cascade;
     drop table if exists projects cascade;
     drop table if exists artifact_files cascade;
