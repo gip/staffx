@@ -21,9 +21,10 @@ export function Link({ to, children, onClick, ...rest }: LinkProps) {
       href={to}
       onClick={(e) => {
         if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
-        e.preventDefault();
         onClick?.(e);
-        navigateFn?.(to);
+        if (!navigateFn || e.defaultPrevented) return;
+        e.preventDefault();
+        navigateFn(to);
       }}
       {...rest}
     >
