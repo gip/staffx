@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from "react";
 import { useAuth } from "./auth-context";
 import { useTheme } from "./theme";
 import { Link } from "./link";
+import { Logo } from "./logo";
 
 export function Header() {
   const { isAuthenticated, isLoading, user, login, logout } = useAuth();
@@ -23,7 +24,10 @@ export function Header() {
   return (
     <header className="header">
       <div className="header-left">
-        <Link to="/" className="header-logo">StaffX</Link>
+        <Link to="/" className="header-logo">
+          <Logo />
+          StaffX
+        </Link>
       </div>
       <div className="header-right">
         <button className="btn-icon" onClick={toggle} aria-label="Toggle theme">

@@ -5,3 +5,4 @@ export { Home, type Project, type Thread } from "./home";
 export { ProjectPage } from "./project-page";
 export { ThreadPage } from "./thread-page";
 export { Link, setNavigate } from "./link";
+export { Logo } from "./logo";

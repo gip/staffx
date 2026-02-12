@@ -59,6 +59,9 @@ body {
 }
 
 a.header-logo {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   font-size: 16px;
   font-weight: 600;
   letter-spacing: -0.02em;
