@@ -2,6 +2,8 @@ import { createHash, randomUUID } from "node:crypto";
 import type { FastifyInstance, FastifyReply } from "fastify";
 import pool, { query } from "../db.js";
 import { verifyAuth } from "../auth.js";
+import { decryptToken, encryptToken } from "../integrations/crypto.js";
+import { getProviderClient, sourceTypeToProvider, type DocSourceType } from "../integrations/index.js";
 
 const EDIT_ROLES = new Set(["Owner", "Editor"]);
 const PLACEHOLDER_ASSISTANT_MESSAGE = "Received. I captured your request in this thread.";
@@ -53,6 +55,11 @@ interface MatrixRefRow {
   doc_title: string;
   doc_kind: "Feature" | "Spec" | "Skill";
   doc_language: string;
+  doc_source_type: DocSourceType;
+  doc_source_url: string | null;
+  doc_source_external_id: string | null;
+  doc_source_metadata: Record<string, unknown> | null;
+  doc_source_connected_user_id: string | null;
 }
 
 interface MatrixDocumentRow {
@@ -61,6 +68,11 @@ interface MatrixDocumentRow {
   title: string;
   language: string;
   text: string;
+  source_type: DocSourceType;
+  source_url: string | null;
+  source_external_id: string | null;
+  source_metadata: Record<string, unknown> | null;
+  source_connected_user_id: string | null;
 }
 
 interface ArtifactRow {
@@ -138,20 +150,45 @@ interface MatrixRefBody {
   refType: "Feature" | "Spec" | "Skill";
 }
 
+interface UserIntegrationRow {
+  status: string;
+  access_token_enc: string | null;
+  refresh_token_enc: string | null;
+  token_expires_at: Date | null;
+}
+
+type IntegrationReconnectStatus = "disconnected" | "needs_reauth";
+
+interface IntegrationMissingError extends Error {
+  code: "INTEGRATION_RECONNECT";
+  provider: "notion" | "google";
+  status: IntegrationReconnectStatus;
+}
+
 type DocKind = "Feature" | "Spec" | "Skill";
 
 interface MatrixDocumentCreateBody {
-  title: string;
   kind: DocKind;
+  sourceType: DocSourceType;
   language: string;
-  name: string;
-  description: string;
-  body: string;
+  title?: string;
   attach?: {
     nodeId: string;
     concern: string;
     refType: DocKind;
   };
+}
+
+interface MatrixDocumentCreateBodyLocal extends MatrixDocumentCreateBody {
+  sourceType: "local";
+  name: string;
+  description: string;
+  body: string;
+}
+
+interface MatrixDocumentCreateBodyRemote extends MatrixDocumentCreateBody {
+  sourceType: Exclude<DocSourceType, "local">;
+  sourceUrl: string;
 }
 
 interface MatrixDocumentReplaceBody {
@@ -160,6 +197,12 @@ interface MatrixDocumentReplaceBody {
   description?: string;
   language?: string;
   body?: string;
+}
+
+type IntegrationConnectionStatus = "connected" | "disconnected" | "expired" | "needs_reauth";
+interface IntegrationStatusResponse {
+  provider: "notion" | "google";
+  status: IntegrationConnectionStatus;
 }
 
 interface ParsedDocumentText {
@@ -191,7 +234,130 @@ function parseThreadId(threadId: string): number | null {
   return parsed;
 }
 
-function computeDocumentHash(document: Pick<MatrixDocumentCreateBody, "kind" | "title" | "language" | "body">) {
+function isConnectedProvider(provider: string): provider is "notion" | "google" {
+  return provider === "notion" || provider === "google";
+}
+
+async function markIntegrationNeedsReauth(userId: string, provider: "notion" | "google") {
+  await query(
+    `UPDATE user_integrations
+     SET status = 'needs_reauth',
+         updated_at = now()
+     WHERE user_id = $1 AND provider = $2`,
+    [userId, provider],
+  );
+}
+
+function createIntegrationError(
+  provider: "notion" | "google",
+  status: IntegrationReconnectStatus,
+): IntegrationMissingError {
+  const error = new Error(`Integration ${provider} requires reconnect`) as IntegrationMissingError;
+  error.code = "INTEGRATION_RECONNECT";
+  error.provider = provider;
+  error.status = status;
+  return error;
+}
+
+function isIntegrationMissingError(value: unknown): value is IntegrationMissingError {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    (value as { code?: string }).code === "INTEGRATION_RECONNECT"
+  );
+}
+
+async function getIntegrationAccessToken(userId: string, sourceType: Exclude<DocSourceType, "local">): Promise<string> {
+  const provider = sourceTypeToProvider(sourceType);
+  const result = await query<UserIntegrationRow>(
+    `SELECT status, access_token_enc, refresh_token_enc, token_expires_at
+     FROM user_integrations
+     WHERE user_id = $1 AND provider = $2`,
+    [userId, provider],
+  );
+
+  if (result.rowCount === 0) {
+    throw createIntegrationError(provider, "disconnected");
+  }
+
+  const row = result.rows[0];
+  if (row.status === "disconnected") {
+    throw createIntegrationError(provider, "disconnected");
+  }
+  if (row.status === "needs_reauth") {
+    throw createIntegrationError(provider, "needs_reauth");
+  }
+
+  if (!row.access_token_enc) {
+    throw createIntegrationError(provider, "needs_reauth");
+  }
+
+  const providerClient = getProviderClient(provider);
+  const isExpired = row.token_expires_at instanceof Date
+    ? row.token_expires_at.getTime() <= Date.now()
+    : false;
+
+  const existingAccessToken = decryptToken(row.access_token_enc);
+
+  if (!isExpired) {
+    return existingAccessToken;
+  }
+
+  if (!row.refresh_token_enc) {
+    await markIntegrationNeedsReauth(userId, provider);
+    throw createIntegrationError(provider, "needs_reauth");
+  }
+
+  try {
+    const refreshToken = decryptToken(row.refresh_token_enc);
+    const refresh = await providerClient.refreshAccessToken(refreshToken);
+    const nextAccessToken = refresh.accessToken;
+    const nextRefreshToken = refresh.refreshToken;
+
+    await query(
+      `UPDATE user_integrations
+       SET access_token_enc = $3,
+           refresh_token_enc = COALESCE($4, refresh_token_enc),
+           token_expires_at = $5,
+           status = 'connected',
+           updated_at = now(),
+           disconnected_at = NULL
+       WHERE user_id = $1 AND provider = $2`,
+      [
+        userId,
+        provider,
+        encryptToken(nextAccessToken),
+        nextRefreshToken ? encryptToken(nextRefreshToken) : null,
+        refresh.expiresAt,
+      ],
+    );
+
+    return nextAccessToken;
+  } catch {
+    await markIntegrationNeedsReauth(userId, provider);
+    throw createIntegrationError(provider, "needs_reauth");
+  }
+}
+
+async function fetchRemoteDocument(
+  userId: string,
+  sourceType: Exclude<DocSourceType, "local">,
+  sourceUrl: string,
+) {
+  const provider = sourceTypeToProvider(sourceType);
+  const client = getProviderClient(provider);
+  const parsed = client.parseSourceUrl(sourceUrl);
+  const accessToken = await getIntegrationAccessToken(userId, sourceType);
+
+  return client.fetchDocument(parsed.sourceUrl, accessToken);
+}
+
+function computeDocumentHash(document: {
+  kind: "Feature" | "Spec" | "Skill";
+  title: string;
+  language: string;
+  body: string;
+}) {
   const payload = [document.kind, document.title, document.language, document.body].join("\n");
   return `sha256:${createHash("sha256").update(payload, "utf8").digest("hex")}`;
 }
@@ -257,59 +423,83 @@ function buildDocumentText({ name, description, body }: { name: string; descript
 
 function normalizeMatrixDocumentCreateBody(body: unknown): MatrixDocumentCreateBody | null {
   if (!body || typeof body !== "object") return null;
-  const parsed = body as Partial<MatrixDocumentCreateBody>;
+  const parsed = body as Partial<MatrixDocumentCreateBodyRemote | MatrixDocumentCreateBodyLocal>;
 
-  if (
-    typeof parsed.title !== "string" ||
-    typeof parsed.kind !== "string" ||
-    typeof parsed.language !== "string" ||
-    typeof parsed.name !== "string" ||
-    typeof parsed.description !== "string" ||
-    typeof parsed.body !== "string"
-  ) {
+  const kind = parsed.kind;
+  const sourceType = parsed.sourceType === "notion" || parsed.sourceType === "google_doc"
+    ? parsed.sourceType
+    : "local";
+
+  if (typeof kind !== "string" || !["Feature", "Spec", "Skill"].includes(kind)) {
     return null;
   }
 
-  const title = parsed.title.trim();
-  const kind = parsed.kind;
   const language = parsed.language.trim() || "en";
-  const name = parsed.name.trim();
-  const description = parsed.description.trim();
-  const bodyText = parsed.body;
-
-  if (!title) return null;
-  if (!["Feature", "Spec", "Skill"].includes(kind)) return null;
   if (!language) return null;
-  if (!isValidDocumentName(name)) return null;
 
-  let attach: { nodeId: string; concern: string; refType: DocKind } | undefined;
-  if (parsed.attach) {
-    if (typeof parsed.attach !== "object") return null;
-    const attachParsed = parsed.attach as Partial<{ nodeId: string; concern: string; refType: string }>;
-    if (
-      typeof attachParsed.nodeId !== "string" ||
-      typeof attachParsed.concern !== "string" ||
-      typeof attachParsed.refType !== "string"
-    ) {
+  if (sourceType === "local") {
+    if (typeof parsed.title !== "string" || typeof parsed.name !== "string" || typeof parsed.description !== "string") {
       return null;
     }
-    const nodeId = attachParsed.nodeId.trim();
-    const concern = attachParsed.concern.trim();
-    const refType = attachParsed.refType;
-    if (!nodeId || !concern) return null;
-    if (!["Feature", "Spec", "Skill"].includes(refType)) return null;
-    attach = { nodeId, concern, refType: refType as DocKind };
+
+    const title = parsed.title.trim();
+    const name = parsed.name.trim();
+    const description = parsed.description.trim();
+
+    if (!title || !isValidDocumentName(name) || typeof parsed.body !== "string") {
+      return null;
+    }
+
+    return {
+      kind: kind as DocKind,
+      sourceType,
+      language,
+      title,
+      name,
+      description,
+      body: parsed.body,
+      attach: parseDocumentAttach(parsed.attach),
+    };
   }
 
+  if (typeof parsed.sourceUrl !== "string") return null;
+  const sourceUrl = parsed.sourceUrl.trim();
+  if (!sourceUrl) return null;
+
+  const title = typeof parsed.title === "string" ? parsed.title.trim() : undefined;
+
   return {
-    title,
     kind: kind as DocKind,
+    sourceType,
     language,
-    name,
-    description,
-    body: bodyText,
-    attach,
+    title: title?.length ? title : undefined,
+    sourceUrl,
+    attach: parseDocumentAttach(parsed.attach),
   };
+}
+
+function parseDocumentAttach(
+  attach: Partial<MatrixDocumentCreateBody["attach"]> | undefined,
+): { nodeId: string; concern: string; refType: DocKind } | undefined {
+  if (!attach) return undefined;
+  if (typeof attach !== "object") return undefined;
+  const parsedAttach = attach as Partial<{ nodeId: string; concern: string; refType: string }>;
+
+  if (
+    typeof parsedAttach.nodeId !== "string" ||
+    typeof parsedAttach.concern !== "string" ||
+    typeof parsedAttach.refType !== "string"
+  ) {
+    return undefined;
+  }
+
+  const nodeId = parsedAttach.nodeId.trim();
+  const concern = parsedAttach.concern.trim();
+  const refType = parsedAttach.refType;
+  if (!nodeId || !concern) return undefined;
+  if (!["Feature", "Spec", "Skill"].includes(refType)) return undefined;
+
+  return { nodeId, concern, refType: refType as DocKind };
 }
 
 function normalizeMatrixDocumentReplaceBody(body: unknown): MatrixDocumentReplaceBody | null {
@@ -496,6 +686,11 @@ async function getMatrixCell(systemId: string, nodeId: string, concern: string):
          d.title AS doc_title,
          d.kind AS doc_kind,
          d.language AS doc_language
+         , d.source_type AS doc_source_type,
+         d.source_url AS doc_source_url,
+         d.source_external_id AS doc_source_external_id,
+         d.source_metadata AS doc_source_metadata,
+         d.source_connected_user_id AS doc_source_connected_user_id
        FROM matrix_refs mr
        JOIN documents d ON d.system_id = mr.system_id AND d.hash = mr.doc_hash
        WHERE mr.system_id = $1
@@ -522,6 +717,11 @@ async function getMatrixCell(systemId: string, nodeId: string, concern: string):
       title: row.doc_title,
       kind: row.doc_kind,
       language: row.doc_language,
+      sourceType: row.doc_source_type,
+      sourceUrl: row.doc_source_url,
+      sourceExternalId: row.doc_source_external_id,
+      sourceMetadata: row.doc_source_metadata,
+      sourceConnectedUserId: row.doc_source_connected_user_id,
       refType: row.ref_type,
     })),
     artifacts: artifactsResult.rows.map((row) => ({
@@ -607,7 +807,12 @@ export async function threadRoutes(app: FastifyInstance) {
                mr.ref_type,
                d.title AS doc_title,
                d.kind AS doc_kind,
-               d.language AS doc_language
+               d.language AS doc_language,
+               d.source_type AS doc_source_type,
+               d.source_url AS doc_source_url,
+               d.source_external_id AS doc_source_external_id,
+               d.source_metadata AS doc_source_metadata,
+               d.source_connected_user_id AS doc_source_connected_user_id
              FROM matrix_refs mr
              JOIN documents d ON d.system_id = mr.system_id AND d.hash = mr.doc_hash
              WHERE mr.system_id = $1
@@ -615,7 +820,7 @@ export async function threadRoutes(app: FastifyInstance) {
             [systemId],
           ),
           query<MatrixDocumentRow>(
-            `SELECT hash, kind, title, language, text
+            `SELECT hash, kind, title, language, text, source_type, source_url, source_external_id, source_metadata, source_connected_user_id
              FROM documents
              WHERE system_id = $1
              ORDER BY kind, title, hash`,
@@ -678,6 +883,11 @@ export async function threadRoutes(app: FastifyInstance) {
           title: row.doc_title,
           kind: row.doc_kind,
           language: row.doc_language,
+          sourceType: row.doc_source_type,
+          sourceUrl: row.doc_source_url,
+          sourceExternalId: row.doc_source_external_id,
+          sourceMetadata: row.doc_source_metadata,
+          sourceConnectedUserId: row.doc_source_connected_user_id,
           refType: row.ref_type,
         });
         cellsByKey.set(key, existing);
@@ -727,6 +937,11 @@ export async function threadRoutes(app: FastifyInstance) {
             title: row.title,
             language: row.language,
             text: row.text,
+            sourceType: row.source_type,
+            sourceUrl: row.source_url,
+            sourceExternalId: row.source_external_id,
+            sourceMetadata: row.source_metadata,
+            sourceConnectedUserId: row.source_connected_user_id,
           })),
         },
         chat: {
@@ -1006,14 +1221,46 @@ export async function threadRoutes(app: FastifyInstance) {
         return reply.code(400).send({ error: "Invalid matrix document payload" });
       }
 
-      const text = buildDocumentText({
-        name: payload.name,
-        description: payload.description,
-        body: payload.body,
-      });
+      const isRemoteSource = payload.sourceType !== "local";
+      let sourceUrl: string | null = null;
+      let sourceExternalId: string | null = null;
+      let sourceMetadata: Record<string, unknown> | null = null;
+      let sourceTitle = payload.title;
+      let text: string;
+      let sourceConnectedUserId: string | null = null;
+
+      if (isRemoteSource) {
+        try {
+          const remote = await fetchRemoteDocument(req.auth.id, payload.sourceType, payload.sourceUrl);
+          sourceUrl = remote.sourceUrl;
+          sourceExternalId = remote.sourceExternalId;
+          sourceMetadata = remote.sourceMetadata;
+          sourceTitle = remote.title;
+          text = remote.text;
+          sourceConnectedUserId = req.auth.id;
+        } catch (error) {
+          if (isIntegrationMissingError(error)) {
+            return reply.code(409).send({
+              error: "Integration required",
+              provider: error.provider,
+              status: error.status,
+              code: error.code,
+            });
+          }
+          throw error;
+        }
+      } else {
+        text = buildDocumentText({
+          name: payload.name,
+          description: payload.description,
+          body: payload.body,
+        });
+      }
+
+      const title = sourceTitle ?? "Imported document";
       const hash = computeDocumentHash({
         kind: payload.kind,
-        title: payload.title,
+        title,
         language: payload.language,
         body: text,
       });
@@ -1026,9 +1273,11 @@ export async function threadRoutes(app: FastifyInstance) {
         inTransaction = true;
 
         const actionId = randomUUID();
+        const actionLabel = isRemoteSource ? "Matrix doc import" : "Matrix doc create";
+        const actionType = isRemoteSource ? "Import" : "Edit";
         const beginResult = await client.query<BeginActionRow>(
           `SELECT begin_action($1, $2, $3::action_type, $4) AS output_system_id`,
-          [context.threadId, actionId, "Edit", "Matrix doc create"],
+          [context.threadId, actionId, actionType, actionLabel],
         );
         const outputSystemId = beginResult.rows[0]?.output_system_id;
         if (!outputSystemId) {
@@ -1036,11 +1285,35 @@ export async function threadRoutes(app: FastifyInstance) {
         }
 
         const insertResult = await client.query<MatrixDocumentRow>(
-          `INSERT INTO documents (hash, system_id, kind, title, language, text)
-           VALUES ($1, $2, $3::doc_kind, $4, $5, $6)
+          `INSERT INTO documents (
+             hash,
+             system_id,
+             kind,
+             title,
+             language,
+             text,
+             source_type,
+             source_url,
+             source_external_id,
+             source_metadata,
+             source_connected_user_id
+           )
+           VALUES ($1, $2, $3::doc_kind, $4, $5, $6, $7::doc_source_type, $8, $9, $10, $11)
            ON CONFLICT (system_id, hash) DO NOTHING
-           RETURNING hash, kind, title, language, text`,
-          [hash, outputSystemId, payload.kind, payload.title, payload.language, text],
+           RETURNING hash, kind, title, language, text, source_type, source_url, source_external_id, source_metadata, source_connected_user_id`,
+          [
+            hash,
+            outputSystemId,
+            payload.kind,
+            title,
+            payload.language,
+            text,
+            payload.sourceType,
+            sourceUrl,
+            sourceExternalId,
+            sourceMetadata,
+            sourceConnectedUserId,
+          ],
         );
 
         const shouldAttach = Boolean(payload.attach);
@@ -1072,9 +1345,14 @@ export async function threadRoutes(app: FastifyInstance) {
         const nextDocument = insertResult.rows[0] ?? {
           hash,
           kind: payload.kind,
-          title: payload.title,
+          title,
           language: payload.language,
           text,
+          sourceType: payload.sourceType,
+          sourceUrl,
+          sourceExternalId,
+          sourceMetadata,
+          sourceConnectedUserId,
         };
 
         const response: { systemId: string; document: MatrixDocumentRow; cell?: MatrixCell } = {
@@ -1145,7 +1423,17 @@ export async function threadRoutes(app: FastifyInstance) {
         }
 
         const existingResult = await client.query<MatrixDocumentRow>(
-          `SELECT hash, kind, title, language, text
+          `SELECT
+             hash,
+             kind,
+             title,
+             language,
+             text,
+             source_type,
+             source_url,
+             source_external_id,
+             source_metadata,
+             source_connected_user_id
            FROM documents
            WHERE system_id = $1 AND hash = $2`,
           [outputSystemId, trimmedHash],
@@ -1157,19 +1445,28 @@ export async function threadRoutes(app: FastifyInstance) {
         }
 
         const existing = existingResult.rows[0];
-        const parsedExisting = parseDocumentText(existing.text);
+        const isRemoteDocument = existing.source_type !== "local";
+        if (isRemoteDocument && (typeof payload.body === "string" || typeof payload.name === "string" ||
+          typeof payload.description === "string")) {
+          await client.query("ROLLBACK");
+          inTransaction = false;
+          return reply.code(400).send({
+            error: "Remote documents cannot be edited as markdown. Use a new import action to refresh snapshot metadata.",
+          });
+        }
+
+        const parsedExisting = isRemoteDocument ? null : parseDocumentText(existing.text);
         const nextTitle = payload.title ?? existing.title;
         const nextLanguage = payload.language ?? existing.language;
-        const existingName = parsedExisting.name;
-        const sanitizedExistingName = existingName && isValidDocumentName(existingName) ? existingName : deriveDocumentName(nextTitle);
-        const nextName = payload.name ?? sanitizedExistingName;
-        const nextDescription = payload.description ?? parsedExisting.description;
-        const nextBody = payload.body ?? parsedExisting.body;
-        const nextText = buildDocumentText({
-          name: nextName,
-          description: nextDescription,
-          body: nextBody,
-        });
+        const nextText = isRemoteDocument
+          ? existing.text
+          : buildDocumentText({
+            name: payload.name ?? (parsedExisting?.name && isValidDocumentName(parsedExisting.name)
+              ? parsedExisting.name
+              : deriveDocumentName(nextTitle)),
+            description: payload.description ?? parsedExisting?.description ?? "",
+            body: payload.body ?? parsedExisting?.body ?? "",
+          });
         const nextHash = computeDocumentHash({
           kind: existing.kind,
           title: nextTitle,
@@ -1178,11 +1475,37 @@ export async function threadRoutes(app: FastifyInstance) {
         });
 
         const insertResult = await client.query<MatrixDocumentRow>(
-          `INSERT INTO documents (hash, system_id, kind, title, language, text, supersedes)
-           VALUES ($1, $2, $3::doc_kind, $4, $5, $6, $7)
+          `INSERT INTO documents (
+            hash,
+            system_id,
+            kind,
+            title,
+            language,
+            text,
+            source_type,
+            source_url,
+            source_external_id,
+            source_metadata,
+            source_connected_user_id,
+            supersedes
+           )
+           VALUES ($1, $2, $3::doc_kind, $4, $5, $6, $7::doc_source_type, $8, $9, $10, $11, $12)
            ON CONFLICT (system_id, hash) DO NOTHING
-           RETURNING hash, kind, title, language, text`,
-          [nextHash, outputSystemId, existing.kind, nextTitle, nextLanguage, nextText, existing.hash],
+           RETURNING hash, kind, title, language, text, source_type, source_url, source_external_id, source_metadata, source_connected_user_id`,
+          [
+            nextHash,
+            outputSystemId,
+            existing.kind,
+            nextTitle,
+            nextLanguage,
+            nextText,
+            existing.source_type,
+            existing.source_url,
+            existing.source_external_id,
+            existing.source_metadata,
+            existing.source_connected_user_id,
+            existing.hash,
+          ],
         );
 
         const updateRefsResult = await client.query<ChangedRow>(
@@ -1207,6 +1530,11 @@ export async function threadRoutes(app: FastifyInstance) {
           title: nextTitle,
           language: nextLanguage,
           text: nextText,
+          sourceType: existing.source_type,
+          sourceUrl: existing.source_url,
+          sourceExternalId: existing.source_external_id,
+          sourceMetadata: existing.source_metadata,
+          sourceConnectedUserId: existing.source_connected_user_id,
         };
 
         return {

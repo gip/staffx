@@ -1405,6 +1405,44 @@ a.project-card {
   border-color: rgba(180, 115, 0, 0.4);
 }
 
+.matrix-doc-chip--external {
+  border-style: solid;
+  background: rgba(20, 100, 255, 0.08);
+  border-color: rgba(20, 100, 255, 0.42);
+}
+
+.matrix-doc-chip-source {
+  font-size: 10px;
+  letter-spacing: 0.02em;
+  border-radius: 999px;
+  padding: 2px 7px;
+  background: rgba(0, 0, 0, 0.08);
+  color: var(--fg-muted);
+  text-transform: none;
+}
+
+.matrix-doc-chip-source--notion {
+  background: rgba(19, 128, 98, 0.14);
+}
+
+.matrix-doc-chip-source--google_doc {
+  background: rgba(66, 133, 244, 0.14);
+}
+
+.matrix-doc-open-source {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  text-decoration: none;
+  color: var(--fg);
+  font-size: 11px;
+  opacity: 0.85;
+}
+
+.matrix-doc-open-source:hover {
+  opacity: 1;
+}
+
 .matrix-doc-remove {
   border: none;
   background: transparent;
@@ -1594,7 +1632,7 @@ a.project-card {
 
 .thread-doc-picker-filters {
   display: grid;
-  grid-template-columns: 1fr 170px;
+  grid-template-columns: auto 1fr 170px;
   gap: 10px;
 }
 
@@ -1638,9 +1676,59 @@ a.project-card {
   gap: 8px;
 }
 
-.thread-doc-concern {
+.thread-doc-source {
+  display: grid;
+  gap: 10px;
+}
+
+.thread-doc-source-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  color: #a52a2a;
+}
+
+.thread-doc-source-status--note {
+  color: var(--fg-muted);
+}
+
+.thread-doc-source-status--connected {
+  color: var(--fg-muted);
+}
+
+.thread-doc-source-connect,
+.thread-doc-source-disconnect {
+  padding: 6px 10px;
+  font-size: 12px;
+}
+
+.thread-doc-source-url {
   display: grid;
   gap: 6px;
+}
+
+.thread-doc-source-url-link {
+  justify-self: start;
+}
+
+.thread-doc-concern {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  grid-column: 1;
+  min-width: 0;
+}
+
+.thread-doc-concern .field-label {
+  white-space: nowrap;
+}
+
+.thread-doc-concern .field-input {
+  margin: 0;
+  width: min(220px, 100%);
+  min-width: 140px;
 }
 
 /* Profile page */
@@ -1695,6 +1783,44 @@ a.project-card {
   font-size: 13px;
   color: var(--fg-muted);
   margin-top: 4px;
+}
+
+.profile-integrations .page-description {
+  margin-bottom: 12px;
+}
+
+.profile-integration-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.profile-integration-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-secondary);
+}
+
+.profile-integration-name {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.profile-integration-status {
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+.profile-integration-action {
+  padding: 6px 12px;
+  font-size: 12px;
+  white-space: nowrap;
 }
 
 /* Project settings / collaborators */
