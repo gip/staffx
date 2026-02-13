@@ -14,4 +14,23 @@ contextBridge.exposeInMainWorld("electronAPI", {
       return () => ipcRenderer.removeListener("auth:state-changed", handler);
     },
   },
+  agent: {
+    start: (params: { prompt: string; cwd?: string; allowedTools?: string[]; systemPrompt?: string; model?: string }) =>
+      ipcRenderer.invoke("agent:start", params) as Promise<{ threadId: string }>,
+    stop: (threadId: string) => ipcRenderer.send("agent:stop", { threadId }),
+    getStatus: (threadId: string) =>
+      ipcRenderer.invoke("agent:get-status", { threadId }) as Promise<{ status: string; sessionId: string | null } | null>,
+    onMessage: (callback: (data: { threadId: string; message: unknown }) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, data: { threadId: string; message: unknown }) =>
+        callback(data);
+      ipcRenderer.on("agent:message", handler);
+      return () => ipcRenderer.removeListener("agent:message", handler);
+    },
+    onDone: (callback: (data: { threadId: string; status: string }) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, data: { threadId: string; status: string }) =>
+        callback(data);
+      ipcRenderer.on("agent:done", handler);
+      return () => ipcRenderer.removeListener("agent:done", handler);
+    },
+  },
 });

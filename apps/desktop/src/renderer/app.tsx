@@ -35,11 +35,20 @@ interface ElectronAuthAPI {
   onStateChanged: (cb: (state: { isAuthenticated: boolean }) => void) => () => void;
 }
 
+interface ElectronAgentAPI {
+  start: (params: { prompt: string; cwd?: string; allowedTools?: string[]; systemPrompt?: string; model?: string }) => Promise<{ threadId: string }>;
+  stop: (threadId: string) => void;
+  getStatus: (threadId: string) => Promise<{ status: string; sessionId: string | null } | null>;
+  onMessage: (callback: (data: { threadId: string; message: unknown }) => void) => () => void;
+  onDone: (callback: (data: { threadId: string; status: string }) => void) => () => void;
+}
+
 declare global {
   interface Window {
     electronAPI: {
       platform: string;
       auth: ElectronAuthAPI;
+      agent: ElectronAgentAPI;
     };
   }
 }
