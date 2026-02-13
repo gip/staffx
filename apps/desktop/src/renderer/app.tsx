@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { Route, Routes, useNavigate, useParams } from "react-router-dom";
+import { Route, Routes, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
   AuthContext,
   Header,
@@ -18,6 +18,9 @@ import {
   type MatrixCell,
   type MatrixCellDoc,
   type Project,
+  type IntegrationProvider,
+  type IntegrationConnectionStatus,
+  type IntegrationStatusRecord,
   type ThreadDetail,
   type ThreadDetailPayload,
 } from "@staffx/ui";
@@ -60,6 +63,11 @@ function upsertMatrixDocument(documents: MatrixDocument[], next: MatrixDocument)
           kind: next.kind,
           language: next.language,
           text: next.text,
+          sourceType: next.sourceType,
+          sourceUrl: next.sourceUrl,
+          sourceExternalId: next.sourceExternalId,
+          sourceMetadata: next.sourceMetadata,
+          sourceConnectedUserId: next.sourceConnectedUserId,
         }
       : document,
   );
@@ -80,6 +88,11 @@ function replaceMatrixDocumentReferences(
             title: nextDoc.title,
             kind: nextDoc.kind,
             language: nextDoc.language,
+            sourceType: nextDoc.sourceType,
+            sourceUrl: nextDoc.sourceUrl,
+            sourceExternalId: nextDoc.sourceExternalId,
+            sourceMetadata: nextDoc.sourceMetadata,
+            sourceConnectedUserId: nextDoc.sourceConnectedUserId,
           }
         : doc,
     ),
@@ -130,6 +143,15 @@ function applyTopologyPositions(
 
 async function readError(res: Response, fallback: string) {
   const body = await res.json().catch(() => ({}));
+  if (typeof body.code === "string" && body.code === "INTEGRATION_RECONNECT") {
+    const provider = typeof body.provider === "string" ? body.provider : null;
+    const status = typeof body.status === "string" ? body.status : null;
+    if (provider) {
+      return `${body.error ?? "Reauthentication required"} (${provider}${
+        status ? ` - ${status}` : ""
+      })`;
+    }
+  }
   if (typeof body.error === "string" && body.error) return body.error;
   return fallback;
 }
@@ -210,8 +232,52 @@ function HomeRoute({
 function ProfileRoute({ isAuthenticated }: { isAuthenticated: boolean }) {
   const { handle } = useParams<{ handle: string }>();
   const apiFetch = useApi();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [notFound, setNotFound] = useState(false);
+  const [integrationStatuses, setIntegrationStatuses] = useState<IntegrationStatusRecord>({
+    notion: "disconnected",
+    google: "disconnected",
+  });
+
+  const refreshIntegrationStatuses = useCallback(async () => {
+    const nextStatuses: IntegrationStatusRecord = {
+      notion: "disconnected",
+      google: "disconnected",
+    };
+    await Promise.all(
+      (["notion", "google"] as IntegrationProvider[]).map(async (provider) => {
+        try {
+          const res = await apiFetch(`/integrations/${provider}/status`);
+          if (!res.ok) return;
+          const data = (await res.json()) as { status: IntegrationStatusRecord[IntegrationProvider] };
+          nextStatuses[provider] = data.status;
+        } catch {
+          // Keep disconnected fallback.
+        }
+      }),
+    );
+    setIntegrationStatuses(nextStatuses);
+  }, [apiFetch]);
+
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    void refreshIntegrationStatuses();
+  }, [isAuthenticated, refreshIntegrationStatuses]);
+
+  useEffect(() => {
+    const provider = searchParams.get("integration");
+    const status = searchParams.get("integration_status");
+    if (!provider || !status) return;
+    if (isAuthenticated) {
+      void refreshIntegrationStatuses();
+    }
+    setSearchParams((params) => {
+      params.delete("integration");
+      params.delete("integration_status");
+      return params;
+    }, { replace: true });
+  }, [isAuthenticated, refreshIntegrationStatuses, searchParams, setSearchParams]);
 
   useEffect(() => {
     if (!isAuthenticated || !handle) return;
@@ -246,7 +312,49 @@ function ProfileRoute({ isAuthenticated }: { isAuthenticated: boolean }) {
     );
   }
 
-  return <UserProfilePage profile={profile} />;
+  return (
+    <UserProfilePage
+      profile={profile}
+      integrationStatuses={integrationStatuses}
+      onConnectIntegration={async (provider, returnTo) => {
+        const targetReturnTo = returnTo || `/${encodeURIComponent(profile.handle)}`;
+        try {
+          const res = await apiFetch(
+            `/integrations/${provider}/authorize-url?returnTo=${encodeURIComponent(targetReturnTo)}`,
+          );
+          if (!res.ok) {
+            const body = await res.json().catch(() => ({}));
+            return { error: body.error ?? `Failed to connect ${provider}` };
+          }
+          const data = (await res.json()) as { url?: string };
+          if (!data.url) {
+            return { error: `Failed to retrieve ${provider} authorization URL` };
+          }
+          window.location.assign(data.url);
+          return { status: "connected" };
+        } catch {
+          return { error: `Failed to connect ${provider}` };
+        }
+      }}
+      onDisconnectIntegration={async (provider) => {
+        try {
+          const res = await apiFetch(`/integrations/${provider}/disconnect`, { method: "POST" });
+          if (!res.ok) {
+            return { error: await readError(res, `Failed to disconnect ${provider}`) };
+          }
+          const data = (await res
+            .json()
+            .catch(() => ({ status: "disconnected" as IntegrationConnectionStatus }))) as {
+            status: IntegrationConnectionStatus;
+          };
+          await refreshIntegrationStatuses();
+          return data;
+        } catch {
+          return { error: `Failed to disconnect ${provider}` };
+        }
+      }}
+    />
+  );
 }
 
 function ProjectRoute({ isAuthenticated }: { isAuthenticated: boolean }) {
@@ -442,8 +550,52 @@ function ThreadRoute({ isAuthenticated }: { isAuthenticated: boolean }) {
     threadId: string;
   }>();
   const apiFetch = useApi();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [detail, setDetail] = useState<ThreadDetailPayload | null>(null);
   const [notFound, setNotFound] = useState(false);
+  const [integrationStatuses, setIntegrationStatuses] = useState<IntegrationStatusRecord>({
+    notion: "disconnected",
+    google: "disconnected",
+  });
+
+  const refreshIntegrationStatuses = useCallback(async () => {
+    const nextStatuses: IntegrationStatusRecord = {
+      notion: "disconnected",
+      google: "disconnected",
+    };
+    await Promise.all(
+      (["notion", "google"] as IntegrationProvider[]).map(async (provider) => {
+        try {
+          const res = await apiFetch(`/integrations/${provider}/status`);
+          if (!res.ok) return;
+          const data = (await res.json()) as { status: IntegrationStatusRecord[IntegrationProvider] };
+          nextStatuses[provider] = data.status;
+        } catch {
+          // Keep fallback disconnected.
+        }
+      }),
+    );
+    setIntegrationStatuses(nextStatuses);
+  }, [apiFetch]);
+
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    void refreshIntegrationStatuses();
+  }, [isAuthenticated, refreshIntegrationStatuses]);
+
+  useEffect(() => {
+    const provider = searchParams.get("integration");
+    const status = searchParams.get("integration_status");
+    if (!provider || !status) return;
+    if (isAuthenticated) {
+      void refreshIntegrationStatuses();
+    }
+    setSearchParams((params) => {
+      params.delete("integration");
+      params.delete("integration_status");
+      return params;
+    }, { replace: true });
+  }, [isAuthenticated, refreshIntegrationStatuses, searchParams, setSearchParams]);
 
   useEffect(() => {
     if (!isAuthenticated || !handle || !projectName || !threadId) return;
@@ -483,9 +635,10 @@ function ThreadRoute({ isAuthenticated }: { isAuthenticated: boolean }) {
     );
   }
 
-  return (
+    return (
     <ThreadPage
       detail={detail}
+      integrationStatuses={integrationStatuses}
       onUpdateThread={async (payload) => {
         try {
           const res = await apiFetch(
@@ -634,6 +787,11 @@ function ThreadRoute({ isAuthenticated }: { isAuthenticated: boolean }) {
               kind: data.document.kind,
               language: data.document.language,
               refType: payload.attach.refType,
+              sourceType: data.document.sourceType,
+              sourceUrl: data.document.sourceUrl,
+              sourceExternalId: data.document.sourceExternalId,
+              sourceMetadata: data.document.sourceMetadata,
+              sourceConnectedUserId: data.document.sourceConnectedUserId,
             };
             const docs = existingCell?.docs ?? [];
             const deduped = docs.some((doc) => doc.hash === nextDoc.hash && doc.refType === nextDoc.refType)

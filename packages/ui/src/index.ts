@@ -15,6 +15,9 @@ export {
   type ArtifactRef,
   type MatrixCellDoc,
   type ChatMessage,
+  type IntegrationConnectionStatus,
+  type IntegrationProvider,
+  type IntegrationStatusRecord,
 } from "./thread-page";
 export { UserProfilePage, type UserProfile, type UserProfileProject } from "./user-profile";
 export { ProjectSettingsPage, type Collaborator, type SearchResult, type Concern } from "./project-settings";
