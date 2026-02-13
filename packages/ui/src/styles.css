@@ -1030,6 +1030,10 @@ a.project-card {
   background-clip: padding-box;
 }
 
+[data-theme="dark"] .thread-topology-node-badge {
+  color: #ffffff;
+}
+
 .thread-topology-node-badge--host {
   background: #2f71ff;
   border: 1px solid #1749cc;
@@ -1438,16 +1442,42 @@ a.project-card {
   gap: 10px;
 }
 
+.thread-chat-input-row {
+  position: relative;
+}
+
 .thread-chat-input {
   resize: vertical;
   min-height: 92px;
+  width: 100%;
+  box-sizing: border-box;
+  border-radius: 12px;
 }
 
 .thread-chat-send {
-  align-self: flex-start;
-  display: inline-flex;
+  position: absolute;
+  bottom: 10px;
+  right: 10px;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: none;
+  background: var(--accent);
+  color: var(--accent-fg);
+  display: flex;
   align-items: center;
-  gap: 6px;
+  justify-content: center;
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+
+.thread-chat-send:hover {
+  opacity: 0.85;
+}
+
+.thread-chat-send:disabled {
+  opacity: 0.3;
+  cursor: default;
 }
 
 .thread-chat-disabled {

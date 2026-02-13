@@ -1760,22 +1760,25 @@ export function ThreadPage({
         {!isChatCollapsed && (
           <div className={`thread-card-body ${detail.permissions.canChat ? "" : "thread-chat-disabled"}`}>
             <div className="thread-chat-form">
-              <textarea
-                className="field-input thread-chat-input"
-                rows={4}
-                placeholder="Ask Ideating anything"
-                value={chatInput}
-                onChange={(event) => setChatInput(event.target.value)}
-                disabled={!detail.permissions.canChat || isSendingChat}
-              />
-              <button
-                className="btn thread-chat-send"
-                type="button"
-                onClick={handleSendChat}
-                disabled={!detail.permissions.canChat || isSendingChat || !chatInput.trim()}
-              >
-                <Send size={14} /> {isSendingChat ? "Sending…" : "Send"}
-              </button>
+              <div className="thread-chat-input-row">
+                <textarea
+                  className="field-input thread-chat-input"
+                  rows={4}
+                  placeholder="Ask Ideating anything"
+                  value={chatInput}
+                  onChange={(event) => setChatInput(event.target.value)}
+                  disabled={!detail.permissions.canChat || isSendingChat}
+                />
+                <button
+                  className="thread-chat-send"
+                  type="button"
+                  onClick={handleSendChat}
+                  disabled={!detail.permissions.canChat || isSendingChat || !chatInput.trim()}
+                  aria-label="Send message"
+                >
+                  <Send size={14} />
+                </button>
+              </div>
               {!detail.permissions.canChat && (
                 <p className="thread-chat-disabled-copy">Only owners and editors can send messages.</p>
               )}
@@ -1812,8 +1815,8 @@ export function ThreadPage({
             ? matrixPanelRef.current
             : null;
         const modalContent = (
-        <div className="modal-overlay" onClick={resetDocumentModal}>
-          <div className="modal thread-doc-picker" onClick={(event) => event.stopPropagation()}>
+        <div className="modal-overlay" onMouseDown={(e) => { if (e.target === e.currentTarget) resetDocumentModal(); }}>
+          <div className="modal thread-doc-picker">
             <div className="thread-doc-picker-header">
               <h3 className="modal-title">
                 {documentModal.mode === "create"
