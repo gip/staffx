@@ -944,6 +944,15 @@ export function ThreadPage({
     [detail.matrix.concerns, visibleConcerns],
   );
 
+  const sortedMatrixNodes = useMemo(
+    () => [...detail.matrix.nodes].sort((a, b) => {
+      const aRoot = a.parentId === null ? 0 : 1;
+      const bRoot = b.parentId === null ? 0 : 1;
+      return aRoot - bRoot;
+    }),
+    [detail.matrix.nodes],
+  );
+
   const activeCell = useMemo(() => {
     if (!documentModal) return null;
     return cellsByKey.get(buildMatrixCellKey(documentModal.nodeId, documentModal.selectedConcern)) ?? null;
@@ -1581,10 +1590,13 @@ export function ThreadPage({
                   </tr>
                 </thead>
                 <tbody>
-                  {detail.matrix.nodes.map((node) => (
+                  {sortedMatrixNodes.map((node) => {
+                    const isSystemNode = node.parentId === null;
+                    const displayName = isSystemNode ? "System" : node.name;
+                    return (
                     <tr key={node.id}>
                       <th className="matrix-node-cell">
-                        <strong>{node.name}</strong>
+                        <strong>{displayName}</strong>
                         <span>{node.kind}</span>
                       </th>
                       {filteredConcerns.map((concern) => {
@@ -1682,7 +1694,7 @@ export function ThreadPage({
                                     e.stopPropagation();
                                     openMatrixCellDocumentPicker(node.id, concern.name, DOC_TYPES[0] as DocKind);
                                   }}
-                                  aria-label={`Add document to ${node.name} × ${concern.name}`}
+                                  aria-label={`Add document to ${displayName} × ${concern.name}`}
                                 >
                                   <Plus size={12} />
                                 </button>
@@ -1692,7 +1704,8 @@ export function ThreadPage({
                         );
                       })}
                     </tr>
-                  ))}
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
