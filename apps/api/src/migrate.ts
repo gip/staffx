@@ -29,6 +29,8 @@ async function migrate() {
     drop table if exists file_contents cascade;
     drop table if exists artifacts cascade;
     drop table if exists matrix_refs cascade;
+    drop table if exists user_integrations cascade;
+    drop table if exists integration_oauth_states cascade;
     drop table if exists documents cascade;
     drop table if exists edges cascade;
     drop table if exists nodes cascade;
@@ -54,6 +56,8 @@ async function migrate() {
     drop type if exists node_kind cascade;
     drop type if exists edge_type cascade;
     drop type if exists doc_kind cascade;
+    drop type if exists provider cascade;
+    drop type if exists doc_source_type cascade;
     drop type if exists ref_type cascade;
     drop type if exists artifact_type cascade;
     drop type if exists collaborator_role cascade;

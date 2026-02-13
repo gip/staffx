@@ -27,6 +27,8 @@ create type node_kind as enum ('Root', 'Host', 'Container', 'Process', 'Library'
 create type edge_type as enum ('Runtime', 'Dataflow', 'Dependency');
 create type doc_kind as enum ('Feature', 'Spec', 'Skill');
 create type ref_type as enum ('Feature', 'Spec', 'Skill');
+create type provider as enum ('notion', 'google');
+create type doc_source_type as enum ('local', 'notion', 'google_doc');
 create type artifact_type as enum ('Summary', 'Code', 'Docs');
 
 -- ============================================================
@@ -120,7 +122,12 @@ create table documents (
   kind        doc_kind not null,
   title       text not null,
   language    text not null default 'en',
+  source_type doc_source_type not null default 'local',
   text        text not null,
+  source_url text,
+  source_external_id text,
+  source_metadata jsonb,
+  source_connected_user_id uuid references users(id) on delete set null,
   supersedes  text,
   created_at  timestamptz not null default now(),
   primary key (system_id, hash)
@@ -129,6 +136,37 @@ create table documents (
 create index idx_documents_kind on documents (system_id, kind);
 create index idx_documents_supersedes on documents (system_id, supersedes)
   where supersedes is not null;
+
+create index idx_documents_source_type on documents (system_id, source_type);
+create index idx_documents_source_url on documents (source_url) where source_url is not null;
+
+create table user_integrations (
+  user_id uuid not null references users(id) on delete cascade,
+  provider provider not null,
+  provider_account_id text,
+  access_token_enc text not null,
+  refresh_token_enc text,
+  token_expires_at timestamptz,
+  status text not null default 'disconnected',
+  scope text,
+  connected_at timestamptz,
+  disconnected_at timestamptz,
+  updated_at timestamptz not null default now(),
+  primary key (user_id, provider),
+  check (status in ('connected', 'expired', 'needs_reauth', 'disconnected'))
+);
+
+create table integration_oauth_states (
+  state text primary key,
+  user_id uuid not null references users(id) on delete cascade,
+  provider provider not null,
+  return_to text not null,
+  issued_at timestamptz not null,
+  expires_at timestamptz not null
+);
+
+create index idx_user_integrations_user on user_integrations (user_id);
+create index idx_integration_oauth_states_expires_at on integration_oauth_states (expires_at);
 
 -- ============================================================
 -- MATRIX REFS (concern × node → documents)

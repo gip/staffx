@@ -4,6 +4,7 @@ import { healthRoutes } from "./routes/health.js";
 import { meRoutes } from "./routes/me.js";
 import { projectRoutes } from "./routes/projects.js";
 import { threadRoutes } from "./routes/thread.js";
+import { integrationsRoutes } from "./routes/integrations.js";
 import { userRoutes } from "./routes/users.js";
 import { close } from "./db.js";
 
@@ -15,6 +16,7 @@ await app.register(healthRoutes);
 await app.register(meRoutes);
 await app.register(projectRoutes);
 await app.register(threadRoutes);
+await app.register(integrationsRoutes);
 await app.register(userRoutes);
 
 try {

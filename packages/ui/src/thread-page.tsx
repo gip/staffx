@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import {
   ChevronDown,
   ChevronRight,
+  ExternalLink,
   Minimize2,
   Pencil,
   Plus,
@@ -25,9 +26,14 @@ import ReactFlow, {
 } from "reactflow";
 import "reactflow/dist/style.css";
 import { Link } from "./link";
+import { useAuth } from "./auth-context";
 
 type DocKind = "Feature" | "Spec" | "Skill";
 type MessageRole = "User" | "Assistant" | "System";
+type DocSourceType = "local" | "notion" | "google_doc";
+export type IntegrationProvider = "notion" | "google";
+export type IntegrationConnectionStatus = "connected" | "disconnected" | "expired" | "needs_reauth";
+export type IntegrationStatusRecord = Record<IntegrationProvider, IntegrationConnectionStatus>;
 
 export interface ThreadPermissions {
   canEdit: boolean;
@@ -57,6 +63,11 @@ export interface MatrixCellDoc {
   kind: DocKind;
   language: string;
   refType: DocKind;
+  sourceType?: DocSourceType;
+  sourceUrl?: string | null;
+  sourceExternalId?: string | null;
+  sourceMetadata?: Record<string, unknown> | null;
+  sourceConnectedUserId?: string | null;
 }
 
 export interface ArtifactRef {
@@ -79,6 +90,11 @@ export interface MatrixDocument {
   title: string;
   language: string;
   text: string;
+  sourceType?: DocSourceType;
+  sourceUrl?: string | null;
+  sourceExternalId?: string | null;
+  sourceMetadata?: Record<string, unknown> | null;
+  sourceConnectedUserId?: string | null;
 }
 
 export interface ChatMessage {
@@ -138,9 +154,11 @@ interface MatrixDocumentCreateInput {
   title: string;
   kind: DocKind;
   language: string;
-  name: string;
-  description: string;
-  body: string;
+  sourceType: DocSourceType;
+  sourceUrl?: string;
+  name?: string;
+  description?: string;
+  body?: string;
   attach?: {
     nodeId: string;
     concern: string;
@@ -202,9 +220,20 @@ interface ThreadPageProps {
   onCreateMatrixDocument?: (payload: MatrixDocumentCreateInput) => Promise<MutationResult<MatrixDocumentCreateResponse>>;
   onReplaceMatrixDocument?: (documentHash: string, payload: MatrixDocumentReplaceInput) => Promise<MutationResult<MatrixDocumentReplaceResponse>>;
   onSendChatMessage?: (payload: { content: string }) => Promise<MutationResult<{ messages: ChatMessage[] }>>;
+  integrationStatuses?: IntegrationStatusRecord;
 }
 
 const DOC_TYPES: DocKind[] = ["Feature", "Spec", "Skill"];
+const REMOTE_DOC_SOURCE_TYPES: Exclude<DocSourceType, "local">[] = ["notion", "google_doc"];
+const SOURCE_TYPE_TO_PROVIDER: Record<Exclude<DocSourceType, "local">, IntegrationProvider> = {
+  notion: "notion",
+  google_doc: "google",
+};
+const SOURCE_TYPE_LABELS: Record<DocSourceType, string> = {
+  local: "Local Markdown",
+  notion: "Notion",
+  google_doc: "Google Docs",
+};
 const DOC_KIND_TO_KEY: Record<DocKind, keyof MatrixDocGroup> = {
   Feature: "feature",
   Spec: "spec",
@@ -307,6 +336,19 @@ function getStatusLabel(status: string) {
   return status === "open" ? "Working" : status;
 }
 
+function getIntegrationStatus(
+  statuses: IntegrationStatusRecord | undefined,
+  sourceType: DocSourceType,
+): IntegrationConnectionStatus | undefined {
+  const provider = sourceType === "local" ? undefined : SOURCE_TYPE_TO_PROVIDER[sourceType];
+  if (!provider || !statuses) return undefined;
+  return statuses[provider];
+}
+
+function isIntegrationConnected(status: IntegrationConnectionStatus | undefined) {
+  return status === "connected";
+}
+
 function sortNodes(a: TopologyNode, b: TopologyNode) {
   const byName = a.name.localeCompare(b.name);
   if (byName !== 0) return byName;
@@ -391,15 +433,39 @@ function TopologyFlowNode({ data }: NodeProps<TopologyFlowNodeData>) {
               {docRows.map((row, rowIndex) => (
                 <div key={`${nodeId}-${type}-row-${rowIndex}`} className="matrix-doc-row">
                   {row.map((doc) => (
-                    <button
-                      className={`matrix-doc-chip matrix-doc-chip--${type.toLowerCase()}`}
-                      type="button"
+                    <div
+                      className={`matrix-doc-chip matrix-doc-chip--${type.toLowerCase()} ${doc.sourceType === "notion" || doc.sourceType === "google_doc" ? "matrix-doc-chip--external" : ""}`}
+                      role={data.canEdit ? "button" : undefined}
+                      tabIndex={data.canEdit ? 0 : -1}
                       key={`${nodeId}-${doc.hash}-${doc.refType}`}
-                      onClick={() => data.onEditDoc(doc, nodeId, "")}
-                      disabled={!data.canEdit}
+                      onClick={() => data.canEdit && data.onEditDoc(doc, nodeId, "")}
+                      onKeyDown={(event) => {
+                        if (!data.canEdit) return;
+                        if (event.key === "Enter" || event.key === " ") {
+                          event.preventDefault();
+                          data.onEditDoc(doc, nodeId, "");
+                        }
+                      }}
                     >
                       <span>{doc.title}</span>
-                    </button>
+                      {doc.sourceType && doc.sourceType !== "local" && (
+                        <span className={`matrix-doc-chip-source matrix-doc-chip-source--${doc.sourceType}`}>
+                          {SOURCE_TYPE_LABELS[doc.sourceType]}
+                        </span>
+                      )}
+                      {doc.sourceUrl ? (
+                        <a
+                          className="matrix-doc-open-source"
+                          href={doc.sourceUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          onClick={(event) => event.stopPropagation()}
+                        >
+                          <ExternalLink size={12} />
+                          Open source
+                        </a>
+                      ) : null}
+                    </div>
                   ))}
                 </div>
               ))}
@@ -684,6 +750,7 @@ export function ThreadPage({
   onCreateMatrixDocument,
   onReplaceMatrixDocument,
   onSendChatMessage,
+  integrationStatuses,
 }: ThreadPageProps) {
   const [isTopologyCollapsed, setIsTopologyCollapsed] = useState(false);
   const [isMatrixCollapsed, setIsMatrixCollapsed] = useState(true);
@@ -719,10 +786,13 @@ export function ThreadPage({
   const [docModalDescription, setDocModalDescription] = useState("");
   const [docModalLanguage, setDocModalLanguage] = useState("en");
   const [docModalBody, setDocModalBody] = useState("");
+  const [docModalSourceType, setDocModalSourceType] = useState<DocSourceType>("local");
+  const [docModalSourceUrl, setDocModalSourceUrl] = useState("");
   const [docModalValidationError, setDocModalValidationError] = useState("");
   const [docModalEditHash, setDocModalEditHash] = useState<string | null>(null);
   const [isDocumentModalBusy, setIsDocumentModalBusy] = useState(false);
   const [documentModalError, setDocumentModalError] = useState("");
+  const { user } = useAuth();
 
   const titleInputRef = useRef<HTMLInputElement>(null);
   const topologyPanelRef = useRef<HTMLDivElement>(null);
@@ -827,6 +897,8 @@ export function ThreadPage({
     setDocModalDescription("");
     setDocModalLanguage(DEFAULT_DOCUMENT_LANGUAGE);
     setDocModalBody("");
+    setDocModalSourceType("local");
+    setDocModalSourceUrl("");
     setDocModalValidationError("");
     setDocModalEditHash(null);
     setDocumentModalError("");
@@ -854,6 +926,8 @@ export function ThreadPage({
         setDocModalDescription("");
         setDocModalLanguage(DEFAULT_DOCUMENT_LANGUAGE);
         setDocModalBody("");
+        setDocModalSourceType("local");
+        setDocModalSourceUrl("");
       } else if (mode === "edit") {
         const existingDocument = detail.matrix.documents.find((doc) => doc.hash === editHash);
         const parsed = existingDocument ? parseDocumentText(existingDocument.text) : { name: "", description: "", body: "" };
@@ -863,12 +937,16 @@ export function ThreadPage({
         setDocModalDescription(parsed.description);
         setDocModalLanguage(existingDocument?.language ?? "en");
         setDocModalBody(parsed.body);
+        setDocModalSourceType(existingDocument?.sourceType ?? "local");
+        setDocModalSourceUrl(existingDocument?.sourceUrl ?? "");
       } else {
         setDocModalName("");
         setDocModalTitle("");
         setDocModalDescription("");
         setDocModalLanguage(DEFAULT_DOCUMENT_LANGUAGE);
         setDocModalBody("");
+        setDocModalSourceType("local");
+        setDocModalSourceUrl("");
       }
     },
     [detail.matrix.documents],
@@ -901,7 +979,7 @@ export function ThreadPage({
           nodeId,
           refType,
           concern: selectedConcern,
-          kindFilter: refType,
+          kindFilter: "All",
         },
         "browse",
       );
@@ -986,6 +1064,53 @@ export function ThreadPage({
     if (!documentModal) return null;
     return cellsByKey.get(buildMatrixCellKey(documentModal.nodeId, documentModal.selectedConcern)) ?? null;
   }, [documentModal, cellsByKey]);
+
+  const editedDocumentUsage = useMemo(() => {
+    if (!docModalEditHash) return null;
+
+    const nodeIds = new Set<string>();
+    const categories = new Set<string>();
+
+    for (const cell of detail.matrix.cells) {
+      const refTypes = new Set<DocKind>();
+      for (const doc of cell.docs) {
+        if (doc.hash === docModalEditHash) {
+          refTypes.add(doc.refType);
+        }
+      }
+      if (refTypes.size === 0) continue;
+      nodeIds.add(cell.nodeId);
+      for (const refType of refTypes) {
+        categories.add(`${cell.concern} (${refType})`);
+      }
+    }
+
+    if (nodeIds.size === 0) return null;
+
+    return {
+      nodeCount: nodeIds.size,
+      categories: Array.from(categories).sort(),
+    };
+  }, [docModalEditHash, detail.matrix.cells]);
+
+  const addDocumentModeNodeSummary = useMemo(() => {
+    if (!documentModal || documentModal.mode !== "browse") return null;
+    if (!documentModal.nodeId) return null;
+    if (!documentModal.refType) return null;
+
+    const categories = new Set<string>();
+    for (const cell of detail.matrix.cells) {
+      if (cell.nodeId !== documentModal.nodeId) continue;
+      const hasMatchingType = cell.docs.some((doc) => doc.refType === documentModal.refType);
+      if (!hasMatchingType) continue;
+      categories.add(cell.concern);
+    }
+    if (categories.size === 0) return null;
+
+    return {
+      categories: Array.from(categories).sort(),
+    };
+  }, [documentModal, detail.matrix.cells]);
 
   const availableDocs = useMemo(() => {
     if (!documentModal || documentModal.mode !== "browse") return [];
@@ -1188,29 +1313,56 @@ export function ThreadPage({
     const description = docModalDescription.trim();
     const language = DEFAULT_DOCUMENT_LANGUAGE;
     const body = docModalBody;
+    const sourceType = docModalSourceType;
+    const sourceUrl = docModalSourceUrl.trim();
+    const sourceStatus = getIntegrationStatus(integrationStatuses, sourceType);
 
-    if (!title) {
-      setDocModalValidationError("Title is required.");
+    if (!isIntegrationConnected(sourceType === "local" ? "connected" : sourceStatus)) {
+      if (sourceType !== "local") {
+        setDocModalValidationError(
+          `Connect ${SOURCE_TYPE_LABELS[sourceType]} in your profile settings to continue.`,
+        );
+        return;
+      }
+    }
+
+    if (sourceType !== "local" && !sourceUrl) {
+      setDocModalValidationError(`Paste a ${SOURCE_TYPE_LABELS[sourceType]} document URL.`);
       return;
     }
-    if (!name || !isValidDocumentName(name)) {
-      setDocModalValidationError("Name must be lower-case letters/numbers with dashes and no consecutive or edge dashes.");
-      return;
+
+    if (sourceType === "local") {
+      if (!title) {
+        setDocModalValidationError("Title is required.");
+        return;
+      }
+      if (!name || !isValidDocumentName(name)) {
+        setDocModalValidationError(
+          "Name must be lower-case letters/numbers with dashes and no consecutive or edge dashes.",
+        );
+        return;
+      }
     }
 
     const payload: MatrixDocumentCreateInput = {
       title,
       kind: documentModal.refType,
       language,
-      name,
-      description,
-      body,
+      sourceType,
       attach: {
         nodeId: documentModal.nodeId,
         concern,
         refType: documentModal.refType,
       },
     };
+    if (sourceType === "local") {
+      payload.name = name;
+      payload.description = description;
+      payload.body = body;
+    } else {
+      payload.sourceUrl = sourceUrl;
+      payload.title = title || `Imported from ${SOURCE_TYPE_LABELS[sourceType]}`;
+    }
 
     setIsDocumentModalBusy(true);
     setDocumentModalError("");
@@ -1242,25 +1394,37 @@ export function ThreadPage({
     const description = docModalDescription.trim();
     const language = docModalLanguage.trim() || "en";
     const body = docModalBody;
+    const sourceType = existing.sourceType ?? "local";
+    const sourceStatus = getIntegrationStatus(integrationStatuses, sourceType);
+    const isRemoteDocument = sourceType !== "local";
 
-    if (!title) {
+    if (isRemoteDocument && !isIntegrationConnected(sourceStatus)) {
+      setDocModalValidationError("Reconnect your source integration to edit this imported document.");
+      return;
+    }
+
+    if (!isRemoteDocument && !title) {
       setDocModalValidationError("Title is required.");
       return;
     }
-    if (!name || !isValidDocumentName(name)) {
-      setDocModalValidationError("Name must be lower-case letters/numbers with dashes and no consecutive or edge dashes.");
+    if (!isRemoteDocument && (!name || !isValidDocumentName(name))) {
+      setDocModalValidationError(
+        "Name must be lower-case letters/numbers with dashes and no consecutive or edge dashes.",
+      );
       return;
     }
 
     const parsed = parseDocumentText(existing.text);
     const next: MatrixDocumentReplaceInput = {};
     if (title !== existing.title) next.title = title;
-    const nextName = name === (parsed.name || deriveDocumentName(existing.title)) ? undefined : name;
-    if (typeof nextName === "string") next.name = nextName;
-    const nextDescription = description === (parsed.description || "") ? undefined : description;
-    if (typeof nextDescription === "string") next.description = nextDescription;
     if (language !== existing.language) next.language = language;
-    if (body !== parsed.body) next.body = body;
+    if (!isRemoteDocument) {
+      const nextName = name === (parsed.name || deriveDocumentName(existing.title)) ? undefined : name;
+      if (typeof nextName === "string") next.name = nextName;
+      const nextDescription = description === (parsed.description || "") ? undefined : description;
+      if (typeof nextDescription === "string") next.description = nextDescription;
+      if (body !== parsed.body) next.body = body;
+    }
 
     if (Object.keys(next).length === 0) {
       setDocModalValidationError("No changes to save.");
@@ -1379,6 +1543,34 @@ export function ThreadPage({
       : isMatrixFullscreen
         ? matrixPanelRef.current
         : null;
+    const isCreateMode = documentModal.mode === "create";
+    const isEditMode = documentModal.mode === "edit";
+    const editingDocument = isEditMode
+      ? detail.matrix.documents.find((doc) => doc.hash === docModalEditHash)
+      : null;
+    const activeSourceType = isEditMode ? (editingDocument?.sourceType ?? "local") : docModalSourceType;
+    const activeSourceStatus = getIntegrationStatus(integrationStatuses, activeSourceType);
+    const isRemoteSource = activeSourceType !== "local";
+    const sourceConnected = isIntegrationConnected(activeSourceType === "local" ? "connected" : activeSourceStatus);
+    const notionConnected = isIntegrationConnected(getIntegrationStatus(integrationStatuses, "notion"));
+    const googleConnected = isIntegrationConnected(getIntegrationStatus(integrationStatuses, "google_doc"));
+    const hasDisconnectedRemote = !notionConnected || !googleConnected;
+    const availableSourceTypes = (() => {
+      const sourceTypes: DocSourceType[] = ["local"];
+      for (const sourceType of REMOTE_DOC_SOURCE_TYPES) {
+        if (
+          isIntegrationConnected(getIntegrationStatus(integrationStatuses, sourceType)) ||
+          sourceType === activeSourceType
+        ) {
+          sourceTypes.push(sourceType);
+        }
+      }
+      return sourceTypes;
+    })();
+    const showMarkdownFields = activeSourceType === "local";
+    const isSaveDisabled =
+      isDocumentModalBusy ||
+      (isRemoteSource && !sourceConnected && (documentModal.mode === "create" || documentModal.mode === "edit"));
     const modalContent = (
       <div className="modal-overlay" onMouseDown={(e) => { if (e.target === e.currentTarget) resetDocumentModal(); }}>
         <div className="modal thread-doc-picker">
@@ -1399,42 +1591,52 @@ export function ThreadPage({
               <X size={16} />
             </button>
           </div>
-          <p className="thread-doc-picker-context">
-            Node: <strong>{documentModal.nodeId || "selected node"}</strong> · Concern:{" "}
-            <strong>{documentModal.selectedConcern || "Select concern"}</strong>
-          </p>
-          {documentModal.source === "topology-node" && detail.matrix.concerns.length > 0 && (
-            <div className="thread-doc-concern">
-              <label className="field-label">Concern</label>
-              <select
-                className="field-input"
-                value={documentModal.selectedConcern}
-                onChange={(event) => {
-                  const nextConcern = event.target.value;
-                  setDocumentModal((current) =>
-                    current
-                      ? {
-                          ...current,
-                          concern: nextConcern,
-                          selectedConcern: nextConcern,
-                        }
-                      : current,
-                  );
-                }}
-              >
-                <option value="">Select a concern</option>
-                {detail.matrix.concerns.map((concern) => (
-                  <option key={concern.name} value={concern.name}>
-                    {concern.name}
-                  </option>
-                ))}
-              </select>
-            </div>
-          )}
-
+          {(isEditMode && editedDocumentUsage) || (documentModal.mode === "browse" && addDocumentModeNodeSummary) ? (
+            <p className="thread-doc-picker-context">
+              {isEditMode && editedDocumentUsage ? (
+                <>
+                  This document is used by {editedDocumentUsage.nodeCount} {editedDocumentUsage.nodeCount === 1 ? "node" : "nodes"} in the
+                  following categories: <strong>{editedDocumentUsage.categories.join(", ")}</strong>.
+                </>
+              ) : (
+                <>
+                  This node already has existing {documentModal.refType} docs in the following categories:{" "}
+                  <strong>{addDocumentModeNodeSummary?.categories.join(", ")}</strong>.
+                </>
+              )}
+            </p>
+          ) : null}
           {documentModal.mode === "browse" ? (
             <>
               <div className="thread-doc-picker-filters">
+                {documentModal.source === "topology-node" && detail.matrix.concerns.length > 0 && (
+                  <div className="thread-doc-concern">
+                    <label className="field-label">Concern</label>
+                    <select
+                      className="field-input"
+                      value={documentModal.selectedConcern}
+                      onChange={(event) => {
+                        const nextConcern = event.target.value;
+                        setDocumentModal((current) =>
+                          current
+                            ? {
+                                ...current,
+                                concern: nextConcern,
+                                selectedConcern: nextConcern,
+                              }
+                            : current,
+                        );
+                      }}
+                    >
+                      <option value="">Select a concern</option>
+                      {detail.matrix.concerns.map((concern) => (
+                        <option key={concern.name} value={concern.name}>
+                          {concern.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
                 <input
                   className="field-input"
                   value={docPickerSearch}
@@ -1506,19 +1708,97 @@ export function ThreadPage({
             </>
           ) : (
             <>
-              <div className="thread-doc-form-fields">
+              <div className="thread-doc-source">
                 <div className="field">
-                  <label className="field-label">Name</label>
-                  <input
+                  <label className="field-label">Source</label>
+                  <select
                     className="field-input"
-                    value={docModalName}
+                    value={activeSourceType}
                     onChange={(event) => {
-                      setDocModalName(event.target.value);
-                      setDocModalValidationError("");
+                      if (!isEditMode) {
+                        const nextSourceType = event.target.value as DocSourceType;
+                        setDocModalSourceType(nextSourceType);
+                        setDocModalSourceUrl("");
+                      }
                     }}
-                    placeholder="e.g. login-sso-spec"
-                  />
+                    disabled={isEditMode}
+                  >
+                    {availableSourceTypes.map((sourceType) => (
+                      <option key={sourceType} value={sourceType}>
+                        {SOURCE_TYPE_LABELS[sourceType]}
+                      </option>
+                    ))}
+                  </select>
                 </div>
+                {isRemoteSource && !sourceConnected ? (
+                  <div className="thread-doc-source-status">
+                    <span>{SOURCE_TYPE_LABELS[activeSourceType]} source is not connected.</span>
+                    <span>
+                      You can connect Notion and Google in your{" "}
+                      <Link to={user?.handle ? `/${user.handle}` : "/"}>
+                        profile settings
+                      </Link>
+                      .
+                    </span>
+                  </div>
+                ) : null}
+                {!isRemoteSource && hasDisconnectedRemote ? (
+                  <div className="thread-doc-source-status thread-doc-source-status--note">
+                    <span>
+                      You can connect Notion and Google in your{" "}
+                      <Link to={user?.handle ? `/${user.handle}` : "/"}>
+                        profile settings
+                      </Link>
+                      .
+                    </span>
+                  </div>
+                ) : null}
+
+                {isRemoteSource && sourceConnected ? (
+                  <div className="thread-doc-source-status thread-doc-source-status--connected">
+                    <span>{SOURCE_TYPE_LABELS[activeSourceType]} is connected.</span>
+                  </div>
+                ) : null}
+              </div>
+
+              {isRemoteSource ? (
+                <div className="field">
+                  <label className="field-label">Source URL</label>
+                  {isCreateMode ? (
+                    <input
+                      className="field-input"
+                      value={docModalSourceUrl}
+                      onChange={(event) => {
+                        setDocModalSourceUrl(event.target.value);
+                        setDocModalValidationError("");
+                      }}
+                      placeholder={`Paste a ${SOURCE_TYPE_LABELS[activeSourceType]} URL`}
+                    />
+                  ) : (
+                    <div className="thread-doc-source-url">
+                      <input
+                        className="field-input"
+                        value={editingDocument?.sourceUrl ?? docModalSourceUrl}
+                        readOnly
+                        aria-readonly
+                      />
+                      {editingDocument?.sourceUrl ? (
+                        <a
+                          className="matrix-doc-open-source thread-doc-source-url-link"
+                          href={editingDocument.sourceUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                        >
+                          <ExternalLink size={12} />
+                          Open source
+                        </a>
+                      ) : null}
+                    </div>
+                  )}
+                </div>
+              ) : null}
+
+              <div className="thread-doc-form-fields">
                 <div className="field">
                   <label className="field-label">Title</label>
                   <input
@@ -1530,56 +1810,83 @@ export function ThreadPage({
                     }}
                   />
                 </div>
-                <div className="field">
-                  <label className="field-label">Description</label>
-                  <textarea
-                    className="field-input field-textarea md-textarea"
-                    rows={3}
-                    value={docModalDescription}
-                    onChange={(event) => {
-                      setDocModalDescription(event.target.value);
-                      setDocModalValidationError("");
-                    }}
-                  />
-                </div>
-                <div className="thread-doc-form-markdown">
-                  <div className="md-tabs">
-                    <button
-                      type="button"
-                      className={`md-tab${docModalMarkdownTab === "write" ? " md-tab--active" : ""}`}
-                      onClick={() => setDocModalMarkdownTab("write")}
-                    >
-                      Edit
-                    </button>
-                    <button
-                      type="button"
-                      className={`md-tab${docModalMarkdownTab === "preview" ? " md-tab--active" : ""}`}
-                      onClick={() => setDocModalMarkdownTab("preview")}
-                    >
-                      View
-                    </button>
-                  </div>
-                  {docModalMarkdownTab === "write" ? (
-                    <textarea
-                      className="field-input field-textarea md-textarea"
-                      rows={8}
-                      value={docModalBody}
-                      onChange={(event) => setDocModalBody(event.target.value)}
-                      placeholder="Write document markdown"
-                    />
-                  ) : (
-                    <div className="md-preview">
-                      {docModalBody.trim() ? (
-                        <div
-                          className="md-body"
-                          dangerouslySetInnerHTML={{ __html: renderMarkdown(docModalBody) }}
+                {showMarkdownFields ? (
+                  <>
+                    <div className="field">
+                      <label className="field-label">Name</label>
+                      <input
+                        className="field-input"
+                        value={docModalName}
+                        onChange={(event) => {
+                          setDocModalName(event.target.value);
+                          setDocModalValidationError("");
+                        }}
+                        placeholder="e.g. login-sso-spec"
+                      />
+                    </div>
+                    <div className="field">
+                      <label className="field-label">Description</label>
+                      <textarea
+                        className="field-input field-textarea md-textarea"
+                        rows={3}
+                        value={docModalDescription}
+                        onChange={(event) => {
+                          setDocModalDescription(event.target.value);
+                          setDocModalValidationError("");
+                        }}
+                      />
+                    </div>
+                    <div className="field">
+                      <label className="field-label">Language</label>
+                      <input
+                        className="field-input"
+                        value={docModalLanguage}
+                        onChange={(event) => {
+                          setDocModalLanguage(event.target.value);
+                          setDocModalValidationError("");
+                        }}
+                      />
+                    </div>
+                    <div className="thread-doc-form-markdown">
+                      <div className="md-tabs">
+                        <button
+                          type="button"
+                          className={`md-tab${docModalMarkdownTab === "write" ? " md-tab--active" : ""}`}
+                          onClick={() => setDocModalMarkdownTab("write")}
+                        >
+                          Edit
+                        </button>
+                        <button
+                          type="button"
+                          className={`md-tab${docModalMarkdownTab === "preview" ? " md-tab--active" : ""}`}
+                          onClick={() => setDocModalMarkdownTab("preview")}
+                        >
+                          View
+                        </button>
+                      </div>
+                      {docModalMarkdownTab === "write" ? (
+                        <textarea
+                          className="field-input field-textarea md-textarea"
+                          rows={8}
+                          value={docModalBody}
+                          onChange={(event) => setDocModalBody(event.target.value)}
+                          placeholder="Write document markdown"
                         />
                       ) : (
-                        <p className="thread-description-text">Nothing to preview</p>
+                        <div className="md-preview">
+                          {docModalBody.trim() ? (
+                            <div
+                              className="md-body"
+                              dangerouslySetInnerHTML={{ __html: renderMarkdown(docModalBody) }}
+                            />
+                          ) : (
+                            <p className="thread-description-text">Nothing to preview</p>
+                          )}
+                        </div>
                       )}
                     </div>
-                  )}
-                </div>
+                  </>
+                ) : null}
               </div>
               <div className="thread-inline-actions">
                 <button
@@ -1599,7 +1906,7 @@ export function ThreadPage({
                   className="btn"
                   type="button"
                   onClick={documentModal.mode === "create" ? handleCreateAndAttachDocument : handleReplaceDocument}
-                  disabled={isDocumentModalBusy}
+                  disabled={isSaveDisabled}
                 >
                   {isDocumentModalBusy
                     ? "Saving..."
@@ -1929,9 +2236,9 @@ export function ThreadPage({
                                         return (
                                           <div
                                             key={`${doc.hash}:${doc.refType}`}
-                                            className={`matrix-doc-chip matrix-doc-chip--${doc.refType.toLowerCase()}`}
-                                            role="button"
-                                            tabIndex={0}
+                                            className={`matrix-doc-chip matrix-doc-chip--${doc.refType.toLowerCase()} ${doc.sourceType === "notion" || doc.sourceType === "google_doc" ? "matrix-doc-chip--external" : ""}`}
+                                            role={detail.permissions.canEdit ? "button" : undefined}
+                                            tabIndex={detail.permissions.canEdit ? 0 : -1}
                                             onClick={() => {
                                               if (detail.permissions.canEdit) {
                                                 openEditDocumentModal(doc, node.id, concern.name);
@@ -1947,6 +2254,23 @@ export function ThreadPage({
                                             }}
                                           >
                                             <span>{doc.title}</span>
+                                            {doc.sourceType && doc.sourceType !== "local" && (
+                                              <span className={`matrix-doc-chip-source matrix-doc-chip-source--${doc.sourceType}`}>
+                                                {SOURCE_TYPE_LABELS[doc.sourceType]}
+                                              </span>
+                                            )}
+                                            {doc.sourceUrl ? (
+                                              <a
+                                                className="matrix-doc-open-source"
+                                                href={doc.sourceUrl}
+                                                target="_blank"
+                                                rel="noreferrer"
+                                                onClick={(event) => event.stopPropagation()}
+                                              >
+                                                <ExternalLink size={12} />
+                                                Open source
+                                              </a>
+                                            ) : null}
                                             {detail.permissions.canEdit && (
                                               <button
                                                 className="matrix-doc-remove"
