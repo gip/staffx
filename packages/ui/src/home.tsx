@@ -85,7 +85,7 @@ function CreateProjectModal({ onClose, onCreate, onCheckName }: CreateModalProps
   return (
     <div className="modal-overlay" onClick={onClose}>
       <form className="modal" onClick={(e) => e.stopPropagation()} onSubmit={handleSubmit}>
-        <h3 className="modal-title">New Project</h3>
+        <h3 className="modal-title">Project Creation</h3>
 
         <label className="field">
           <span className="field-label">Name</span>

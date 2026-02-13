@@ -51,12 +51,11 @@ A **cross-cutting dimension** of the system (e.g. "Authentication", "Logging", "
 
 ### Document
 
-A **content-addressed input document**, deduplicated by hash. Three kinds:
+A **content-addressed input document**, deduplicated by hash. Two kinds:
 
 | Kind | Purpose |
 |------|---------|
-| `Feature` | What the system should do |
-| `Spec` | How it should work |
+| `Document` | General docs, requirements, and design notes |
 | `Skill` | Domain knowledge / capability |
 
 - Table: `documents` — composite PK `(system_id, hash)`
@@ -65,11 +64,11 @@ A **content-addressed input document**, deduplicated by hash. Three kinds:
 
 ### Concern Matrix (`matrix_refs`)
 
-The **node x concern grid**. Each cell links to documents by ref type. For example, node "Auth Service" + concern "Security" might reference a Feature doc, a Spec doc, and a Skill doc.
+The **node x concern grid**. Each cell links to documents by ref type. For example, node "Auth Service" + concern "Security" might reference a Document doc and a Skill doc.
 
 - Table: `matrix_refs` — composite PK `(system_id, node_id, concern, ref_type, doc_hash)`
-- `ref_type` mirrors `doc_kind`: `Feature`, `Spec`, `Skill`
-- Materialized view `matrix_view` pivots refs into `feature_refs`, `spec_refs`, `skill_refs` jsonb arrays per cell
+- `ref_type` mirrors `doc_kind`: `Document`, `Skill`
+- Materialized view `matrix_view` pivots refs into `document_refs`, `skill_refs` jsonb arrays per cell
 
 ### Artifact
 
@@ -190,7 +189,7 @@ Project
 
 | View | Purpose |
 |------|---------|
-| `matrix_view` (materialized) | Pivoted concern matrix with feature/spec/skill ref arrays |
+| `matrix_view` (materialized) | Pivoted concern matrix with document/skill ref arrays |
 | `artifact_files_view` | Artifacts joined with file contents |
 | `node_overview` | Node stats: children, edges, refs, artifacts |
 | `user_projects` | Projects accessible to each user with role |

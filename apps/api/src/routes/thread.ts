@@ -51,9 +51,9 @@ interface MatrixRefRow {
   node_id: string;
   concern: string;
   doc_hash: string;
-  ref_type: "Feature" | "Spec" | "Skill";
+  ref_type: "Document" | "Skill";
   doc_title: string;
-  doc_kind: "Feature" | "Spec" | "Skill";
+  doc_kind: "Document" | "Skill";
   doc_language: string;
   doc_source_type: DocSourceType;
   doc_source_url: string | null;
@@ -64,7 +64,7 @@ interface MatrixRefRow {
 
 interface MatrixDocumentRow {
   hash: string;
-  kind: "Feature" | "Spec" | "Skill";
+  kind: "Document" | "Skill";
   title: string;
   language: string;
   text: string;
@@ -124,9 +124,9 @@ interface ThreadContext {
 interface MatrixDoc {
   hash: string;
   title: string;
-  kind: "Feature" | "Spec" | "Skill";
+  kind: "Document" | "Skill";
   language: string;
-  refType: "Feature" | "Spec" | "Skill";
+  refType: "Document" | "Skill";
 }
 
 interface ArtifactRef {
@@ -145,9 +145,10 @@ interface MatrixCell {
 
 interface MatrixRefBody {
   nodeId: string;
-  concern: string;
+  concern?: string;
+  concerns?: string[];
   docHash: string;
-  refType: "Feature" | "Spec" | "Skill";
+  refType: "Document" | "Skill";
 }
 
 interface UserIntegrationRow {
@@ -165,7 +166,7 @@ interface IntegrationMissingError extends Error {
   status: IntegrationReconnectStatus;
 }
 
-type DocKind = "Feature" | "Spec" | "Skill";
+type DocKind = "Document" | "Skill";
 
 interface MatrixDocumentCreateBody {
   kind: DocKind;
@@ -174,7 +175,8 @@ interface MatrixDocumentCreateBody {
   title?: string;
   attach?: {
     nodeId: string;
-    concern: string;
+    concerns?: string[];
+    concern?: string;
     refType: DocKind;
   };
 }
@@ -353,7 +355,7 @@ async function fetchRemoteDocument(
 }
 
 function computeDocumentHash(document: {
-  kind: "Feature" | "Spec" | "Skill";
+  kind: DocKind;
   title: string;
   language: string;
   body: string;
@@ -430,7 +432,7 @@ function normalizeMatrixDocumentCreateBody(body: unknown): MatrixDocumentCreateB
     ? parsed.sourceType
     : "local";
 
-  if (typeof kind !== "string" || !["Feature", "Spec", "Skill"].includes(kind)) {
+  if (typeof kind !== "string" || !isDocumentKind(kind)) {
     return null;
   }
 
@@ -478,28 +480,56 @@ function normalizeMatrixDocumentCreateBody(body: unknown): MatrixDocumentCreateB
   };
 }
 
+function parseConcernList(raw: unknown): string[] | null {
+  if (!Array.isArray(raw)) return null;
+  const concerns: string[] = [];
+  const seen = new Set<string>();
+
+  for (const concern of raw) {
+    if (typeof concern !== "string") return null;
+    const nextConcern = concern.trim();
+    if (!nextConcern || seen.has(nextConcern)) continue;
+    seen.add(nextConcern);
+    concerns.push(nextConcern);
+  }
+
+  return concerns.length > 0 ? concerns : null;
+}
+
+function isDocumentKind(value: string): value is DocKind {
+  return value === "Document" || value === "Skill";
+}
+
 function parseDocumentAttach(
   attach: Partial<MatrixDocumentCreateBody["attach"]> | undefined,
-): { nodeId: string; concern: string; refType: DocKind } | undefined {
+): { nodeId: string; concern: string; concerns: string[]; refType: DocKind } | undefined {
   if (!attach) return undefined;
   if (typeof attach !== "object") return undefined;
-  const parsedAttach = attach as Partial<{ nodeId: string; concern: string; refType: string }>;
+  const parsedAttach = attach as Partial<{
+    nodeId: string;
+    concerns: string[];
+    concern: string;
+    refType: string;
+  }>;
 
-  if (
-    typeof parsedAttach.nodeId !== "string" ||
-    typeof parsedAttach.concern !== "string" ||
-    typeof parsedAttach.refType !== "string"
-  ) {
+  if (typeof parsedAttach.nodeId !== "string" || typeof parsedAttach.refType !== "string") {
     return undefined;
   }
 
   const nodeId = parsedAttach.nodeId.trim();
-  const concern = parsedAttach.concern.trim();
   const refType = parsedAttach.refType;
-  if (!nodeId || !concern) return undefined;
-  if (!["Feature", "Spec", "Skill"].includes(refType)) return undefined;
+  const concern = typeof parsedAttach.concern === "string" ? parsedAttach.concern.trim() : "";
+  const concernsFromList = parseConcernList(parsedAttach.concerns);
+  const concerns = concernsFromList?.length
+    ? concernsFromList
+    : concern
+      ? [concern]
+      : null;
 
-  return { nodeId, concern, refType: refType as DocKind };
+  if (!nodeId || !concerns) return undefined;
+  if (!isDocumentKind(refType)) return undefined;
+
+  return { nodeId, concern: concerns[0], concerns, refType: refType as DocKind };
 }
 
 function normalizeMatrixDocumentReplaceBody(body: unknown): MatrixDocumentReplaceBody | null {
@@ -614,13 +644,12 @@ function matrixCellKey(nodeId: string, concern: string) {
 
 function normalizeMatrixMutationBody(
   body: unknown,
-): { nodeId: string; concern: string; docHash: string; refType: "Feature" | "Spec" | "Skill" } | null {
+): { nodeId: string; concerns: string[]; concern: string; docHash: string; refType: DocKind } | null {
   if (!body || typeof body !== "object") return null;
   const parsed = body as Partial<MatrixRefBody>;
 
   if (
     typeof parsed.nodeId !== "string" ||
-    typeof parsed.concern !== "string" ||
     typeof parsed.docHash !== "string" ||
     typeof parsed.refType !== "string"
   ) {
@@ -628,14 +657,20 @@ function normalizeMatrixMutationBody(
   }
 
   const nodeId = parsed.nodeId.trim();
-  const concern = parsed.concern.trim();
   const docHash = parsed.docHash.trim();
   const refType = parsed.refType;
+  const concern = typeof parsed.concern === "string" ? parsed.concern.trim() : "";
+  const concernsFromList = parseConcernList(parsed.concerns);
+  const concerns = concernsFromList?.length
+    ? concernsFromList
+    : concern
+      ? [concern]
+      : null;
 
-  if (!nodeId || !concern || !docHash) return null;
-  if (refType !== "Feature" && refType !== "Spec" && refType !== "Skill") return null;
+  if (!nodeId || !concerns || !docHash) return null;
+  if (!isDocumentKind(refType)) return null;
 
-  return { nodeId, concern, docHash, refType };
+  return { nodeId, concern: concerns[0], concerns, docHash, refType };
 }
 
 function normalizeTopologyLayoutBody(
@@ -731,6 +766,22 @@ async function getMatrixCell(systemId: string, nodeId: string, concern: string):
       text: row.text,
     })),
   };
+}
+
+async function getMatrixCells(systemId: string, nodeId: string, concerns: string[]): Promise<MatrixCell[]> {
+  if (concerns.length === 0) return [];
+  const normalizedConcerns = Array.from(new Set(concerns.map((concern) => concern.trim()).filter(Boolean)));
+  if (normalizedConcerns.length === 0) return [];
+
+  const cells = await Promise.all(
+    normalizedConcerns.map((concern) => getMatrixCell(systemId, nodeId, concern)),
+  );
+
+  const byConcern = new Map<string, MatrixCell>();
+  for (const cell of cells) {
+    byConcern.set(cell.concern, cell);
+  }
+  return normalizedConcerns.map((concern) => byConcern.get(concern)).filter(Boolean) as MatrixCell[];
 }
 
 async function requireContext(
@@ -1143,6 +1194,7 @@ export async function threadRoutes(app: FastifyInstance) {
 
       const client = await pool.connect();
       let inTransaction = false;
+      const concerns = payload.concerns;
 
       try {
         await client.query("BEGIN");
@@ -1159,15 +1211,19 @@ export async function threadRoutes(app: FastifyInstance) {
           throw new Error("Failed to create action output system");
         }
 
-        const insertResult = await client.query<ChangedRow>(
-          `INSERT INTO matrix_refs (system_id, node_id, concern, ref_type, doc_hash)
-           VALUES ($1, $2, $3, $4::ref_type, $5)
-           ON CONFLICT DO NOTHING
-           RETURNING 1 AS changed`,
-          [outputSystemId, payload.nodeId, payload.concern, payload.refType, payload.docHash],
-        );
+        let changed = 0;
+        for (const concern of concerns) {
+          const insertResult = await client.query<ChangedRow>(
+            `INSERT INTO matrix_refs (system_id, node_id, concern, ref_type, doc_hash)
+             VALUES ($1, $2, $3, $4::ref_type, $5)
+             ON CONFLICT DO NOTHING
+             RETURNING 1 AS changed`,
+            [outputSystemId, payload.nodeId, concern, payload.refType, payload.docHash],
+          );
+          changed += insertResult.rowCount ?? 0;
+        }
 
-        if (insertResult.rowCount === 0) {
+        if (changed === 0) {
           await client.query("SELECT commit_action_empty($1, $2)", [context.threadId, actionId]);
         }
 
@@ -1199,9 +1255,12 @@ export async function threadRoutes(app: FastifyInstance) {
       if (!systemId) {
         return reply.code(500).send({ error: "Unable to resolve thread system" });
       }
+      const cells = await getMatrixCells(systemId, payload.nodeId, payload.concerns);
 
-      const cell = await getMatrixCell(systemId, payload.nodeId, payload.concern);
-      return { systemId, cell };
+      if (cells.length === 1) {
+        return { systemId, cell: cells[0], cells };
+      }
+      return { systemId, cells };
     },
   );
 
@@ -1318,15 +1377,19 @@ export async function threadRoutes(app: FastifyInstance) {
 
         const shouldAttach = Boolean(payload.attach);
         if (payload.attach) {
-          const insertRefResult = await client.query<ChangedRow>(
-            `INSERT INTO matrix_refs (system_id, node_id, concern, ref_type, doc_hash)
-             VALUES ($1, $2, $3, $4::ref_type, $5)
-             ON CONFLICT DO NOTHING
-             RETURNING 1 AS changed`,
-            [outputSystemId, payload.attach.nodeId, payload.attach.concern, payload.attach.refType, hash],
-          );
+          let insertRefCount = 0;
+          for (const concern of payload.attach.concerns) {
+            const insertRefResult = await client.query<ChangedRow>(
+              `INSERT INTO matrix_refs (system_id, node_id, concern, ref_type, doc_hash)
+               VALUES ($1, $2, $3, $4::ref_type, $5)
+               ON CONFLICT DO NOTHING
+               RETURNING 1 AS changed`,
+              [outputSystemId, payload.attach.nodeId, concern, payload.attach.refType, hash],
+            );
+            insertRefCount += insertRefResult.rowCount ?? 0;
+          }
 
-          if (insertResult.rowCount === 0 && insertRefResult.rowCount === 0) {
+          if (insertResult.rowCount === 0 && insertRefCount === 0) {
             await client.query("SELECT commit_action_empty($1, $2)", [context.threadId, actionId]);
           }
 
@@ -1355,12 +1418,23 @@ export async function threadRoutes(app: FastifyInstance) {
           sourceConnectedUserId,
         };
 
-        const response: { systemId: string; document: MatrixDocumentRow; cell?: MatrixCell } = {
+        const response: {
+          systemId: string;
+          document: MatrixDocumentRow;
+          cell?: MatrixCell;
+          cells?: MatrixCell[];
+        } = {
           systemId,
           document: nextDocument,
         };
         if (shouldAttach && payload.attach) {
-          response.cell = await getMatrixCell(systemId, payload.attach.nodeId, payload.attach.concern);
+          const nextCells = await getMatrixCells(systemId, payload.attach.nodeId, payload.attach.concerns);
+          if (nextCells.length > 0) {
+            response.cells = nextCells;
+            if (nextCells.length === 1) {
+              response.cell = nextCells[0];
+            }
+          }
         }
         return response;
       } catch (error: unknown) {
@@ -1592,19 +1666,23 @@ export async function threadRoutes(app: FastifyInstance) {
           throw new Error("Failed to create action output system");
         }
 
-        const deleteResult = await client.query<ChangedRow>(
-          `DELETE FROM matrix_refs
-           WHERE system_id = $1
-             AND node_id = $2
-             AND concern_hash = md5($3)
-             AND concern = $3
-             AND ref_type = $4::ref_type
-             AND doc_hash = $5
-           RETURNING 1 AS changed`,
-          [outputSystemId, payload.nodeId, payload.concern, payload.refType, payload.docHash],
-        );
+        let changed = 0;
+        for (const concern of payload.concerns) {
+          const deleteResult = await client.query<ChangedRow>(
+            `DELETE FROM matrix_refs
+             WHERE system_id = $1
+               AND node_id = $2
+               AND concern_hash = md5($3)
+               AND concern = $3
+               AND ref_type = $4::ref_type
+               AND doc_hash = $5
+             RETURNING 1 AS changed`,
+            [outputSystemId, payload.nodeId, concern, payload.refType, payload.docHash],
+          );
+          changed += deleteResult.rowCount ?? 0;
+        }
 
-        if (deleteResult.rowCount === 0) {
+        if (changed === 0) {
           await client.query("SELECT commit_action_empty($1, $2)", [context.threadId, actionId]);
         }
 
@@ -1628,8 +1706,11 @@ export async function threadRoutes(app: FastifyInstance) {
         return reply.code(500).send({ error: "Unable to resolve thread system" });
       }
 
-      const cell = await getMatrixCell(systemId, payload.nodeId, payload.concern);
-      return { systemId, cell };
+      const cells = await getMatrixCells(systemId, payload.nodeId, payload.concerns);
+      if (cells.length === 1) {
+        return { systemId, cell: cells[0], cells };
+      }
+      return { systemId, cells };
     },
   );
 

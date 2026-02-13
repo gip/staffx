@@ -25,8 +25,8 @@ export type TemplateId = typeof BLANK_TEMPLATE_ID | NonBlankTemplateId;
 
 export type TemplateNodeKind = "Host" | "Container" | "Process" | "Library";
 export type TemplateEdgeType = "Runtime" | "Dataflow" | "Dependency";
-export type TemplateDocKind = "Feature" | "Spec" | "Skill";
-export type TemplateRefType = "Feature" | "Spec" | "Skill";
+export type TemplateDocKind = "Document" | "Skill";
+export type TemplateRefType = "Document" | "Skill";
 
 export interface TemplateNode {
   key: string;
