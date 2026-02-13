@@ -609,7 +609,7 @@ function buildFlowNodes(
       },
       style: {
         borderRadius: 10,
-        border: "1px solid var(--border)",
+        border: "2px solid var(--border)",
         background: "var(--bg-secondary)",
         color: "var(--fg)",
         minWidth: nestedChildren.length > 0 ? 240 : 180,
