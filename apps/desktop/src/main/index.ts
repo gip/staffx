@@ -1,5 +1,6 @@
 import { app, BrowserWindow, ipcMain } from "electron";
 import { join } from "node:path";
+import { startAgent, stopAgent, getAgentStatus } from "./agent.js";
 import { getAccessToken, getAuthState, login, logout, notifyRenderer } from "./auth.js";
 
 let mainWindow: BrowserWindow | null = null;
@@ -42,6 +43,16 @@ ipcMain.on("auth:logout", async () => {
   await logout();
   if (mainWindow) notifyRenderer(mainWindow);
 });
+
+// Agent IPC handlers
+ipcMain.handle("agent:start", (_e, params) => {
+  if (!mainWindow) throw new Error("No main window");
+  return { threadId: startAgent(mainWindow, params) };
+});
+
+ipcMain.on("agent:stop", (_e, { threadId }) => stopAgent(threadId));
+
+ipcMain.handle("agent:get-status", (_e, { threadId }) => getAgentStatus(threadId));
 
 app.whenReady().then(createWindow);
 
