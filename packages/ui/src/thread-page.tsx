@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   ChevronDown,
   ChevronRight,
@@ -1804,7 +1805,13 @@ export function ThreadPage({
         )}
       </section>
 
-      {documentModal && (
+      {documentModal && (() => {
+        const fullscreenContainer = isTopologyFullscreen
+          ? topologyPanelRef.current
+          : isMatrixFullscreen
+            ? matrixPanelRef.current
+            : null;
+        const modalContent = (
         <div className="modal-overlay" onClick={resetDocumentModal}>
           <div className="modal thread-doc-picker" onClick={(event) => event.stopPropagation()}>
             <div className="thread-doc-picker-header">
@@ -2051,7 +2058,9 @@ export function ThreadPage({
             )}
           </div>
         </div>
-      )}
+        );
+        return fullscreenContainer ? createPortal(modalContent, fullscreenContainer) : modalContent;
+      })()}
     </main>
   );
 }
