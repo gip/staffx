@@ -15,17 +15,27 @@ export interface SearchResult {
   picture: string | null;
 }
 
+export interface Concern {
+  name: string;
+  position: number;
+  isBaseline: boolean;
+  scope: string | null;
+}
+
 interface ProjectSettingsPageProps {
   projectOwnerHandle: string;
   projectName: string;
   accessRole: string;
   collaborators: Collaborator[];
   projectRoles: string[];
+  concerns: Concern[];
   onSearchUsers: (q: string) => Promise<SearchResult[]>;
   onAddCollaborator: (handle: string, role: string, projectRoles: string[]) => Promise<{ error?: string } | void>;
   onRemoveCollaborator: (handle: string) => Promise<{ error?: string } | void>;
   onAddRole: (name: string) => Promise<{ error?: string } | void>;
   onDeleteRole: (name: string) => Promise<{ error?: string } | void>;
+  onAddConcern: (name: string) => Promise<{ error?: string } | void>;
+  onDeleteConcern: (name: string) => Promise<{ error?: string } | void>;
   onUpdateMemberRoles: (handle: string, projectRoles: string[]) => Promise<{ error?: string } | void>;
 }
 
@@ -35,21 +45,28 @@ export function ProjectSettingsPage({
   accessRole,
   collaborators: initial,
   projectRoles: initialRoles,
+  concerns: initialConcerns,
   onSearchUsers,
   onAddCollaborator,
   onRemoveCollaborator,
   onAddRole,
   onDeleteRole,
+  onAddConcern,
+  onDeleteConcern,
   onUpdateMemberRoles,
 }: ProjectSettingsPageProps) {
   const [collaborators, setCollaborators] = useState(initial);
   const [projectRoles, setProjectRoles] = useState(initialRoles);
+  const [concerns, setConcerns] = useState(initialConcerns);
   const [showAdd, setShowAdd] = useState(false);
   const [editingMember, setEditingMember] = useState<Collaborator | null>(null);
   const [removing, setRemoving] = useState<string | null>(null);
   const [newRoleName, setNewRoleName] = useState("");
   const [roleError, setRoleError] = useState<string | null>(null);
   const [addingRole, setAddingRole] = useState(false);
+  const [newConcernName, setNewConcernName] = useState("");
+  const [concernError, setConcernError] = useState<string | null>(null);
+  const [addingConcern, setAddingConcern] = useState(false);
   const isOwner = accessRole === "Owner";
 
   const handleRemove = useCallback(
@@ -100,6 +117,34 @@ export function ProjectSettingsPage({
       setProjectRoles((prev) => prev.filter((r) => r !== name));
     }
   }, [onDeleteRole]);
+
+  const handleAddConcern = useCallback(async () => {
+    if (!newConcernName.trim()) return;
+    setAddingConcern(true);
+    setConcernError(null);
+    const trimmed = newConcernName.trim();
+    const res = await onAddConcern(trimmed);
+    if (res && res.error) {
+      setConcernError(res.error);
+    } else {
+      setConcerns((prev) => {
+        const nextPosition = prev.reduce((max, concern) => Math.max(max, concern.position), -1) + 1;
+        return [...prev, { name: trimmed, position: nextPosition, isBaseline: false, scope: null }];
+      });
+      setNewConcernName("");
+    }
+    setAddingConcern(false);
+  }, [newConcernName, onAddConcern]);
+
+  const handleDeleteConcern = useCallback(async (name: string) => {
+    setConcernError(null);
+    const res = await onDeleteConcern(name);
+    if (res && res.error) {
+      setConcernError(res.error);
+    } else {
+      setConcerns((prev) => prev.filter((concern) => concern.name !== name));
+    }
+  }, [onDeleteConcern]);
 
   const handleUpdateMemberRoles = useCallback(
     async (handle: string, roles: string[]) => {
@@ -161,6 +206,47 @@ export function ProjectSettingsPage({
           </form>
         )}
         {roleError && <p className="field-error">{roleError}</p>}
+      </section>
+
+      {/* Concerns section */}
+      <section className="thread-section">
+        <h3 className="thread-section-title">Concerns</h3>
+        <div className="concerns-list">
+          {concerns.map((concern) => (
+            <span key={concern.name} className="concern-tag">
+              {concern.name}
+              {isOwner && (
+                <button
+                  className="concern-tag-remove"
+                  onClick={() => handleDeleteConcern(concern.name)}
+                  title={`Remove ${concern.name}`}
+                >
+                  &times;
+                </button>
+              )}
+            </span>
+          ))}
+        </div>
+        {isOwner && (
+          <form
+            className="roles-add-form"
+            onSubmit={(e) => {
+              e.preventDefault();
+              handleAddConcern();
+            }}
+          >
+            <input
+              className="field-input roles-add-input"
+              placeholder="New concern…"
+              value={newConcernName}
+              onChange={(e) => setNewConcernName(e.target.value)}
+            />
+            <button className="btn btn-secondary" type="submit" disabled={addingConcern || !newConcernName.trim()}>
+              Add
+            </button>
+          </form>
+        )}
+        {concernError && <p className="field-error">{concernError}</p>}
       </section>
 
       {/* Contributors section */}

@@ -11,9 +11,12 @@ import {
   setNavigate,
   type AuthUser,
   type Collaborator,
+  type Concern,
   type UserProfile,
   type ChatMessage,
+  type MatrixDocument,
   type MatrixCell,
+  type MatrixCellDoc,
   type Project,
   type ThreadDetail,
   type ThreadDetailPayload,
@@ -44,6 +47,53 @@ function upsertMatrixCell(cells: MatrixCell[], nextCell: MatrixCell): MatrixCell
   );
   if (index === -1) return [...cells, nextCell];
   return cells.map((cell, idx) => (idx === index ? nextCell : cell));
+}
+
+function upsertMatrixDocument(documents: MatrixDocument[], next: MatrixDocument): MatrixDocument[] {
+  const index = documents.findIndex((document) => document.hash === next.hash);
+  if (index === -1) return [...documents, next];
+  return documents.map((document, idx) =>
+    idx === index
+      ? {
+          ...document,
+          title: next.title,
+          kind: next.kind,
+          language: next.language,
+          text: next.text,
+        }
+      : document,
+  );
+}
+
+function replaceMatrixDocumentReferences(
+  cells: MatrixCell[],
+  oldHash: string,
+  nextDoc: MatrixDocument,
+): MatrixCell[] {
+  return cells.map((cell) => ({
+    ...cell,
+    docs: cell.docs.map((doc) =>
+      doc.hash === oldHash
+        ? {
+            ...doc,
+            hash: nextDoc.hash,
+            title: nextDoc.title,
+            kind: nextDoc.kind,
+            language: nextDoc.language,
+          }
+        : doc,
+    ),
+  }));
+}
+
+function replaceMatrixDocumentInGlobalList(
+  documents: MatrixDocument[],
+  oldHash: string,
+  nextDoc: MatrixDocument,
+): MatrixDocument[] {
+  const withoutOld = documents.filter((document) => document.hash !== oldHash);
+  if (withoutOld.some((document) => document.hash === nextDoc.hash)) return withoutOld;
+  return [...withoutOld, nextDoc];
 }
 
 function mergeChatMessages(current: ChatMessage[], incoming: ChatMessage[]) {
@@ -244,7 +294,12 @@ function ProjectRoute({ isAuthenticated }: { isAuthenticated: boolean }) {
 function SettingsRoute({ isAuthenticated }: { isAuthenticated: boolean }) {
   const { handle, project: projectName } = useParams<{ handle: string; project: string }>();
   const apiFetch = useApi();
-  const [data, setData] = useState<{ accessRole: string; collaborators: Collaborator[]; projectRoles: string[] } | null>(null);
+  const [data, setData] = useState<{
+    accessRole: string;
+    collaborators: Collaborator[];
+    projectRoles: string[];
+    concerns: Concern[];
+  } | null>(null);
   const [notFound, setNotFound] = useState(false);
 
   useEffect(() => {
@@ -284,6 +339,7 @@ function SettingsRoute({ isAuthenticated }: { isAuthenticated: boolean }) {
       accessRole={data.accessRole}
       collaborators={data.collaborators}
       projectRoles={data.projectRoles}
+      concerns={data.concerns}
       onSearchUsers={async (q) => {
         const res = await apiFetch(`/users/search?q=${encodeURIComponent(q)}`);
         if (!res.ok) return [];
@@ -325,6 +381,30 @@ function SettingsRoute({ isAuthenticated }: { isAuthenticated: boolean }) {
         if (!res.ok) {
           const body = await res.json().catch(() => ({}));
           return { error: body.error ?? "Failed to add role" };
+        }
+      }}
+      onAddConcern={async (name) => {
+        const res = await apiFetch(
+          `/projects/${encodeURIComponent(handle!)}/${encodeURIComponent(projectName!)}/concerns`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ name }),
+          },
+        );
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}));
+          return { error: body.error ?? "Failed to add concern" };
+        }
+      }}
+      onDeleteConcern={async (name) => {
+        const res = await apiFetch(
+          `/projects/${encodeURIComponent(handle!)}/${encodeURIComponent(projectName!)}/concerns/${encodeURIComponent(name)}`,
+          { method: "DELETE" },
+        );
+        if (!res.ok && res.status !== 204) {
+          const body = await res.json().catch(() => ({}));
+          return { error: body.error ?? "Failed to delete concern" };
         }
       }}
       onDeleteRole={async (name) => {
@@ -470,7 +550,29 @@ function ThreadRoute({ isAuthenticated }: { isAuthenticated: boolean }) {
             ? {
                 ...prev,
                 systemId: data.systemId,
-                matrix: { ...prev.matrix, cells: upsertMatrixCell(prev.matrix.cells, data.cell) },
+                matrix: {
+                  ...prev.matrix,
+                  cells: (() => {
+                    const existingCell = prev.matrix.cells.find((cell) =>
+                      cell.nodeId === data.cell.nodeId && cell.concern === data.cell.concern,
+                    );
+                    if (existingCell) {
+                      const docByRef = new Map<string, MatrixCellDoc>(
+                        existingCell.docs.map((doc) => [`${doc.hash}:${doc.refType}`, doc]),
+                      );
+                      for (const doc of data.cell.docs) {
+                        docByRef.set(`${doc.hash}:${doc.refType}`, doc);
+                      }
+                      const mergedCell: MatrixCell = {
+                        ...existingCell,
+                        docs: Array.from(docByRef.values()),
+                        artifacts: data.cell.artifacts,
+                      };
+                      return upsertMatrixCell(prev.matrix.cells, mergedCell);
+                    }
+                    return upsertMatrixCell(prev.matrix.cells, data.cell);
+                  })(),
+                },
               }
             : prev
         ));
@@ -498,6 +600,104 @@ function ThreadRoute({ isAuthenticated }: { isAuthenticated: boolean }) {
               }
             : prev
         ));
+        return data;
+      }}
+      onCreateMatrixDocument={async (payload) => {
+        const res = await apiFetch(
+          `/projects/${encodeURIComponent(handle!)}/${encodeURIComponent(projectName!)}/thread/${encodeURIComponent(threadId!)}/matrix/documents`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          },
+        );
+        if (!res.ok) {
+          return { error: await readError(res, "Failed to create matrix document") };
+        }
+        const data = (await res.json()) as {
+          systemId: string;
+          document: MatrixDocument;
+          cell?: MatrixCell;
+        };
+        setDetail((prev) => {
+          if (!prev) return prev;
+          const fallbackCell = (() => {
+            if (!payload.attach) return data.cell;
+            if (data.cell) return data.cell;
+
+            const existingCell = prev.matrix.cells.find((cell) =>
+              cell.nodeId === payload.attach?.nodeId && cell.concern === payload.attach?.concern,
+            );
+            const nextDoc = {
+              hash: data.document.hash,
+              title: data.document.title,
+              kind: data.document.kind,
+              language: data.document.language,
+              refType: payload.attach.refType,
+            };
+            const docs = existingCell?.docs ?? [];
+            const deduped = docs.some((doc) => doc.hash === nextDoc.hash && doc.refType === nextDoc.refType)
+              ? docs
+              : [...docs, nextDoc];
+
+            return {
+              nodeId: payload.attach.nodeId,
+              concern: payload.attach.concern,
+              docs: deduped,
+              artifacts: existingCell?.artifacts ?? [],
+            };
+          })();
+
+          return {
+            ...prev,
+            systemId: data.systemId,
+            matrix: {
+              ...prev.matrix,
+              documents: upsertMatrixDocument(prev.matrix.documents, data.document),
+              cells: fallbackCell ? upsertMatrixCell(prev.matrix.cells, fallbackCell) : prev.matrix.cells,
+            },
+          };
+        });
+        return data;
+      }}
+      onReplaceMatrixDocument={async (documentHash, payload) => {
+        const res = await apiFetch(
+          `/projects/${encodeURIComponent(handle!)}/${encodeURIComponent(projectName!)}/thread/${encodeURIComponent(threadId!)}/matrix/documents/${encodeURIComponent(documentHash)}`,
+          {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          },
+        );
+        if (!res.ok) {
+          return { error: await readError(res, "Failed to replace matrix document") };
+        }
+        const data = (await res.json()) as {
+          systemId: string;
+          oldHash: string;
+          document: MatrixDocument;
+          replacedRefs: number;
+        };
+        setDetail((prev) => {
+          if (!prev) return prev;
+          return {
+            ...prev,
+            systemId: data.systemId,
+            matrix: {
+              ...prev.matrix,
+              documents: replaceMatrixDocumentInGlobalList(
+                prev.matrix.documents,
+                data.oldHash,
+                data.document,
+              ),
+              cells: replaceMatrixDocumentReferences(
+                prev.matrix.cells,
+                data.oldHash,
+                data.document,
+              ),
+            },
+          };
+        });
         return data;
       }}
       onSendChatMessage={async (payload) => {

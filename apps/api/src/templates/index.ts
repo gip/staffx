@@ -1,5 +1,24 @@
 import { templateWebserverPostgresAuth0GoogleVercel } from "./template-webserver-postgres-auth0-google-vercel.js";
 
+export interface DefaultConcern {
+  name: string;
+  position: number;
+  isBaseline: boolean;
+}
+
+export const DEFAULT_CONCERNS: DefaultConcern[] = [
+  { name: "Features", position: 1, isBaseline: false },
+  { name: "Interfaces", position: 2, isBaseline: false },
+  { name: "Connectivity", position: 3, isBaseline: false },
+  { name: "Security", position: 4, isBaseline: false },
+  { name: "Data Model", position: 5, isBaseline: false },
+  { name: "General Specs", position: 6, isBaseline: false },
+  { name: "General Skills", position: 7, isBaseline: false },
+  { name: "Implementation", position: 8, isBaseline: false },
+  { name: "Deployment", position: 9, isBaseline: false },
+  { name: "Functional Testing", position: 10, isBaseline: false },
+];
+
 export const BLANK_TEMPLATE_ID = "blank" as const;
 export type NonBlankTemplateId = "webserver-postgres-auth0-google-vercel";
 export type TemplateId = typeof BLANK_TEMPLATE_ID | NonBlankTemplateId;

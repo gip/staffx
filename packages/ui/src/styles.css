@@ -12,7 +12,7 @@
   --bg-secondary: #ffffff;
   --fg: #171717;
   --fg-muted: #666666;
-  --border: #d0d0d0;
+  --border: #a0a0a0;
   --accent: #000000;
   --accent-fg: #ffffff;
   --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
@@ -98,7 +98,7 @@ a.header-logo {
   width: 36px;
   height: 36px;
   font-size: 18px;
-  border: 1px solid var(--border);
+  border: none;
   border-radius: 6px;
   background: transparent;
   color: var(--fg);
@@ -960,12 +960,19 @@ a.project-card {
   margin: 0;
   border-radius: 0;
   border: none;
-  padding: 14px;
+  padding: 48px 100px;
   background: var(--bg);
+  display: flex;
+  flex-direction: column;
 }
 
 .thread-card--fullscreen .thread-card-body {
-  height: calc(100% - 62px);
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
 }
 
 .thread-topology-canvas {
@@ -973,12 +980,14 @@ a.project-card {
   border: 1px solid var(--border);
   border-radius: 10px;
   overflow: hidden;
-  background: radial-gradient(circle at 1px 1px, rgba(128, 128, 128, 0.22) 1px, transparent 0);
-  background-size: 10px 10px;
+  background: var(--bg-secondary);
 }
 
 .thread-card--fullscreen .thread-topology-canvas {
-  height: 100%;
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  align-self: stretch;
 }
 
 .thread-topology-canvas .react-flow__nodes {
@@ -997,8 +1006,61 @@ a.project-card {
 .thread-topology-node {
   display: flex;
   flex-direction: column;
-  gap: 5px;
+  gap: 4px;
   position: relative;
+  overflow: visible;
+  padding-top: 6px;
+}
+
+.thread-topology-node-badge {
+  position: absolute;
+  top: -31px;
+  left: 10px;
+  z-index: 3;
+  font-size: 10px;
+  line-height: 1;
+  border-radius: 6px 6px 0 0;
+  padding: 4px 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-weight: 700;
+  color: var(--fg);
+  border-bottom: 1px solid transparent;
+  background-clip: padding-box;
+}
+
+[data-theme="dark"] .thread-topology-node-badge {
+  color: #ffffff;
+}
+
+.thread-topology-node-badge--host {
+  background: #2f71ff;
+  border: 1px solid #1749cc;
+  color: #ffffff;
+}
+
+.thread-topology-node-badge--process {
+  background: #3faf60;
+  border: 1px solid #1e6e39;
+  color: #ffffff;
+}
+
+.thread-topology-node-badge--container {
+  background: #b98920;
+  border: 1px solid #8a5f00;
+  color: #ffffff;
+}
+
+.thread-topology-node-badge--library {
+  background: #7f63d2;
+  border: 1px solid #5e44a8;
+  color: #ffffff;
+}
+
+.thread-topology-node-badge--other {
+  background: #7a7a7a;
+  border: 1px solid #515151;
+  color: #ffffff;
 }
 
 .thread-topology-node strong {
@@ -1012,34 +1074,107 @@ a.project-card {
   color: var(--fg-muted);
 }
 
-.thread-topology-nested-list {
+.thread-topology-doc-sections {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  margin-top: 6px;
+}
+
+.thread-topology-doc-section {
+  border-top: 1px solid color-mix(in srgb, var(--border) 78%, transparent);
+  padding-top: 8px;
+}
+
+.thread-topology-doc-section:first-child {
+  border-top: none;
+  padding-top: 0;
+}
+
+.thread-topology-doc-section-header {
+  margin-bottom: 6px;
+  display: inline-flex;
+  justify-content: flex-start;
+  align-items: center;
+  gap: 8px;
+}
+
+.thread-topology-doc-list {
+  display: block;
+}
+
+.matrix-doc-row {
+  display: flex;
+  gap: 6px;
+  flex-wrap: nowrap;
   margin-top: 4px;
-  padding: 8px;
+}
+
+.matrix-doc-row:first-child {
+  margin-top: 0;
+}
+
+.thread-topology-doc-add {
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  padding: 0;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  color: var(--fg-muted);
   background: var(--bg);
+}
+
+.thread-topology-doc-add:hover {
+  border-color: var(--fg-muted);
+  color: var(--fg);
+}
+
+.thread-topology-nested-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  overflow: visible;
 }
 
 .thread-topology-nested-item {
   display: flex;
   flex-direction: column;
-  gap: 3px;
-  padding: 6px 8px;
-  border: 1px solid color-mix(in srgb, var(--border) 80%, transparent);
-  border-radius: 7px;
+  width: 100%;
+  box-sizing: border-box;
+  gap: 2px;
+  margin-top: 24px;
+  padding: 10px 8px 5px;
+  border: 2px solid var(--border);
+  border-radius: 10px;
   background: var(--bg-secondary);
   position: relative;
+  overflow: visible;
+}
+
+.thread-topology-nested-item > .thread-topology-node-badge {
+  position: absolute;
+  top: -24px;
+  left: 8px;
+  z-index: 5;
+}
+
+.thread-topology-nested-item--process > .thread-topology-node-badge {
+  top: -22px;
 }
 
 .thread-topology-handle {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  border: 1px solid var(--border);
-  background: var(--bg);
+  width: 0;
+  height: 0;
+  min-width: 0;
+  min-height: 0;
+  border: none;
+  background: transparent;
+  opacity: 0;
+  pointer-events: none;
 }
 
 .thread-topology-handle--host {
@@ -1050,6 +1185,81 @@ a.project-card {
   z-index: 3;
 }
 
+.thread-topology-nested-item .thread-topology-handle--child {
+  width: 2px;
+  height: 2px;
+  min-width: 2px;
+  min-height: 2px;
+}
+
+.thread-topology-nested-item .thread-topology-handle--child.react-flow__handle-left {
+  left: 0;
+  right: auto;
+  transform: translateY(-50%);
+}
+
+.thread-topology-nested-item .thread-topology-handle--child.react-flow__handle-right {
+  right: 0;
+  left: auto;
+  transform: translateY(-50%);
+}
+
+.matrix-concern-filter {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.matrix-concern-filter-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fg-muted);
+  margin-right: 2px;
+}
+
+.matrix-concern-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  font-size: 13px;
+  font-weight: 500;
+  font-family: var(--font);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s, background 0.15s;
+  white-space: nowrap;
+}
+
+.matrix-concern-chip input[type="checkbox"] {
+  accent-color: var(--fg);
+  width: 13px;
+  height: 13px;
+  margin: 0;
+  cursor: pointer;
+}
+
+.matrix-concern-chip:hover {
+  border-color: var(--fg-muted);
+  color: var(--fg);
+  background: rgba(128, 128, 128, 0.06);
+}
+
+.matrix-concern-chip--active {
+  border-color: var(--fg-muted);
+  color: var(--fg);
+  background: rgba(128, 128, 128, 0.1);
+}
+
+.matrix-concern-chip--active:hover {
+  border-color: var(--fg);
+}
+
 .matrix-table-wrap {
   border: 1px solid var(--border);
   border-radius: 10px;
@@ -1058,8 +1268,8 @@ a.project-card {
 }
 
 .thread-card--fullscreen .matrix-table-wrap {
-  max-height: calc(100% - 14px);
-  height: calc(100% - 14px);
+  max-height: 100%;
+  width: 100%;
 }
 
 .matrix-table {
@@ -1095,45 +1305,45 @@ a.project-card {
   text-align: left;
   color: var(--fg-muted);
   font-weight: 600;
-  min-width: 260px;
-  padding: 10px 12px;
+  min-width: 160px;
+  padding: 8px 10px;
 }
 
 .matrix-node-header {
   left: 0;
   z-index: 3;
-  min-width: 260px;
+  min-width: 180px;
 }
 
 .matrix-node-cell {
   position: sticky;
   left: 0;
   z-index: 1;
-  min-width: 260px;
-  max-width: 260px;
-  padding: 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
+  min-width: 180px;
+  max-width: 180px;
+  padding: 10px 8px;
   text-align: left;
 }
 
 .matrix-node-cell strong {
+  display: block;
   font-size: 13px;
   line-height: 1.3;
 }
 
 .matrix-node-cell span {
+  display: block;
+  margin-top: 2px;
   font-size: 11px;
   color: var(--fg-muted);
 }
 
 .matrix-cell {
-  min-width: 260px;
-  padding: 10px;
+  min-width: 160px;
+  padding: 8px;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 6px;
 }
 
 .matrix-empty {
@@ -1156,19 +1366,22 @@ a.project-card {
 .matrix-doc-list {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: 4px;
 }
 
 .matrix-doc-chip {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  width: fit-content;
+  flex: 0 0 auto;
   border: 1px solid var(--border);
   border-radius: 999px;
   padding: 3px 8px;
   font-size: 11px;
   line-height: 1.3;
   max-width: 100%;
+  cursor: pointer;
 }
 
 .matrix-doc-chip span {
@@ -1220,22 +1433,39 @@ a.project-card {
 }
 
 .matrix-add-doc-btn {
-  align-self: flex-start;
   display: inline-flex;
   align-items: center;
-  gap: 5px;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
   border: 1px dashed var(--border);
   background: transparent;
-  border-radius: 7px;
-  padding: 5px 9px;
-  font-size: 11px;
+  border-radius: 50%;
+  padding: 0;
   color: var(--fg-muted);
   cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+.matrix-add-doc-btn:focus-visible,
+.matrix-cell:hover .matrix-add-doc-btn {
+  opacity: 1;
 }
 
 .matrix-add-doc-btn:hover {
   border-color: var(--fg-muted);
   color: var(--fg);
+}
+
+.matrix-td-empty {
+  cursor: pointer;
+}
+
+.matrix-td-empty .matrix-cell {
+  align-items: center;
+  justify-content: center;
+  min-height: 48px;
 }
 
 .thread-chat-form {
@@ -1244,16 +1474,42 @@ a.project-card {
   gap: 10px;
 }
 
+.thread-chat-input-row {
+  position: relative;
+}
+
 .thread-chat-input {
   resize: vertical;
   min-height: 92px;
+  width: 100%;
+  box-sizing: border-box;
+  border-radius: 12px;
 }
 
 .thread-chat-send {
-  align-self: flex-start;
-  display: inline-flex;
+  position: absolute;
+  bottom: 10px;
+  right: 10px;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: none;
+  background: var(--accent);
+  color: var(--accent-fg);
+  display: flex;
   align-items: center;
-  gap: 6px;
+  justify-content: center;
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+
+.thread-chat-send:hover {
+  opacity: 0.85;
+}
+
+.thread-chat-send:disabled {
+  opacity: 0.3;
+  cursor: default;
 }
 
 .thread-chat-disabled {
@@ -1321,7 +1577,8 @@ a.project-card {
 }
 
 .thread-doc-picker {
-  max-width: 760px;
+  width: min(980px, calc(100vw - 40px));
+  max-width: 980px;
 }
 
 .thread-doc-picker-header {
@@ -1368,6 +1625,22 @@ a.project-card {
   margin-top: 4px;
   font-size: 12px;
   color: var(--fg-muted);
+}
+
+.thread-doc-form-fields {
+  display: grid;
+  gap: 10px;
+}
+
+.thread-doc-form-markdown {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.thread-doc-concern {
+  display: grid;
+  gap: 6px;
 }
 
 /* Profile page */
@@ -1584,6 +1857,13 @@ a.project-card {
   margin-bottom: 12px;
 }
 
+.concerns-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
 .roles-add-form {
   display: flex;
   align-items: center;
@@ -1595,6 +1875,33 @@ a.project-card {
   width: 180px;
   padding: 6px 10px;
   font-size: 13px;
+}
+
+.concern-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 10px;
+  font-size: 11px;
+  font-weight: 500;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--fg-muted);
+  white-space: nowrap;
+}
+
+.concern-tag-remove {
+  border: none;
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+  padding: 0;
+}
+
+.concern-tag-remove:hover {
+  color: var(--fg);
 }
 
 .collab-project-roles {
@@ -1639,15 +1946,34 @@ a.project-card {
 
   .matrix-node-cell,
   .matrix-node-header {
-    min-width: 180px;
-    max-width: 180px;
+    min-width: 140px;
+    max-width: 140px;
   }
 
   .matrix-cell {
-    min-width: 220px;
+    min-width: 130px;
   }
 
   .thread-doc-picker-filters {
     grid-template-columns: 1fr;
+  }
+
+  .thread-doc-picker {
+    width: calc(100vw - 24px);
+  }
+
+  .thread-topology-doc-section {
+    padding-top: 6px;
+  }
+
+  .thread-doc-picker .thread-inline-actions {
+    flex-wrap: wrap;
+    flex-direction: column;
+  }
+
+  .thread-doc-picker .thread-inline-actions .btn,
+  .thread-doc-picker .thread-inline-actions .btn-secondary {
+    width: 100%;
+    justify-content: center;
   }
 }
