@@ -944,14 +944,28 @@ export function ThreadPage({
     [detail.matrix.concerns, visibleConcerns],
   );
 
-  const sortedMatrixNodes = useMemo(
-    () => [...detail.matrix.nodes].sort((a, b) => {
-      const aRoot = a.parentId === null ? 0 : 1;
-      const bRoot = b.parentId === null ? 0 : 1;
-      return aRoot - bRoot;
-    }),
-    [detail.matrix.nodes],
-  );
+  const treeOrderedMatrixNodes = useMemo(() => {
+    const childrenOf = new Map<string | null, TopologyNode[]>();
+    for (const node of detail.matrix.nodes) {
+      const key = node.parentId ?? null;
+      const list = childrenOf.get(key) ?? [];
+      list.push(node);
+      childrenOf.set(key, list);
+    }
+    for (const list of childrenOf.values()) {
+      list.sort(sortNodes);
+    }
+
+    const result: Array<{ node: TopologyNode; depth: number }> = [];
+    const walk = (parentId: string | null, depth: number) => {
+      for (const node of childrenOf.get(parentId) ?? []) {
+        result.push({ node, depth });
+        walk(node.id, depth + 1);
+      }
+    };
+    walk(null, 0);
+    return result;
+  }, [detail.matrix.nodes]);
 
   const activeCell = useMemo(() => {
     if (!documentModal) return null;
@@ -1590,14 +1604,16 @@ export function ThreadPage({
                   </tr>
                 </thead>
                 <tbody>
-                  {sortedMatrixNodes.map((node) => {
+                  {treeOrderedMatrixNodes.map(({ node, depth }) => {
                     const isSystemNode = node.parentId === null;
                     const displayName = isSystemNode ? "System" : node.name;
                     return (
                     <tr key={node.id}>
                       <th className="matrix-node-cell">
-                        <strong>{displayName}</strong>
-                        <span>{node.kind}</span>
+                        <div style={{ paddingLeft: depth * 16 }}>
+                          <strong>{displayName}</strong>
+                          <span>{node.kind}</span>
+                        </div>
                       </th>
                       {filteredConcerns.map((concern) => {
                         const key = buildMatrixCellKey(node.id, concern.name);
