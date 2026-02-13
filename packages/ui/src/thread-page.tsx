@@ -1532,7 +1532,7 @@ export function ThreadPage({
             <button
               className="btn-icon thread-card-action"
               type="button"
-              onClick={(e) => { e.stopPropagation(); toggleFullscreen(topologyPanelRef); }}
+              onClick={(e) => { e.stopPropagation(); if (!isTopologyFullscreen) setIsTopologyCollapsed(false); toggleFullscreen(topologyPanelRef); }}
               aria-label={isTopologyFullscreen ? "Exit fullscreen topology" : "Enter fullscreen topology"}
             >
               {isTopologyFullscreen ? <Minimize2 size={16} /> : <FullscreenIcon size={16} />}
@@ -1580,7 +1580,7 @@ export function ThreadPage({
             <button
               className="btn-icon thread-card-action"
               type="button"
-              onClick={(e) => { e.stopPropagation(); toggleFullscreen(matrixPanelRef); }}
+              onClick={(e) => { e.stopPropagation(); if (!isMatrixFullscreen) setIsMatrixCollapsed(false); toggleFullscreen(matrixPanelRef); }}
               aria-label={isMatrixFullscreen ? "Exit fullscreen matrix" : "Enter fullscreen matrix"}
             >
               {isMatrixFullscreen ? <Minimize2 size={16} /> : <FullscreenIcon size={16} />}

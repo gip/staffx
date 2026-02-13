@@ -960,12 +960,19 @@ a.project-card {
   margin: 0;
   border-radius: 0;
   border: none;
-  padding: 14px;
+  padding: 48px 100px;
   background: var(--bg);
+  display: flex;
+  flex-direction: column;
 }
 
 .thread-card--fullscreen .thread-card-body {
-  height: calc(100% - 62px);
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
 }
 
 .thread-topology-canvas {
@@ -978,7 +985,10 @@ a.project-card {
 }
 
 .thread-card--fullscreen .thread-topology-canvas {
-  height: 100%;
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  align-self: stretch;
 }
 
 .thread-topology-canvas .react-flow__nodes {
@@ -1222,8 +1232,8 @@ a.project-card {
 }
 
 .thread-card--fullscreen .matrix-table-wrap {
-  max-height: calc(100% - 14px);
-  height: calc(100% - 14px);
+  max-height: 100%;
+  width: 100%;
 }
 
 .matrix-table {
