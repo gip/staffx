@@ -685,6 +685,9 @@ export function ThreadPage({
   const [descriptionTab, setDescriptionTab] = useState<"write" | "preview">("write");
   const [descriptionError, setDescriptionError] = useState("");
   const [isSavingDescription, setIsSavingDescription] = useState(false);
+  const [visibleConcerns, setVisibleConcerns] = useState<Set<string>>(
+    () => new Set(detail.matrix.concerns.map((c) => c.name)),
+  );
   const [matrixError, setMatrixError] = useState("");
   const [activeMatrixMutation, setActiveMatrixMutation] = useState("");
   const [chatInput, setChatInput] = useState("");
@@ -733,6 +736,29 @@ export function ThreadPage({
       titleInputRef.current.select();
     }
   }, [isTitleEditing]);
+
+  useEffect(() => {
+    const names = detail.matrix.concerns.map((c) => c.name);
+    setVisibleConcerns((prev) => {
+      const nextSet = new Set<string>();
+      for (const name of names) {
+        if (prev.has(name)) nextSet.add(name);
+      }
+      return nextSet.size > 0 ? nextSet : new Set(names);
+    });
+  }, [detail.matrix.concerns]);
+
+  const toggleConcern = useCallback((name: string) => {
+    setVisibleConcerns((prev) => {
+      const next = new Set(prev);
+      if (next.has(name)) {
+        next.delete(name);
+      } else {
+        next.add(name);
+      }
+      return next.size > 0 ? next : prev;
+    });
+  }, []);
 
   useEffect(() => {
     const onFullscreenChange = () => {
@@ -912,6 +938,11 @@ export function ThreadPage({
     }
     return map;
   }, [detail.matrix.cells]);
+
+  const filteredConcerns = useMemo(
+    () => detail.matrix.concerns.filter((c) => visibleConcerns.has(c.name)),
+    [detail.matrix.concerns, visibleConcerns],
+  );
 
   const activeCell = useMemo(() => {
     if (!documentModal) return null;
@@ -1523,12 +1554,28 @@ export function ThreadPage({
 
         {!isMatrixCollapsed && (
           <div className="thread-card-body">
+            <div className="matrix-concern-filter">
+              <span className="matrix-concern-filter-label">Concerns</span>
+              {detail.matrix.concerns.map((c) => (
+                <label
+                  key={c.name}
+                  className={`matrix-concern-chip ${visibleConcerns.has(c.name) ? "matrix-concern-chip--active" : ""}`}
+                >
+                  <input
+                    type="checkbox"
+                    checked={visibleConcerns.has(c.name)}
+                    onChange={() => toggleConcern(c.name)}
+                  />
+                  {c.name}
+                </label>
+              ))}
+            </div>
             <div className="matrix-table-wrap">
               <table className="matrix-table">
                 <thead>
                   <tr>
                     <th className="matrix-node-header">Node</th>
-                    {detail.matrix.concerns.map((concern) => (
+                    {filteredConcerns.map((concern) => (
                       <th key={concern.name}>{concern.name}</th>
                     ))}
                   </tr>
@@ -1540,7 +1587,7 @@ export function ThreadPage({
                         <strong>{node.name}</strong>
                         <span>{node.kind}</span>
                       </th>
-                      {detail.matrix.concerns.map((concern) => {
+                      {filteredConcerns.map((concern) => {
                         const key = buildMatrixCellKey(node.id, concern.name);
                         const cell = cellsByKey.get(key) ?? {
                           nodeId: node.id,
@@ -1549,69 +1596,69 @@ export function ThreadPage({
                           artifacts: [],
                         };
 
-                        return (
-                          <td key={key}>
-                            <div className="matrix-cell">
-                              {cell.docs.length === 0 && cell.artifacts.length === 0 && (
-                                <p className="matrix-empty">No docs or artifacts</p>
-                              )}
+                        const isEmpty = cell.docs.length === 0 && cell.artifacts.length === 0;
+                        const activeTypeCount = DOC_TYPES.filter((t) => cell.docs.some((d) => d.refType === t)).length;
+                        const showLabels = activeTypeCount > 1;
 
+                        return (
+                          <td
+                            key={key}
+                            className={isEmpty ? "matrix-td-empty" : undefined}
+                            onClick={
+                              isEmpty && detail.permissions.canEdit
+                                ? () => openMatrixCellDocumentPicker(node.id, concern.name, DOC_TYPES[0] as DocKind)
+                                : undefined
+                            }
+                          >
+                            <div className="matrix-cell">
                               {DOC_TYPES.map((type) => {
                                 const docs = cell.docs.filter((doc) => doc.refType === type);
                                 if (docs.length === 0) return null;
-                                const docRows = chunkIntoPairs(docs);
                                 return (
                                   <div key={type} className="matrix-doc-group">
-                                    <span className="matrix-doc-group-label">{type}</span>
+                                    {showLabels && <span className="matrix-doc-group-label">{type}</span>}
                                     <div className="matrix-doc-list">
-                                      {docRows.map((row, rowIndex) => (
-                                        <div
-                                          key={`${type}-row-${rowIndex}`}
-                                          className="matrix-doc-row"
-                                        >
-                                          {row.map((doc) => {
-                                            const removeKey = `remove:${node.id}:${concern.name}:${doc.hash}:${doc.refType}`;
-                                            const isMutating = activeMatrixMutation === removeKey;
-                                            return (
-                                              <div
-                                                key={`${doc.hash}:${doc.refType}`}
-                                                className={`matrix-doc-chip matrix-doc-chip--${doc.refType.toLowerCase()}`}
-                                                role="button"
-                                                tabIndex={0}
-                                                onClick={() => {
-                                                  if (detail.permissions.canEdit) {
-                                                    openEditDocumentModal(doc, node.id, concern.name);
-                                                  }
+                                      {docs.map((doc) => {
+                                        const removeKey = `remove:${node.id}:${concern.name}:${doc.hash}:${doc.refType}`;
+                                        const isMutating = activeMatrixMutation === removeKey;
+                                        return (
+                                          <div
+                                            key={`${doc.hash}:${doc.refType}`}
+                                            className={`matrix-doc-chip matrix-doc-chip--${doc.refType.toLowerCase()}`}
+                                            role="button"
+                                            tabIndex={0}
+                                            onClick={() => {
+                                              if (detail.permissions.canEdit) {
+                                                openEditDocumentModal(doc, node.id, concern.name);
+                                              }
+                                            }}
+                                            onKeyDown={(event) => {
+                                              if (event.key === "Enter" || event.key === " ") {
+                                                event.preventDefault();
+                                                if (detail.permissions.canEdit) {
+                                                  openEditDocumentModal(doc, node.id, concern.name);
+                                                }
+                                              }
+                                            }}
+                                          >
+                                            <span>{doc.title}</span>
+                                            {detail.permissions.canEdit && (
+                                              <button
+                                                className="matrix-doc-remove"
+                                                type="button"
+                                                onClick={(event) => {
+                                                  event.stopPropagation();
+                                                  handleRemoveDoc(node.id, concern.name, doc);
                                                 }}
-                                                onKeyDown={(event) => {
-                                                  if (event.key === "Enter" || event.key === " ") {
-                                                    event.preventDefault();
-                                                    if (detail.permissions.canEdit) {
-                                                      openEditDocumentModal(doc, node.id, concern.name);
-                                                    }
-                                                  }
-                                                }}
+                                                disabled={isMutating}
+                                                aria-label={`Remove ${doc.title}`}
                                               >
-                                                <span>{doc.title}</span>
-                                                {detail.permissions.canEdit && (
-                                                  <button
-                                                    className="matrix-doc-remove"
-                                                    type="button"
-                                                    onClick={(event) => {
-                                                      event.stopPropagation();
-                                                      handleRemoveDoc(node.id, concern.name, doc);
-                                                    }}
-                                                    disabled={isMutating}
-                                                    aria-label={`Remove ${doc.title}`}
-                                                  >
-                                                    ×
-                                                  </button>
-                                                )}
-                                              </div>
-                                            );
-                                          })}
-                                        </div>
-                                      ))}
+                                                ×
+                                              </button>
+                                            )}
+                                          </div>
+                                        );
+                                      })}
                                     </div>
                                   </div>
                                 );
@@ -1631,11 +1678,13 @@ export function ThreadPage({
                                 <button
                                   className="matrix-add-doc-btn"
                                   type="button"
-                                  onClick={() =>
-                                    openMatrixCellDocumentPicker(node.id, concern.name, DOC_TYPES[0] as DocKind)
-                                  }
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    openMatrixCellDocumentPicker(node.id, concern.name, DOC_TYPES[0] as DocKind);
+                                  }}
+                                  aria-label={`Add document to ${node.name} × ${concern.name}`}
                                 >
-                                  <Plus size={13} /> Add doc
+                                  <Plus size={12} />
                                 </button>
                               )}
                             </div>
@@ -1940,7 +1989,7 @@ export function ThreadPage({
                   </button>
                   {documentModal.mode === "edit" && (
                     <button
-                      className="btn-secondary"
+                      className="btn btn-secondary"
                       type="button"
                       onClick={handleUnlinkDocument}
                       disabled={isDocumentModalBusy}
