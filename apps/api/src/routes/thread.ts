@@ -498,7 +498,10 @@ async function getMatrixCell(systemId: string, nodeId: string, concern: string):
          d.language AS doc_language
        FROM matrix_refs mr
        JOIN documents d ON d.system_id = mr.system_id AND d.hash = mr.doc_hash
-       WHERE mr.system_id = $1 AND mr.node_id = $2 AND mr.concern = $3
+       WHERE mr.system_id = $1
+         AND mr.node_id = $2
+         AND mr.concern_hash = md5($3)
+         AND mr.concern = $3
        ORDER BY mr.ref_type, d.title`,
       [systemId, nodeId, concern],
     ),
@@ -1265,6 +1268,7 @@ export async function threadRoutes(app: FastifyInstance) {
           `DELETE FROM matrix_refs
            WHERE system_id = $1
              AND node_id = $2
+             AND concern_hash = md5($3)
              AND concern = $3
              AND ref_type = $4::ref_type
              AND doc_hash = $5

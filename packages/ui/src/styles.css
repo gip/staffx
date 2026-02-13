@@ -980,8 +980,7 @@ a.project-card {
   border: 1px solid var(--border);
   border-radius: 10px;
   overflow: hidden;
-  background: radial-gradient(circle at 1px 1px, rgba(128, 128, 128, 0.22) 1px, transparent 0);
-  background-size: 10px 10px;
+  background: var(--bg-secondary);
 }
 
 .thread-card--fullscreen .thread-topology-canvas {

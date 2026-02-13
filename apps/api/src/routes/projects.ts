@@ -569,7 +569,7 @@ export async function projectRoutes(app: FastifyInstance) {
 
       const [matrixRefs, artifacts] = await Promise.all([
         query<{ count: string }>(
-          "SELECT COUNT(*) AS count FROM matrix_refs WHERE system_id = $1 AND concern = $2",
+          "SELECT COUNT(*) AS count FROM matrix_refs WHERE system_id = $1 AND concern_hash = md5($2) AND concern = $2",
           [systemId, concernName],
         ),
         query<{ count: string }>(

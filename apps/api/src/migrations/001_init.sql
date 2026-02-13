@@ -138,17 +138,18 @@ create table matrix_refs (
   system_id  text not null,
   node_id    text not null,
   concern    text not null,
+  concern_hash text generated always as (md5(concern)) stored,
   ref_type   ref_type not null,
   doc_hash   text not null,
-  primary key (system_id, node_id, concern, ref_type, doc_hash),
+  primary key (system_id, node_id, concern_hash, ref_type, doc_hash),
   foreign key (system_id, node_id) references nodes(system_id, id) on delete cascade,
   foreign key (system_id, concern) references concerns(system_id, name) on delete cascade,
   foreign key (system_id, doc_hash) references documents(system_id, hash) on delete cascade
 );
 
-create index idx_matrix_cell on matrix_refs (system_id, node_id, concern);
+create index idx_matrix_cell on matrix_refs (system_id, node_id, concern_hash);
 create index idx_matrix_doc on matrix_refs (system_id, doc_hash);
-create index idx_matrix_concern on matrix_refs (system_id, concern);
+create index idx_matrix_concern on matrix_refs (system_id, concern_hash);
 
 -- ============================================================
 -- ARTIFACTS
@@ -714,7 +715,7 @@ select
 from matrix_refs mr
 group by mr.system_id, mr.node_id, mr.concern;
 
-create unique index idx_matrix_view_pk on matrix_view (system_id, node_id, concern);
+create unique index idx_matrix_view_pk on matrix_view (system_id, node_id, md5(concern));
 
 create view artifact_files_view as
 select
