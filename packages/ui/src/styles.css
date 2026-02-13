@@ -1133,31 +1133,45 @@ a.project-card {
 .thread-topology-nested-list {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  margin-top: 12px;
-  padding: 8px;
-  border: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
-  border-radius: 8px;
+  gap: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
   background: transparent;
+  overflow: visible;
 }
 
 .thread-topology-nested-item {
   display: flex;
   flex-direction: column;
-  gap: 3px;
-  padding: 6px 8px;
-  border-radius: 7px;
+  width: 100%;
+  box-sizing: border-box;
+  gap: 2px;
+  margin-top: 24px;
+  padding: 10px 8px 5px;
+  border: 2px solid var(--border);
+  border-radius: 10px;
   background: var(--bg-secondary);
   position: relative;
+  overflow: visible;
 }
 
-.thread-topology-nested-item--process {
-  margin-top: 14px;
+.thread-topology-nested-item > .thread-topology-node-badge {
+  position: absolute;
+  top: -24px;
+  left: 8px;
+  z-index: 5;
+}
+
+.thread-topology-nested-item--process > .thread-topology-node-badge {
+  top: -22px;
 }
 
 .thread-topology-handle {
   width: 0;
   height: 0;
+  min-width: 0;
+  min-height: 0;
   border: none;
   background: transparent;
   opacity: 0;
@@ -1170,6 +1184,25 @@ a.project-card {
 
 .thread-topology-handle--child {
   z-index: 3;
+}
+
+.thread-topology-nested-item .thread-topology-handle--child {
+  width: 2px;
+  height: 2px;
+  min-width: 2px;
+  min-height: 2px;
+}
+
+.thread-topology-nested-item .thread-topology-handle--child.react-flow__handle-left {
+  left: 0;
+  right: auto;
+  transform: translateY(-50%);
+}
+
+.thread-topology-nested-item .thread-topology-handle--child.react-flow__handle-right {
+  right: 0;
+  left: auto;
+  transform: translateY(-50%);
 }
 
 .matrix-concern-filter {

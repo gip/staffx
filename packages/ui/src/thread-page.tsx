@@ -1371,6 +1371,266 @@ export function ThreadPage({
     [detail.permissions.canEdit, onSaveTopologyLayout],
   );
 
+  const renderDocumentModal = () => {
+    if (!documentModal) return null;
+
+    const fullscreenContainer = isTopologyFullscreen
+      ? topologyPanelRef.current
+      : isMatrixFullscreen
+        ? matrixPanelRef.current
+        : null;
+    const modalContent = (
+      <div className="modal-overlay" onMouseDown={(e) => { if (e.target === e.currentTarget) resetDocumentModal(); }}>
+        <div className="modal thread-doc-picker">
+          <div className="thread-doc-picker-header">
+            <h3 className="modal-title">
+              {documentModal.mode === "create"
+                ? "Create Document"
+                : documentModal.mode === "edit"
+                  ? "Edit Document"
+                  : "Add Document"}
+            </h3>
+            <button
+              className="btn-icon thread-card-action"
+              type="button"
+              onClick={resetDocumentModal}
+              aria-label="Close add document dialog"
+            >
+              <X size={16} />
+            </button>
+          </div>
+          <p className="thread-doc-picker-context">
+            Node: <strong>{documentModal.nodeId || "selected node"}</strong> · Concern:{" "}
+            <strong>{documentModal.selectedConcern || "Select concern"}</strong>
+          </p>
+          {documentModal.source === "topology-node" && detail.matrix.concerns.length > 0 && (
+            <div className="thread-doc-concern">
+              <label className="field-label">Concern</label>
+              <select
+                className="field-input"
+                value={documentModal.selectedConcern}
+                onChange={(event) => {
+                  const nextConcern = event.target.value;
+                  setDocumentModal((current) =>
+                    current
+                      ? {
+                          ...current,
+                          concern: nextConcern,
+                          selectedConcern: nextConcern,
+                        }
+                      : current,
+                  );
+                }}
+              >
+                <option value="">Select a concern</option>
+                {detail.matrix.concerns.map((concern) => (
+                  <option key={concern.name} value={concern.name}>
+                    {concern.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+
+          {documentModal.mode === "browse" ? (
+            <>
+              <div className="thread-doc-picker-filters">
+                <input
+                  className="field-input"
+                  value={docPickerSearch}
+                  onChange={(event) => setDocPickerSearch(event.target.value)}
+                  placeholder="Search title, hash, language"
+                />
+                <select
+                  className="field-input"
+                  value={docPickerKindFilter}
+                  onChange={(event) => {
+                    const nextValue = event.target.value as "All" | DocKind;
+                    setDocPickerKindFilter(nextValue);
+                  }}
+                >
+                  <option value="All">All kinds</option>
+                  {DOC_TYPES.map((type) => (
+                    <option key={type} value={type}>
+                      {type}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {onCreateMatrixDocument && (
+                <div className="thread-inline-actions">
+                  <button
+                    className="btn btn-secondary"
+                    type="button"
+                    onClick={switchToDocumentCreateMode}
+                    disabled={
+                      documentModal.source === "topology-node" &&
+                      !documentModal.selectedConcern
+                    }
+                  >
+                    + Create New Document
+                  </button>
+                </div>
+              )}
+
+              <div className="thread-doc-picker-list">
+                {availableDocs.length === 0 ? (
+                  <p className="matrix-empty">No documents available for this cell.</p>
+                ) : (
+                  availableDocs.map((doc) => {
+                    const addKey = `add:${documentModal.nodeId}:${documentModal.selectedConcern}:${doc.hash}:${doc.kind}`;
+                    const isMutating = activeMatrixMutation === addKey;
+                    return (
+                      <div key={doc.hash} className="thread-doc-picker-row">
+                        <div>
+                          <strong>{doc.title}</strong>
+                          <p>{doc.kind} · {doc.language}</p>
+                        </div>
+                        <button
+                          className="btn"
+                          type="button"
+                          onClick={() => handleAttachDocument(doc)}
+                          disabled={
+                            isMutating ||
+                            (documentModal.source === "topology-node" && !documentModal.selectedConcern)
+                          }
+                        >
+                          {isMutating ? "Adding..." : "Add"}
+                        </button>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="thread-doc-form-fields">
+                <div className="field">
+                  <label className="field-label">Name</label>
+                  <input
+                    className="field-input"
+                    value={docModalName}
+                    onChange={(event) => {
+                      setDocModalName(event.target.value);
+                      setDocModalValidationError("");
+                    }}
+                    placeholder="e.g. login-sso-spec"
+                  />
+                </div>
+                <div className="field">
+                  <label className="field-label">Title</label>
+                  <input
+                    className="field-input"
+                    value={docModalTitle}
+                    onChange={(event) => {
+                      setDocModalTitle(event.target.value);
+                      setDocModalValidationError("");
+                    }}
+                  />
+                </div>
+                <div className="field">
+                  <label className="field-label">Description</label>
+                  <textarea
+                    className="field-input field-textarea md-textarea"
+                    rows={3}
+                    value={docModalDescription}
+                    onChange={(event) => {
+                      setDocModalDescription(event.target.value);
+                      setDocModalValidationError("");
+                    }}
+                  />
+                </div>
+                <div className="thread-doc-form-markdown">
+                  <div className="md-tabs">
+                    <button
+                      type="button"
+                      className={`md-tab${docModalMarkdownTab === "write" ? " md-tab--active" : ""}`}
+                      onClick={() => setDocModalMarkdownTab("write")}
+                    >
+                      Edit
+                    </button>
+                    <button
+                      type="button"
+                      className={`md-tab${docModalMarkdownTab === "preview" ? " md-tab--active" : ""}`}
+                      onClick={() => setDocModalMarkdownTab("preview")}
+                    >
+                      View
+                    </button>
+                  </div>
+                  {docModalMarkdownTab === "write" ? (
+                    <textarea
+                      className="field-input field-textarea md-textarea"
+                      rows={8}
+                      value={docModalBody}
+                      onChange={(event) => setDocModalBody(event.target.value)}
+                      placeholder="Write document markdown"
+                    />
+                  ) : (
+                    <div className="md-preview">
+                      {docModalBody.trim() ? (
+                        <div
+                          className="md-body"
+                          dangerouslySetInnerHTML={{ __html: renderMarkdown(docModalBody) }}
+                        />
+                      ) : (
+                        <p className="thread-description-text">Nothing to preview</p>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </div>
+              <div className="thread-inline-actions">
+                <button
+                  className="btn btn-secondary"
+                  type="button"
+                  onClick={() => {
+                    if (documentModal.mode === "create") {
+                      setDocumentModal((current) => (current ? { ...current, mode: "browse" } : current));
+                    } else {
+                      resetDocumentModal();
+                    }
+                  }}
+                >
+                  Cancel
+                </button>
+                <button
+                  className="btn"
+                  type="button"
+                  onClick={documentModal.mode === "create" ? handleCreateAndAttachDocument : handleReplaceDocument}
+                  disabled={isDocumentModalBusy}
+                >
+                  {isDocumentModalBusy
+                    ? "Saving..."
+                    : documentModal.mode === "create"
+                      ? "Create document"
+                      : "Save changes"}
+                </button>
+                {documentModal.mode === "edit" && (
+                  <button
+                    className="btn btn-secondary"
+                    type="button"
+                    onClick={handleUnlinkDocument}
+                    disabled={isDocumentModalBusy}
+                  >
+                    {isDocumentModalBusy ? "Unlinking..." : "Unlink"}
+                  </button>
+                )}
+              </div>
+            </>
+          )}
+
+          {(documentModalError || docModalValidationError) && (
+            <p className="field-error">{documentModalError || docModalValidationError}</p>
+          )}
+        </div>
+      </div>
+    );
+
+    return fullscreenContainer ? createPortal(modalContent, fullscreenContainer) : modalContent;
+  };
+
   return (
     <main className="page thread-view-page">
       <nav className="thread-view-breadcrumb">
@@ -1808,262 +2068,7 @@ export function ThreadPage({
         )}
       </section>
 
-      {documentModal && (() => {
-        const fullscreenContainer = isTopologyFullscreen
-          ? topologyPanelRef.current
-          : isMatrixFullscreen
-            ? matrixPanelRef.current
-            : null;
-        const modalContent = (
-        <div className="modal-overlay" onMouseDown={(e) => { if (e.target === e.currentTarget) resetDocumentModal(); }}>
-          <div className="modal thread-doc-picker">
-            <div className="thread-doc-picker-header">
-              <h3 className="modal-title">
-                {documentModal.mode === "create"
-                  ? "Create Document"
-                  : documentModal.mode === "edit"
-                    ? "Edit Document"
-                    : "Add Document"}
-              </h3>
-              <button
-                className="btn-icon thread-card-action"
-                type="button"
-                onClick={resetDocumentModal}
-                aria-label="Close add document dialog"
-              >
-                <X size={16} />
-              </button>
-            </div>
-            <p className="thread-doc-picker-context">
-              Node: <strong>{documentModal.nodeId || "selected node"}</strong> · Concern:{" "}
-              <strong>{documentModal.selectedConcern || "Select concern"}</strong>
-            </p>
-            {documentModal.source === "topology-node" && detail.matrix.concerns.length > 0 && (
-              <div className="thread-doc-concern">
-                <label className="field-label">Concern</label>
-                <select
-                  className="field-input"
-                  value={documentModal.selectedConcern}
-                  onChange={(event) => {
-                    const nextConcern = event.target.value;
-                    setDocumentModal((current) =>
-                      current
-                        ? {
-                            ...current,
-                            concern: nextConcern,
-                            selectedConcern: nextConcern,
-                          }
-                        : current,
-                    );
-                  }}
-                >
-                  <option value="">Select a concern</option>
-                  {detail.matrix.concerns.map((concern) => (
-                    <option key={concern.name} value={concern.name}>
-                      {concern.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            )}
-
-            {documentModal.mode === "browse" ? (
-              <>
-                <div className="thread-doc-picker-filters">
-                  <input
-                    className="field-input"
-                    value={docPickerSearch}
-                    onChange={(event) => setDocPickerSearch(event.target.value)}
-                    placeholder="Search title, hash, language"
-                  />
-                  <select
-                    className="field-input"
-                    value={docPickerKindFilter}
-                    onChange={(event) => {
-                      const nextValue = event.target.value as "All" | DocKind;
-                      setDocPickerKindFilter(nextValue);
-                    }}
-                  >
-                    <option value="All">All kinds</option>
-                    {DOC_TYPES.map((type) => (
-                      <option key={type} value={type}>
-                        {type}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                {onCreateMatrixDocument && (
-                  <div className="thread-inline-actions">
-                    <button
-                      className="btn btn-secondary"
-                      type="button"
-                      onClick={switchToDocumentCreateMode}
-                      disabled={
-                        documentModal.source === "topology-node" &&
-                        !documentModal.selectedConcern
-                      }
-                    >
-                      + Create New Document
-                    </button>
-                  </div>
-                )}
-
-                <div className="thread-doc-picker-list">
-                  {availableDocs.length === 0 ? (
-                    <p className="matrix-empty">No documents available for this cell.</p>
-                  ) : (
-                    availableDocs.map((doc) => {
-                      const addKey = `add:${documentModal.nodeId}:${documentModal.selectedConcern}:${doc.hash}:${doc.kind}`;
-                      const isMutating = activeMatrixMutation === addKey;
-                      return (
-                        <div key={doc.hash} className="thread-doc-picker-row">
-                          <div>
-                            <strong>{doc.title}</strong>
-                            <p>{doc.kind} · {doc.language}</p>
-                          </div>
-                          <button
-                            className="btn"
-                            type="button"
-                            onClick={() => handleAttachDocument(doc)}
-                            disabled={
-                              isMutating ||
-                              (documentModal.source === "topology-node" && !documentModal.selectedConcern)
-                            }
-                          >
-                            {isMutating ? "Adding…" : "Add"}
-                          </button>
-                        </div>
-                      );
-                    })
-                  )}
-                </div>
-              </>
-            ) : (
-              <>
-                <div className="thread-doc-form-fields">
-                  <div className="field">
-                    <label className="field-label">Name</label>
-                    <input
-                      className="field-input"
-                      value={docModalName}
-                      onChange={(event) => {
-                        setDocModalName(event.target.value);
-                        setDocModalValidationError("");
-                      }}
-                      placeholder="e.g. login-sso-spec"
-                    />
-                  </div>
-                  <div className="field">
-                    <label className="field-label">Title</label>
-                    <input
-                      className="field-input"
-                      value={docModalTitle}
-                      onChange={(event) => {
-                        setDocModalTitle(event.target.value);
-                        setDocModalValidationError("");
-                      }}
-                    />
-                  </div>
-                  <div className="field">
-                    <label className="field-label">Description</label>
-                    <textarea
-                      className="field-input field-textarea md-textarea"
-                      rows={3}
-                      value={docModalDescription}
-                      onChange={(event) => {
-                        setDocModalDescription(event.target.value);
-                        setDocModalValidationError("");
-                      }}
-                    />
-                  </div>
-                  <div className="thread-doc-form-markdown">
-                    <div className="md-tabs">
-                      <button
-                        type="button"
-                        className={`md-tab${docModalMarkdownTab === "write" ? " md-tab--active" : ""}`}
-                        onClick={() => setDocModalMarkdownTab("write")}
-                      >
-                        Edit
-                      </button>
-                      <button
-                        type="button"
-                        className={`md-tab${docModalMarkdownTab === "preview" ? " md-tab--active" : ""}`}
-                        onClick={() => setDocModalMarkdownTab("preview")}
-                      >
-                        View
-                      </button>
-                    </div>
-                    {docModalMarkdownTab === "write" ? (
-                      <textarea
-                        className="field-input field-textarea md-textarea"
-                        rows={8}
-                        value={docModalBody}
-                        onChange={(event) => setDocModalBody(event.target.value)}
-                        placeholder="Write document markdown"
-                      />
-                    ) : (
-                      <div className="md-preview">
-                        {docModalBody.trim() ? (
-                          <div
-                            className="md-body"
-                            dangerouslySetInnerHTML={{ __html: renderMarkdown(docModalBody) }}
-                          />
-                        ) : (
-                          <p className="thread-description-text">Nothing to preview</p>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                </div>
-                <div className="thread-inline-actions">
-                  <button
-                    className="btn btn-secondary"
-                    type="button"
-                    onClick={() => {
-                      if (documentModal.mode === "create") {
-                        setDocumentModal((current) => (current ? { ...current, mode: "browse" } : current));
-                      } else {
-                        resetDocumentModal();
-                      }
-                    }}
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    className="btn"
-                    type="button"
-                    onClick={documentModal.mode === "create" ? handleCreateAndAttachDocument : handleReplaceDocument}
-                    disabled={isDocumentModalBusy}
-                  >
-                    {isDocumentModalBusy
-                      ? "Saving…"
-                      : documentModal.mode === "create"
-                        ? "Create document"
-                        : "Save changes"}
-                  </button>
-                  {documentModal.mode === "edit" && (
-                    <button
-                      className="btn btn-secondary"
-                      type="button"
-                      onClick={handleUnlinkDocument}
-                      disabled={isDocumentModalBusy}
-                    >
-                      {isDocumentModalBusy ? "Unlinking…" : "Unlink"}
-                    </button>
-                  )}
-                </div>
-              </>
-            )}
-
-            {(documentModalError || docModalValidationError) && (
-              <p className="field-error">{documentModalError || docModalValidationError}</p>
-            )}
-          </div>
-        </div>
-        );
-        return fullscreenContainer ? createPortal(modalContent, fullscreenContainer) : modalContent;
-      })()}
+      {renderDocumentModal()}
     </main>
   );
 }
