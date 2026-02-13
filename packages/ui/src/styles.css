@@ -98,7 +98,7 @@ a.header-logo {
   width: 36px;
   height: 36px;
   font-size: 18px;
-  border: 1px solid var(--border);
+  border: none;
   border-radius: 6px;
   background: transparent;
   color: var(--fg);

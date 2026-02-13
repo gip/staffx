@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ChevronDown,
   ChevronRight,
-  Expand,
   Minimize2,
   Pencil,
   Plus,
@@ -21,6 +20,7 @@ import ReactFlow, {
   type Edge,
   type Node,
   type NodeProps,
+  type ReactFlowInstance,
 } from "reactflow";
 import "reactflow/dist/style.css";
 import { Link } from "./link";
@@ -341,6 +341,17 @@ interface TopologyFlowNodeData {
 interface FlowEndpoint {
   nodeId: string;
   handleId: string;
+}
+
+function FullscreenIcon({ size = 16 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M2.5 6V2.5H6" />
+      <path d="M10 2.5h3.5V6" />
+      <path d="M13.5 10v3.5H10" />
+      <path d="M6 13.5H2.5V10" />
+    </svg>
+  );
 }
 
 function TopologyFlowNode({ data }: NodeProps<TopologyFlowNodeData>) {
@@ -715,6 +726,7 @@ export function ThreadPage({
   const titleInputRef = useRef<HTMLInputElement>(null);
   const topologyPanelRef = useRef<HTMLDivElement>(null);
   const matrixPanelRef = useRef<HTMLDivElement>(null);
+  const reactFlowRef = useRef<ReactFlowInstance | null>(null);
   const [isTopologyFullscreen, setIsTopologyFullscreen] = useState(false);
   const [isMatrixFullscreen, setIsMatrixFullscreen] = useState(false);
 
@@ -764,6 +776,8 @@ export function ThreadPage({
     const onFullscreenChange = () => {
       setIsTopologyFullscreen(document.fullscreenElement === topologyPanelRef.current);
       setIsMatrixFullscreen(document.fullscreenElement === matrixPanelRef.current);
+      // Let the browser finish resizing, then fit nodes to the new viewport
+      setTimeout(() => reactFlowRef.current?.fitView({ duration: 200 }), 50);
     };
 
     document.addEventListener("fullscreenchange", onFullscreenChange);
@@ -1521,7 +1535,7 @@ export function ThreadPage({
               onClick={(e) => { e.stopPropagation(); toggleFullscreen(topologyPanelRef); }}
               aria-label={isTopologyFullscreen ? "Exit fullscreen topology" : "Enter fullscreen topology"}
             >
-              {isTopologyFullscreen ? <Minimize2 size={16} /> : <Expand size={16} />}
+              {isTopologyFullscreen ? <Minimize2 size={16} /> : <FullscreenIcon size={16} />}
             </button>
             <span className="thread-card-action thread-collapse-icon" aria-hidden>
               {isTopologyCollapsed ? <ChevronRight size={16} /> : <ChevronDown size={16} />}
@@ -1538,7 +1552,9 @@ export function ThreadPage({
                 nodeTypes={FLOW_NODE_TYPES}
                 onNodesChange={onFlowNodesChange}
                 onNodeDragStop={handleNodeDragStop}
+                onInit={(instance) => { reactFlowRef.current = instance; }}
                 fitView
+                minZoom={0.1}
                 nodesDraggable={detail.permissions.canEdit && Boolean(onSaveTopologyLayout)}
                 nodesConnectable={false}
                 elementsSelectable={false}
@@ -1567,7 +1583,7 @@ export function ThreadPage({
               onClick={(e) => { e.stopPropagation(); toggleFullscreen(matrixPanelRef); }}
               aria-label={isMatrixFullscreen ? "Exit fullscreen matrix" : "Enter fullscreen matrix"}
             >
-              {isMatrixFullscreen ? <Minimize2 size={16} /> : <Expand size={16} />}
+              {isMatrixFullscreen ? <Minimize2 size={16} /> : <FullscreenIcon size={16} />}
             </button>
             <span className="thread-card-action thread-collapse-icon" aria-hidden>
               {isMatrixCollapsed ? <ChevronRight size={16} /> : <ChevronDown size={16} />}
