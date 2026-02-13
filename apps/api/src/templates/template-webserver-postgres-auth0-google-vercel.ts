@@ -153,7 +153,7 @@ export const templateWebserverPostgresAuth0GoogleVercel: TemplateDefinition = {
   documents: [
     {
       key: "spec_stack_overview",
-      kind: "Spec",
+      kind: "Document",
       title: "Stack overview",
       language: "en",
       text:
@@ -161,7 +161,7 @@ export const templateWebserverPostgresAuth0GoogleVercel: TemplateDefinition = {
     },
     {
       key: "spec_browser_host",
-      kind: "Spec",
+      kind: "Document",
       title: "Browser host",
       language: "en",
       text:
@@ -169,7 +169,7 @@ export const templateWebserverPostgresAuth0GoogleVercel: TemplateDefinition = {
     },
     {
       key: "spec_react_frontend",
-      kind: "Spec",
+      kind: "Document",
       title: "React frontend process",
       language: "en",
       text:
@@ -177,7 +177,7 @@ export const templateWebserverPostgresAuth0GoogleVercel: TemplateDefinition = {
     },
     {
       key: "spec_vercel_host",
-      kind: "Spec",
+      kind: "Document",
       title: "Vercel host",
       language: "en",
       text:
@@ -185,7 +185,7 @@ export const templateWebserverPostgresAuth0GoogleVercel: TemplateDefinition = {
     },
     {
       key: "spec_webserver_process",
-      kind: "Spec",
+      kind: "Document",
       title: "Webserver process",
       language: "en",
       text:
@@ -193,7 +193,7 @@ export const templateWebserverPostgresAuth0GoogleVercel: TemplateDefinition = {
     },
     {
       key: "spec_postgres_host",
-      kind: "Spec",
+      kind: "Document",
       title: "Postgres host",
       language: "en",
       text:
@@ -201,7 +201,7 @@ export const templateWebserverPostgresAuth0GoogleVercel: TemplateDefinition = {
     },
     {
       key: "spec_postgres_process",
-      kind: "Spec",
+      kind: "Document",
       title: "Postgres process",
       language: "en",
       text:
@@ -209,7 +209,7 @@ export const templateWebserverPostgresAuth0GoogleVercel: TemplateDefinition = {
     },
     {
       key: "spec_auth0_host",
-      kind: "Spec",
+      kind: "Document",
       title: "Auth0 identity host",
       language: "en",
       text:
@@ -217,7 +217,7 @@ export const templateWebserverPostgresAuth0GoogleVercel: TemplateDefinition = {
     },
     {
       key: "spec_auth0_process",
-      kind: "Spec",
+      kind: "Document",
       title: "Auth0 service process",
       language: "en",
       text:
@@ -225,7 +225,7 @@ export const templateWebserverPostgresAuth0GoogleVercel: TemplateDefinition = {
     },
     {
       key: "spec_google_host",
-      kind: "Spec",
+      kind: "Document",
       title: "Google identity host",
       language: "en",
       text:
@@ -233,7 +233,7 @@ export const templateWebserverPostgresAuth0GoogleVercel: TemplateDefinition = {
     },
     {
       key: "spec_google_oauth_process",
-      kind: "Spec",
+      kind: "Document",
       title: "Google OAuth process",
       language: "en",
       text:
@@ -244,67 +244,67 @@ export const templateWebserverPostgresAuth0GoogleVercel: TemplateDefinition = {
     {
       nodeKey: "root",
       concern: "General Specs",
-      refType: "Spec",
+      refType: "Document",
       documentKey: "spec_stack_overview",
     },
     {
       nodeKey: "browser_host",
       concern: "General Specs",
-      refType: "Spec",
+      refType: "Document",
       documentKey: "spec_browser_host",
     },
     {
       nodeKey: "react_frontend",
       concern: "General Specs",
-      refType: "Spec",
+      refType: "Document",
       documentKey: "spec_react_frontend",
     },
     {
       nodeKey: "vercel_host",
       concern: "General Specs",
-      refType: "Spec",
+      refType: "Document",
       documentKey: "spec_vercel_host",
     },
     {
       nodeKey: "webserver_process",
       concern: "General Specs",
-      refType: "Spec",
+      refType: "Document",
       documentKey: "spec_webserver_process",
     },
     {
       nodeKey: "postgres_host",
       concern: "General Specs",
-      refType: "Spec",
+      refType: "Document",
       documentKey: "spec_postgres_host",
     },
     {
       nodeKey: "postgres_process",
       concern: "General Specs",
-      refType: "Spec",
+      refType: "Document",
       documentKey: "spec_postgres_process",
     },
     {
       nodeKey: "auth0_host",
       concern: "General Specs",
-      refType: "Spec",
+      refType: "Document",
       documentKey: "spec_auth0_host",
     },
     {
       nodeKey: "auth0_process",
       concern: "General Specs",
-      refType: "Spec",
+      refType: "Document",
       documentKey: "spec_auth0_process",
     },
     {
       nodeKey: "google_host",
       concern: "General Specs",
-      refType: "Spec",
+      refType: "Document",
       documentKey: "spec_google_host",
     },
     {
       nodeKey: "google_oauth_process",
       concern: "General Specs",
-      refType: "Spec",
+      refType: "Document",
       documentKey: "spec_google_oauth_process",
     },
   ],

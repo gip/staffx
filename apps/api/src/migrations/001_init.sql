@@ -25,8 +25,8 @@ create table if not exists users (
 
 create type node_kind as enum ('Root', 'Host', 'Container', 'Process', 'Library');
 create type edge_type as enum ('Runtime', 'Dataflow', 'Dependency');
-create type doc_kind as enum ('Feature', 'Spec', 'Skill');
-create type ref_type as enum ('Feature', 'Spec', 'Skill');
+create type doc_kind as enum ('Document', 'Skill');
+create type ref_type as enum ('Document', 'Skill');
 create type provider as enum ('notion', 'google');
 create type doc_source_type as enum ('local', 'notion', 'google_doc');
 create type artifact_type as enum ('Summary', 'Code', 'Docs');
@@ -747,9 +747,8 @@ select
   mr.system_id,
   mr.node_id,
   mr.concern,
-  jsonb_agg(mr.doc_hash) filter (where mr.ref_type = 'Feature') as feature_refs,
-  jsonb_agg(mr.doc_hash) filter (where mr.ref_type = 'Spec')    as spec_refs,
-  jsonb_agg(mr.doc_hash) filter (where mr.ref_type = 'Skill')   as skill_refs
+  jsonb_agg(mr.doc_hash) filter (where mr.ref_type = 'Document') as document_refs,
+  jsonb_agg(mr.doc_hash) filter (where mr.ref_type = 'Skill') as skill_refs
 from matrix_refs mr
 group by mr.system_id, mr.node_id, mr.concern;
 

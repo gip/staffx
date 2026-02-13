@@ -305,6 +305,19 @@ a.header-logo {
   border-color: var(--fg-muted);
 }
 
+select.field-input {
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  padding-right: 30px;
+  background-image:
+    linear-gradient(45deg, transparent 50%, currentColor 50%),
+    linear-gradient(135deg, currentColor 50%, transparent 50%);
+  background-position: calc(100% - 18px) 50%, calc(100% - 12px) 50%;
+  background-size: 6px 6px, 6px 6px;
+  background-repeat: no-repeat;
+}
+
 .field-input--error {
   border-color: #e5484d;
 }
@@ -1390,19 +1403,24 @@ a.project-card {
   white-space: nowrap;
 }
 
+.matrix-doc-chip--document {
+  background: rgba(31, 109, 255, 0.12);
+  border-color: rgba(31, 109, 255, 0.4);
+}
+
 .matrix-doc-chip--feature {
   background: rgba(31, 109, 255, 0.12);
   border-color: rgba(31, 109, 255, 0.4);
 }
 
-.matrix-doc-chip--spec {
-  background: rgba(36, 156, 83, 0.12);
-  border-color: rgba(36, 156, 83, 0.4);
-}
-
 .matrix-doc-chip--skill {
   background: rgba(180, 115, 0, 0.14);
   border-color: rgba(180, 115, 0, 0.4);
+}
+
+.matrix-doc-chip--spec {
+  background: rgba(36, 156, 83, 0.12);
+  border-color: rgba(36, 156, 83, 0.4);
 }
 
 .matrix-doc-chip--external {
@@ -1632,8 +1650,13 @@ a.project-card {
 
 .thread-doc-picker-filters {
   display: grid;
-  grid-template-columns: auto 1fr 170px;
+  grid-template-columns: auto 1fr 120px;
   gap: 10px;
+}
+
+.thread-doc-kind-filter {
+  width: 120px;
+  max-width: 120px;
 }
 
 .thread-doc-picker-list {
@@ -1678,6 +1701,12 @@ a.project-card {
 
 .thread-doc-source {
   display: grid;
+  gap: 10px;
+}
+
+.thread-doc-source-row {
+  display: flex;
+  align-items: center;
   gap: 10px;
 }
 
@@ -1729,6 +1758,34 @@ a.project-card {
   margin: 0;
   width: min(220px, 100%);
   min-width: 140px;
+}
+
+.thread-doc-concern--multi {
+  grid-column: 1 / -1;
+  align-items: flex-start;
+  flex-direction: column;
+}
+
+.thread-doc-concern-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.thread-doc-concern-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  padding: 4px 8px;
+  font-size: 11px;
+  color: var(--fg-muted);
+  background: var(--bg);
+}
+
+.thread-doc-concern-option input[type="checkbox"] {
+  margin: 0;
 }
 
 /* Profile page */
