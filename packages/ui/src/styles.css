@@ -1706,6 +1706,7 @@ a.project-card {
   display: flex;
   flex-direction: column;
   gap: 10px;
+  margin-top: 16px;
 }
 
 .thread-chat-run-actions {
@@ -1772,10 +1773,11 @@ a.project-card {
 .thread-chat-disabled-copy {
   font-size: 12px;
   color: var(--fg-muted);
+  margin-top: 16px;
 }
 
 .thread-chat-history-title {
-  margin-top: 18px;
+  margin-top: 0;
   margin-bottom: 10px;
   font-size: 14px;
   font-weight: 600;
@@ -1827,6 +1829,17 @@ a.project-card {
   color: var(--fg-muted);
 }
 
+.thread-chat-message header .thread-chat-system-content {
+  display: block;
+  min-width: 0;
+  flex: 1;
+  font-size: 13px;
+  line-height: 1.4;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .thread-chat-message p {
   font-size: 14px;
   line-height: 1.5;
@@ -1843,6 +1856,10 @@ a.project-card {
 
 .thread-chat-message--system {
   border-style: dashed;
+}
+
+.thread-chat-message--system header {
+  margin-bottom: 0;
 }
 
 .thread-doc-picker {

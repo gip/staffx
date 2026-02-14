@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+import type { PoolClient } from "pg";
 import pool, { query } from "../db.js";
 import { verifyOptionalAuth, type AuthUser } from "../auth.js";
 import { decryptToken, encryptToken } from "../integrations/crypto.js";
@@ -97,6 +98,16 @@ interface ChatMessageRow {
   created_at: Date;
 }
 
+interface ThreadChatMessage {
+  id: string;
+  actionId: string;
+  role: "User" | "Assistant" | "System";
+  actionType: string;
+  actionPosition: number;
+  content: string;
+  createdAt: Date;
+}
+
 interface ChatActionRow {
   id: string;
   position: number;
@@ -159,15 +170,7 @@ interface AssistantRunPlanResponse {
     messages: string[];
   };
   changesCount: number;
-  messages: Array<{
-    id: string;
-    actionId: string;
-    role: "User" | "Assistant" | "System";
-    actionType: string;
-    actionPosition: number;
-    content: string;
-    createdAt: Date;
-  }>;
+  messages: ThreadChatMessage[];
   systemId: string;
 }
 
@@ -434,6 +437,142 @@ function mapAssistantRunMessages(rows: AssistantRunMessageRow[]): AssistantRunPl
     content: row.content,
     createdAt: row.created_at,
   }));
+}
+
+function mapChatMessages(rows: ChatMessageRow[]): ThreadChatMessage[] {
+  return rows.map((row) => ({
+    id: row.id,
+    actionId: row.action_id,
+    actionType: row.action_type,
+    actionPosition: row.action_position,
+    role: row.role,
+    content: row.content,
+    createdAt: row.created_at,
+  }));
+}
+
+function buildNodeScopedSummary(
+  nodeName: string | null,
+  title: string,
+  verb: "added" | "removed" | "updated",
+): string {
+  if (nodeName) {
+    return `In the ${nodeName}, the document "${title}" was ${verb}.`;
+  }
+  return `The document "${title}" was ${verb}.`;
+}
+
+function buildDocumentAddSummary(title: string, nodeName: string | null): string {
+  return buildNodeScopedSummary(nodeName, title, "added");
+}
+
+function buildDocumentRemoveSummary(title: string, nodeName: string | null): string {
+  return buildNodeScopedSummary(nodeName, title, "removed");
+}
+
+function buildDocumentCreateSummary(
+  title: string,
+  sourceType: DocSourceType,
+  nodeName: string | null,
+  hasAttachment: boolean,
+): string {
+  if (hasAttachment) {
+    return buildNodeScopedSummary(nodeName, title, "added");
+  }
+  if (sourceType === "local") {
+    return `The document "${title}" was created.`;
+  }
+  return `The document "${title}" was imported.`;
+}
+
+function buildDocumentModifySummary(
+  previousTitle: string,
+  nextTitle: string,
+  nodeNames: string[],
+): string {
+  const title = nextTitle || previousTitle;
+  if (nodeNames.length === 1) {
+    return `In the ${nodeNames[0]}, the document "${title}" was updated.`;
+  }
+  if (nodeNames.length > 1) {
+    return `In ${nodeNames.length} nodes, the document "${title}" was updated.`;
+  }
+  return `The document "${title}" was updated.`;
+}
+
+async function getDocumentTitleByHash(
+  client: PoolClient,
+  systemId: string,
+  hash: string,
+): Promise<string | null> {
+  const result = await client.query<{ title: string }>(
+    `SELECT title
+     FROM documents
+     WHERE system_id = $1 AND hash = $2
+     LIMIT 1`,
+    [systemId, hash],
+  );
+  return result.rows[0]?.title ?? null;
+}
+
+async function getNodeNameById(
+  client: PoolClient,
+  systemId: string,
+  nodeId: string,
+): Promise<string | null> {
+  const result = await client.query<{ name: string }>(
+    `SELECT name
+     FROM nodes
+     WHERE system_id = $1 AND id = $2
+     LIMIT 1`,
+    [systemId, nodeId],
+  );
+  return result.rows[0]?.name ?? null;
+}
+
+async function getNodeNamesByDocumentHash(
+  client: PoolClient,
+  systemId: string,
+  docHash: string,
+): Promise<string[]> {
+  const result = await client.query<{ name: string }>(
+    `SELECT DISTINCT n.name
+     FROM matrix_refs mr
+     JOIN nodes n ON n.system_id = mr.system_id AND n.id = mr.node_id
+     WHERE mr.system_id = $1 AND mr.doc_hash = $2
+     ORDER BY n.name`,
+    [systemId, docHash],
+  );
+  return result.rows.map((row) => row.name);
+}
+
+async function insertSystemActionMessage(
+  client: PoolClient,
+  threadId: string,
+  actionId: string,
+  content: string,
+) {
+  await client.query(
+    `INSERT INTO messages (id, thread_id, action_id, role, content, position)
+     VALUES ($1, $2, $3, 'System'::message_role, $4, 1)`,
+    [randomUUID(), threadId, actionId, content],
+  );
+}
+
+async function getActionMessages(
+  client: PoolClient,
+  threadId: string,
+  actionId: string,
+): Promise<ThreadChatMessage[]> {
+  const messagesResult = await client.query<ChatMessageRow>(
+    `SELECT m.id, m.action_id, m.role, m.content, m.created_at, a.position AS action_position, a.type AS action_type
+     FROM messages m
+     JOIN actions a ON a.thread_id = m.thread_id AND a.id = m.action_id
+     WHERE m.thread_id = $1 AND m.action_id = $2
+     ORDER BY m.position`,
+    [threadId, actionId],
+  );
+  return mapChatMessages(messagesResult.rows);
 }
 
 function generatePlanResponseContent(prompt: string): string {
@@ -1273,15 +1412,7 @@ export async function threadRoutes(app: FastifyInstance) {
           })),
         },
         chat: {
-          messages: messagesResult.rows.map((row) => ({
-            id: row.id,
-            actionId: row.action_id,
-            actionType: row.action_type,
-            actionPosition: row.action_position,
-            role: row.role,
-            content: row.content,
-            createdAt: row.created_at,
-          })),
+          messages: mapChatMessages(messagesResult.rows),
         },
       };
     },
@@ -1634,6 +1765,7 @@ export async function threadRoutes(app: FastifyInstance) {
 
       const client = await pool.connect();
       let inTransaction = false;
+      let actionMessages: ThreadChatMessage[] = [];
       const concerns = payload.concerns;
 
       try {
@@ -1665,6 +1797,16 @@ export async function threadRoutes(app: FastifyInstance) {
 
         if (changed === 0) {
           await client.query("SELECT commit_action_empty($1, $2)", [context.threadId, actionId]);
+        } else {
+          const title = await getDocumentTitleByHash(client, outputSystemId, payload.docHash) ?? payload.docHash;
+          const nodeName = await getNodeNameById(client, outputSystemId, payload.nodeId);
+          await insertSystemActionMessage(
+            client,
+            context.threadId,
+            actionId,
+            buildDocumentAddSummary(title, nodeName),
+          );
+          actionMessages = await getActionMessages(client, context.threadId, actionId);
         }
 
         await client.query("COMMIT");
@@ -1698,9 +1840,9 @@ export async function threadRoutes(app: FastifyInstance) {
       const cells = await getMatrixCells(systemId, payload.nodeId, payload.concerns);
 
       if (cells.length === 1) {
-        return { systemId, cell: cells[0], cells };
+        return { systemId, cell: cells[0], cells, messages: actionMessages };
       }
-      return { systemId, cells };
+      return { systemId, cells, messages: actionMessages };
     },
   );
 
@@ -1769,6 +1911,7 @@ export async function threadRoutes(app: FastifyInstance) {
 
       const client = await pool.connect();
       let inTransaction = false;
+      let actionMessages: ThreadChatMessage[] = [];
 
       try {
         await client.query("BEGIN");
@@ -1819,8 +1962,8 @@ export async function threadRoutes(app: FastifyInstance) {
         );
 
         const shouldAttach = Boolean(payload.attach);
+        let insertRefCount = 0;
         if (payload.attach) {
-          let insertRefCount = 0;
           for (const concern of payload.attach.concerns) {
             const insertRefResult = await client.query<ChangedRow>(
               `INSERT INTO matrix_refs (system_id, node_id, concern, ref_type, doc_hash)
@@ -1831,13 +1974,23 @@ export async function threadRoutes(app: FastifyInstance) {
             );
             insertRefCount += insertRefResult.rowCount ?? 0;
           }
+        }
 
-          if (insertResult.rowCount === 0 && insertRefCount === 0) {
-            await client.query("SELECT commit_action_empty($1, $2)", [context.threadId, actionId]);
-          }
-
-        } else if (insertResult.rowCount === 0) {
+        const createdOrImported = (insertResult.rowCount ?? 0) > 0;
+        const changed = createdOrImported || insertRefCount > 0;
+        if (!changed) {
           await client.query("SELECT commit_action_empty($1, $2)", [context.threadId, actionId]);
+        } else {
+          const nodeName = payload.attach
+            ? await getNodeNameById(client, outputSystemId, payload.attach.nodeId)
+            : null;
+          await insertSystemActionMessage(
+            client,
+            context.threadId,
+            actionId,
+            buildDocumentCreateSummary(title, payload.sourceType, nodeName, insertRefCount > 0),
+          );
+          actionMessages = await getActionMessages(client, context.threadId, actionId);
         }
 
         await client.query("COMMIT");
@@ -1866,9 +2019,11 @@ export async function threadRoutes(app: FastifyInstance) {
           document: MatrixDocumentRow;
           cell?: MatrixCell;
           cells?: MatrixCell[];
+          messages?: ThreadChatMessage[];
         } = {
           systemId,
           document: nextDocument,
+          messages: actionMessages,
         };
         if (shouldAttach && payload.attach) {
           const nextCells = await getMatrixCells(systemId, payload.attach.nodeId, payload.attach.concerns);
@@ -1924,6 +2079,7 @@ export async function threadRoutes(app: FastifyInstance) {
 
       const client = await pool.connect();
       let inTransaction = false;
+      let actionMessages: ThreadChatMessage[] = [];
 
       try {
         await client.query("BEGIN");
@@ -2036,6 +2192,16 @@ export async function threadRoutes(app: FastifyInstance) {
         const changed = (insertResult.rowCount ?? 0) > 0 || (updateRefsResult.rowCount ?? 0) > 0;
         if (!changed) {
           await client.query("SELECT commit_action_empty($1, $2)", [context.threadId, actionId]);
+        } else {
+          const nodeNames = await getNodeNamesByDocumentHash(client, outputSystemId, nextHash);
+
+          await insertSystemActionMessage(
+            client,
+            context.threadId,
+            actionId,
+            buildDocumentModifySummary(existing.title, nextTitle, nodeNames),
+          );
+          actionMessages = await getActionMessages(client, context.threadId, actionId);
         }
 
         await client.query("COMMIT");
@@ -2054,11 +2220,17 @@ export async function threadRoutes(app: FastifyInstance) {
           sourceConnectedUserId: existing.source_connected_user_id,
         };
 
+        const systemId = await getThreadSystemId(context.threadId);
+        if (!systemId) {
+          return reply.code(500).send({ error: "Unable to resolve thread system" });
+        }
+
         return {
-          systemId: outputSystemId,
+          systemId,
           oldHash: existing.hash,
           document: nextDocument,
           replacedRefs: updateRefsResult.rowCount ?? 0,
+          messages: actionMessages,
         };
       } catch (error) {
         if (inTransaction) {
@@ -2093,6 +2265,7 @@ export async function threadRoutes(app: FastifyInstance) {
 
       const client = await pool.connect();
       let inTransaction = false;
+      let actionMessages: ThreadChatMessage[] = [];
 
       try {
         await client.query("BEGIN");
@@ -2127,6 +2300,16 @@ export async function threadRoutes(app: FastifyInstance) {
 
         if (changed === 0) {
           await client.query("SELECT commit_action_empty($1, $2)", [context.threadId, actionId]);
+        } else {
+          const title = await getDocumentTitleByHash(client, outputSystemId, payload.docHash) ?? payload.docHash;
+          const nodeName = await getNodeNameById(client, outputSystemId, payload.nodeId);
+          await insertSystemActionMessage(
+            client,
+            context.threadId,
+            actionId,
+            buildDocumentRemoveSummary(title, nodeName),
+          );
+          actionMessages = await getActionMessages(client, context.threadId, actionId);
         }
 
         await client.query("COMMIT");
@@ -2151,9 +2334,9 @@ export async function threadRoutes(app: FastifyInstance) {
 
       const cells = await getMatrixCells(systemId, payload.nodeId, payload.concerns);
       if (cells.length === 1) {
-        return { systemId, cell: cells[0], cells };
+        return { systemId, cell: cells[0], cells, messages: actionMessages };
       }
-      return { systemId, cells };
+      return { systemId, cells, messages: actionMessages };
     },
   );
 
@@ -2206,28 +2389,13 @@ export async function threadRoutes(app: FastifyInstance) {
           ],
         );
 
-        const messagesResult = await client.query<ChatMessageRow>(
-          `SELECT m.id, m.action_id, m.role, m.content, m.created_at, a.position AS action_position, a.type AS action_type
-           FROM messages m
-           JOIN actions a ON a.thread_id = m.thread_id AND a.id = m.action_id
-           WHERE m.thread_id = $1 AND m.action_id = $2
-           ORDER BY m.position`,
-          [context.threadId, actionId],
-        );
+        const messages = await getActionMessages(client, context.threadId, actionId);
 
         await client.query("COMMIT");
         inTransaction = false;
 
         return {
-          messages: messagesResult.rows.map((row) => ({
-            id: row.id,
-            actionId: row.action_id,
-            actionType: row.action_type,
-            actionPosition: row.action_position,
-            role: row.role,
-            content: row.content,
-            createdAt: row.created_at,
-          })),
+          messages,
         };
       } catch (error) {
         if (inTransaction) {

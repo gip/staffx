@@ -119,6 +119,91 @@ function replaceMatrixDocumentInGlobalList(
   return [...withoutOld, nextDoc];
 }
 
+type MatrixRefMutationResponse = {
+  systemId: string;
+  cell?: MatrixCell;
+  cells?: MatrixCell[];
+  messages?: ChatMessage[];
+};
+
+interface MatrixDocumentCreateResponse {
+  systemId: string;
+  document: MatrixDocument;
+  cell?: MatrixCell;
+  cells?: MatrixCell[];
+  messages?: ChatMessage[];
+}
+
+interface MatrixDocumentReplaceResponse {
+  systemId: string;
+  oldHash: string;
+  document: MatrixDocument;
+  replacedRefs: number;
+  messages?: ChatMessage[];
+}
+
+function normalizeMutationCells(response: MatrixRefMutationResponse): MatrixCell[] {
+  const cells = response.cells?.length ? response.cells : response.cell ? [response.cell] : [];
+  return cells.filter((cell): cell is MatrixCell => Boolean(cell.nodeId && cell.concern));
+}
+
+function applyMutationCells(
+  currentCells: MatrixCell[],
+  nextCells: MatrixCell[],
+): MatrixCell[] {
+  return nextCells.reduce((cells, nextCell) => upsertMatrixCell(cells, nextCell), currentCells);
+}
+
+function getAttachConcerns(
+  payload?: {
+    concern?: string;
+    concerns?: string[];
+  },
+): string[] {
+  const concernsFromList = Array.isArray(payload?.concerns)
+    ? payload.concerns.map((concern) => concern.trim()).filter(Boolean)
+    : [];
+  const uniqueConcerns = Array.from(new Set(concernsFromList));
+  if (uniqueConcerns.length > 0) return uniqueConcerns;
+  const concern = payload?.concern?.trim();
+  return concern ? [concern] : [];
+}
+
+function buildFallbackAttachedCells(
+  existingCells: MatrixCell[],
+  nodeId: string,
+  concerns: string[],
+  refType: "Document" | "Skill",
+  document: MatrixDocument,
+): MatrixCell[] {
+  return concerns.map((concern) => {
+    const existingCell = existingCells.find((cell) => cell.nodeId === nodeId && cell.concern === concern);
+    const nextDoc: MatrixCellDoc = {
+      hash: document.hash,
+      title: document.title,
+      kind: document.kind,
+      language: document.language,
+      refType,
+      sourceType: document.sourceType,
+      sourceUrl: document.sourceUrl,
+      sourceExternalId: document.sourceExternalId,
+      sourceMetadata: document.sourceMetadata,
+      sourceConnectedUserId: document.sourceConnectedUserId,
+    };
+
+    const docs = existingCell ? existingCell.docs : [];
+    const hasDoc = docs.some((entry) => entry.hash === nextDoc.hash && entry.refType === nextDoc.refType);
+    const nextDocs = hasDoc ? docs : [...docs, nextDoc];
+
+    return {
+      nodeId,
+      concern,
+      docs: nextDocs,
+      artifacts: existingCell?.artifacts ?? [],
+    };
+  });
+}
+
 function mergeChatMessages(current: ChatMessage[], incoming: ChatMessage[]) {
   const existing = new Set(current.map((message) => message.id));
   const next = incoming.filter((message) => !existing.has(message.id));
@@ -810,34 +895,17 @@ function ThreadRoute({ isAuthenticated }: { isAuthenticated: boolean }) {
         if (!res.ok) {
           return { error: await readError(res, "Failed to add matrix document") };
         }
-        const data = (await res.json()) as { systemId: string; cell: MatrixCell };
+        const data = (await res.json()) as MatrixRefMutationResponse;
+        const nextCells = normalizeMutationCells(data);
         setDetail((prev) => (
           prev
             ? {
                 ...prev,
                 systemId: data.systemId,
-                matrix: {
-                  ...prev.matrix,
-                  cells: (() => {
-                    const existingCell = prev.matrix.cells.find((cell) =>
-                      cell.nodeId === data.cell.nodeId && cell.concern === data.cell.concern,
-                    );
-                    if (existingCell) {
-                      const docByRef = new Map<string, MatrixCellDoc>(
-                        existingCell.docs.map((doc) => [`${doc.hash}:${doc.refType}`, doc]),
-                      );
-                      for (const doc of data.cell.docs) {
-                        docByRef.set(`${doc.hash}:${doc.refType}`, doc);
-                      }
-                      const mergedCell: MatrixCell = {
-                        ...existingCell,
-                        docs: Array.from(docByRef.values()),
-                        artifacts: data.cell.artifacts,
-                      };
-                      return upsertMatrixCell(prev.matrix.cells, mergedCell);
-                    }
-                    return upsertMatrixCell(prev.matrix.cells, data.cell);
-                  })(),
+                matrix: { ...prev.matrix, cells: applyMutationCells(prev.matrix.cells, nextCells) },
+                chat: {
+                  ...prev.chat,
+                  messages: mergeChatMessages(prev.chat.messages, data.messages ?? []),
                 },
               }
             : prev
@@ -856,13 +924,18 @@ function ThreadRoute({ isAuthenticated }: { isAuthenticated: boolean }) {
         if (!res.ok) {
           return { error: await readError(res, "Failed to remove matrix document") };
         }
-        const data = (await res.json()) as { systemId: string; cell: MatrixCell };
+        const data = (await res.json()) as MatrixRefMutationResponse;
+        const nextCells = normalizeMutationCells(data);
         setDetail((prev) => (
           prev
             ? {
                 ...prev,
                 systemId: data.systemId,
-                matrix: { ...prev.matrix, cells: upsertMatrixCell(prev.matrix.cells, data.cell) },
+                matrix: { ...prev.matrix, cells: applyMutationCells(prev.matrix.cells, nextCells) },
+                chat: {
+                  ...prev.chat,
+                  messages: mergeChatMessages(prev.chat.messages, data.messages ?? []),
+                },
               }
             : prev
         ));
@@ -880,44 +953,25 @@ function ThreadRoute({ isAuthenticated }: { isAuthenticated: boolean }) {
         if (!res.ok) {
           return { error: await readError(res, "Failed to create matrix document") };
         }
-        const data = (await res.json()) as {
-          systemId: string;
-          document: MatrixDocument;
-          cell?: MatrixCell;
-        };
+        const data = (await res.json()) as MatrixDocumentCreateResponse;
         setDetail((prev) => {
           if (!prev) return prev;
-          const fallbackCell = (() => {
-            if (!payload.attach) return data.cell;
-            if (data.cell) return data.cell;
-
-            const existingCell = prev.matrix.cells.find((cell) =>
-              cell.nodeId === payload.attach?.nodeId && cell.concern === payload.attach?.concern,
-            );
-            const nextDoc = {
-              hash: data.document.hash,
-              title: data.document.title,
-              kind: data.document.kind,
-              language: data.document.language,
-              refType: payload.attach.refType,
-              sourceType: data.document.sourceType,
-              sourceUrl: data.document.sourceUrl,
-              sourceExternalId: data.document.sourceExternalId,
-              sourceMetadata: data.document.sourceMetadata,
-              sourceConnectedUserId: data.document.sourceConnectedUserId,
-            };
-            const docs = existingCell?.docs ?? [];
-            const deduped = docs.some((doc) => doc.hash === nextDoc.hash && doc.refType === nextDoc.refType)
-              ? docs
-              : [...docs, nextDoc];
-
-            return {
-              nodeId: payload.attach.nodeId,
-              concern: payload.attach.concern,
-              docs: deduped,
-              artifacts: existingCell?.artifacts ?? [],
-            };
-          })();
+          const nextCells = normalizeMutationCells(data);
+          const attachConcerns = payload.attach ? getAttachConcerns(payload.attach) : [];
+          const fallbackCells =
+            nextCells.length > 0
+              ? nextCells
+              : payload.attach && attachConcerns.length > 0
+                ? buildFallbackAttachedCells(
+                    prev.matrix.cells,
+                    payload.attach.nodeId,
+                    attachConcerns,
+                    payload.attach.refType,
+                    data.document,
+                  )
+                : data.cell
+                  ? [data.cell]
+                  : [];
 
           return {
             ...prev,
@@ -925,7 +979,11 @@ function ThreadRoute({ isAuthenticated }: { isAuthenticated: boolean }) {
             matrix: {
               ...prev.matrix,
               documents: upsertMatrixDocument(prev.matrix.documents, data.document),
-              cells: fallbackCell ? upsertMatrixCell(prev.matrix.cells, fallbackCell) : prev.matrix.cells,
+              cells: applyMutationCells(prev.matrix.cells, fallbackCells),
+            },
+            chat: {
+              ...prev.chat,
+              messages: mergeChatMessages(prev.chat.messages, data.messages ?? []),
             },
           };
         });
@@ -943,12 +1001,7 @@ function ThreadRoute({ isAuthenticated }: { isAuthenticated: boolean }) {
         if (!res.ok) {
           return { error: await readError(res, "Failed to replace matrix document") };
         }
-        const data = (await res.json()) as {
-          systemId: string;
-          oldHash: string;
-          document: MatrixDocument;
-          replacedRefs: number;
-        };
+        const data = (await res.json()) as MatrixDocumentReplaceResponse;
         setDetail((prev) => {
           if (!prev) return prev;
           return {
@@ -966,6 +1019,10 @@ function ThreadRoute({ isAuthenticated }: { isAuthenticated: boolean }) {
                 data.oldHash,
                 data.document,
               ),
+            },
+            chat: {
+              ...prev.chat,
+              messages: mergeChatMessages(prev.chat.messages, data.messages ?? []),
             },
           };
         });

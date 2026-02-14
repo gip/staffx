@@ -209,11 +209,19 @@ interface MatrixDocumentParsedText {
   body: string;
 }
 
+interface MatrixRefMutationResponse {
+  systemId: string;
+  cell?: MatrixCell;
+  cells?: MatrixCell[];
+  messages?: ChatMessage[];
+}
+
 interface MatrixDocumentCreateResponse {
   systemId: string;
   document: MatrixDocument;
   cell?: MatrixCell;
   cells?: MatrixCell[];
+  messages?: ChatMessage[];
 }
 
 interface MatrixDocumentReplaceResponse {
@@ -221,6 +229,7 @@ interface MatrixDocumentReplaceResponse {
   oldHash: string;
   document: MatrixDocument;
   replacedRefs: number;
+  messages?: ChatMessage[];
 }
 
 interface MatrixDocGroup {
@@ -246,10 +255,10 @@ interface ThreadPageProps {
   onSaveTopologyLayout?: (payload: { positions: Array<{ nodeId: string; x: number; y: number }> }) => Promise<MutationResult<{ systemId: string }>>;
   onAddMatrixDoc?: (
     payload: MatrixRefInput,
-  ) => Promise<MutationResult<{ systemId: string; cell?: MatrixCell; cells?: MatrixCell[] }>>;
+  ) => Promise<MutationResult<MatrixRefMutationResponse>>;
   onRemoveMatrixDoc?: (
     payload: MatrixRefInput,
-  ) => Promise<MutationResult<{ systemId: string; cell?: MatrixCell; cells?: MatrixCell[] }>>;
+  ) => Promise<MutationResult<MatrixRefMutationResponse>>;
   onCreateMatrixDocument?: (payload: MatrixDocumentCreateInput) => Promise<MutationResult<MatrixDocumentCreateResponse>>;
   onReplaceMatrixDocument?: (documentHash: string, payload: MatrixDocumentReplaceInput) => Promise<MutationResult<MatrixDocumentReplaceResponse>>;
   onSendChatMessage?: (payload: { content: string }) => Promise<MutationResult<{ messages: ChatMessage[] }>>;
@@ -1134,6 +1143,22 @@ export function ThreadPage({
 
     return artifacts;
   }, [detail.topology.nodes, detail.matrix.cells]);
+
+  const orderedChatMessages = useMemo(() => {
+    return [...detail.chat.messages].sort((a, b) => {
+      const aAction = typeof a.actionPosition === "number" ? a.actionPosition : Number.MAX_SAFE_INTEGER;
+      const bAction = typeof b.actionPosition === "number" ? b.actionPosition : Number.MAX_SAFE_INTEGER;
+      if (aAction !== bAction) return aAction - bAction;
+
+      const aTime = new Date(a.createdAt).getTime();
+      const bTime = new Date(b.createdAt).getTime();
+      if (Number.isFinite(aTime) && Number.isFinite(bTime) && aTime !== bTime) {
+        return aTime - bTime;
+      }
+
+      return a.id.localeCompare(b.id);
+    });
+  }, [detail.chat.messages]);
 
   const resetDocumentModal = useCallback(() => {
     setDocumentModal(null);
@@ -2692,6 +2717,37 @@ export function ThreadPage({
 
         const renderChatBody = () => (
           <div>
+            <div className="thread-chat-history">
+              {orderedChatMessages.length === 0 ? (
+                <p className="matrix-empty">No messages yet</p>
+              ) : (
+                orderedChatMessages.map((message) => (
+                  <article
+                    key={message.id}
+                    className={`thread-chat-message thread-chat-message--${message.role.toLowerCase()}`}
+                  >
+                    {message.role === "System" ? (
+                      <header>
+                        <span className="thread-chat-system-content">{message.content}</span>
+                        <span>{formatDateTime(message.createdAt)}</span>
+                      </header>
+                    ) : (
+                      <>
+                        <header>
+                          <div className="thread-chat-message-header-left">
+                            <strong>{message.role}</strong>
+                            {message.actionType ? <span className="thread-chat-action-type">{message.actionType}</span> : null}
+                          </div>
+                          <span>{formatDateTime(message.createdAt)}</span>
+                        </header>
+                        <p>{message.content}</p>
+                      </>
+                    )}
+                  </article>
+                ))
+              )}
+            </div>
+
             {effectiveCanEdit ? (
               <div className="thread-chat-form">
                 {onRunAssistant ? (
@@ -2751,29 +2807,6 @@ export function ThreadPage({
             ) : (
               <p className="thread-chat-disabled-copy">Only owners and editors can send messages.</p>
             )}
-
-            <h4 className="thread-chat-history-title">Chat History</h4>
-            <div className="thread-chat-history">
-              {detail.chat.messages.length === 0 ? (
-                <p className="matrix-empty">No messages yet</p>
-              ) : (
-                detail.chat.messages.map((message) => (
-                  <article
-                    key={message.id}
-                    className={`thread-chat-message thread-chat-message--${message.role.toLowerCase()}`}
-                  >
-                    <header>
-                      <div className="thread-chat-message-header-left">
-                        <strong>{message.role}</strong>
-                        {message.actionType ? <span className="thread-chat-action-type">{message.actionType}</span> : null}
-                      </div>
-                      <span>{formatDateTime(message.createdAt)}</span>
-                    </header>
-                    <p>{message.content}</p>
-                  </article>
-                ))
-              )}
-            </div>
           </div>
         );
 
@@ -2831,13 +2864,13 @@ export function ThreadPage({
 
             <section className="thread-card thread-collapsible">
               <div className="thread-card-header" onClick={() => setIsChatCollapsed((current) => !current)}>
-                <h3>Chat View</h3>
+                <h3>History</h3>
                 <div className="thread-card-actions">
                   <button
                     className="btn-icon thread-card-action"
                     type="button"
                     onClick={(e) => { e.stopPropagation(); enterFullscreen("chat"); }}
-                    aria-label="Enter fullscreen chat"
+                    aria-label="Enter fullscreen history"
                   >
                     <FullscreenIcon size={16} />
                   </button>
@@ -2928,7 +2961,7 @@ export function ThreadPage({
                     className={`thread-fullscreen-tab${fullscreenTab === "chat" ? " thread-fullscreen-tab--active" : ""}`}
                     onClick={() => setFullscreenTab("chat")}
                   >
-                    Chat
+                    History
                   </button>
                 </div>
                 <button
