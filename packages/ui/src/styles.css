@@ -1234,7 +1234,7 @@ a.project-card {
 
 .thread-topology-root-group > .thread-topology-node-badge {
   position: absolute;
-  top: -31px;
+  top: -16px;
   left: 10px;
   z-index: 3;
 }
