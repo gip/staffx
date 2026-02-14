@@ -88,6 +88,7 @@ type MatrixRefMutationResponse = {
   systemId: string;
   cell?: MatrixCell;
   cells?: MatrixCell[];
+  messages?: ChatMessage[];
 };
 
 interface MatrixDocumentCreateResponse {
@@ -95,6 +96,15 @@ interface MatrixDocumentCreateResponse {
   document: MatrixDocument;
   cell?: MatrixCell;
   cells?: MatrixCell[];
+  messages?: ChatMessage[];
+}
+
+interface MatrixDocumentReplaceResponse {
+  systemId: string;
+  oldHash: string;
+  document: MatrixDocument;
+  replacedRefs: number;
+  messages?: ChatMessage[];
 }
 
 function normalizeMutationCells(response: MatrixRefMutationResponse): MatrixCell[] {
@@ -890,6 +900,10 @@ function ThreadRoute() {
                 ...prev,
                 systemId: data.systemId,
                 matrix: { ...prev.matrix, cells: applyMutationCells(prev.matrix.cells, nextCells) },
+                chat: {
+                  ...prev.chat,
+                  messages: mergeChatMessages(prev.chat.messages, data.messages ?? []),
+                },
               }
             : prev
         ));
@@ -915,6 +929,10 @@ function ThreadRoute() {
                 ...prev,
                 systemId: data.systemId,
                 matrix: { ...prev.matrix, cells: applyMutationCells(prev.matrix.cells, nextCells) },
+                chat: {
+                  ...prev.chat,
+                  messages: mergeChatMessages(prev.chat.messages, data.messages ?? []),
+                },
               }
             : prev
         ));
@@ -960,6 +978,10 @@ function ThreadRoute() {
               documents: upsertMatrixDocument(prev.matrix.documents, typedData.document),
               cells: applyMutationCells(prev.matrix.cells, fallbackCells),
             },
+            chat: {
+              ...prev.chat,
+              messages: mergeChatMessages(prev.chat.messages, typedData.messages ?? []),
+            },
           };
         });
         return typedData;
@@ -976,12 +998,7 @@ function ThreadRoute() {
         if (!res.ok) {
           return { error: await readError(res, "Failed to replace matrix document") };
         }
-        const data = (await res.json()) as {
-          systemId: string;
-          oldHash: string;
-          document: MatrixDocument;
-          replacedRefs: number;
-        };
+        const data = (await res.json()) as MatrixDocumentReplaceResponse;
         setDetail((prev) => {
           if (!prev) return prev;
           return {
@@ -999,6 +1016,10 @@ function ThreadRoute() {
                 data.oldHash,
                 data.document,
               ),
+            },
+            chat: {
+              ...prev.chat,
+              messages: mergeChatMessages(prev.chat.messages, data.messages ?? []),
             },
           };
         });
