@@ -140,6 +140,29 @@ create index idx_documents_supersedes on documents (system_id, supersedes)
 create index idx_documents_source_type on documents (system_id, source_type);
 create index idx_documents_source_url on documents (source_url) where source_url is not null;
 
+-- ============================================================
+-- EXTERNAL DOCUMENT SYNC NOTIFICATIONS
+-- ============================================================
+
+create table external_document_sync_notifications (
+  id               uuid primary key default gen_random_uuid(),
+  system_id        text not null references systems(id) on delete cascade,
+  source_type      doc_source_type not null,
+  source_external_id text not null,
+  source_url       text not null,
+  source_connected_user_id uuid references users(id) on delete set null,
+  old_document_hash text not null,
+  new_document_hash text not null,
+  old_title        text not null,
+  new_title        text not null,
+  source_metadata  jsonb,
+  created_at       timestamptz not null default now()
+);
+
+create index idx_external_document_sync_notifications_system on external_document_sync_notifications (system_id, created_at desc);
+create index idx_external_document_sync_notifications_user on external_document_sync_notifications (source_connected_user_id, created_at desc)
+  where source_connected_user_id is not null;
+
 create table user_integrations (
   user_id uuid not null references users(id) on delete cascade,
   provider provider not null,
