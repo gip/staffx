@@ -1053,6 +1053,9 @@ export function App() {
           <Route path="/:handle" element={<ProfileRoute />} />
           <Route path="/:handle/:project/thread/:threadId" element={<ThreadRoute />} />
         </Routes>
+        <footer className="site-footer">
+          Built by <a href="https://x.com/wutheringsf" target="_blank" rel="noreferrer">@wutheringsf</a>
+        </footer>
       </BrowserRouter>
     </AuthContext.Provider>
   );
