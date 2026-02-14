@@ -360,7 +360,7 @@ export async function projectRoutes(app: FastifyInstance) {
         const threadId = randomUUID();
         await client.query(
           "SELECT create_thread($1, $2, $3, $4, $5, $6)",
-          [threadId, id, req.auth.id, systemId, "Creating the project", null],
+          [threadId, id, req.auth.id, systemId, "Project Creation", null],
         );
 
         const threadResult = await client.query<ThreadRow>(

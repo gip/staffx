@@ -408,6 +408,7 @@ function ProfileRoute() {
 function ProjectRoute() {
   const { handle, project: projectName } = useParams<{ handle: string; project: string }>();
   const { isAuthenticated } = useAuth0();
+  const navigate = useNavigate();
   const apiFetch = useApi();
   const [project, setProject] = useState<Project | null>(null);
   const [notFound, setNotFound] = useState(false);
@@ -442,7 +443,95 @@ function ProjectRoute() {
     );
   }
 
-  return <ProjectPage project={project} />;
+  return (
+    <ProjectPage
+      project={project}
+      onCloseThread={async (threadProjectId) => {
+        try {
+          const res = await apiFetch(
+            `/projects/${encodeURIComponent(handle!)}/${encodeURIComponent(projectName!)}/thread/${threadProjectId}/close`,
+            { method: "POST" },
+          );
+          if (!res.ok) {
+            return { error: await readError(res, "Failed to close thread") };
+          }
+          const data = (await res.json()) as { thread: ThreadDetail };
+          setProject((current) => (
+            current
+              ? {
+                  ...current,
+                  threads: current.threads.map((thread) =>
+                    thread.projectThreadId === threadProjectId ? { ...thread, status: data.thread.status } : thread,
+                  ),
+                }
+              : current
+          ));
+          return data;
+        } catch (error: unknown) {
+          if (error instanceof Error && error.message.trim()) {
+            return { error: error.message };
+          }
+          return { error: "Failed to close thread" };
+        }
+      }}
+      onCommitThread={async (threadProjectId) => {
+        try {
+          const res = await apiFetch(
+            `/projects/${encodeURIComponent(handle!)}/${encodeURIComponent(projectName!)}/thread/${threadProjectId}/commit`,
+            { method: "POST" },
+          );
+          if (!res.ok) {
+            return { error: await readError(res, "Failed to commit thread") };
+          }
+          const data = (await res.json()) as { thread: ThreadDetail };
+          setProject((current) => (
+            current
+              ? {
+                  ...current,
+                  threads: current.threads.map((thread) =>
+                    thread.projectThreadId === threadProjectId ? { ...thread, status: data.thread.status } : thread,
+                  ),
+                }
+              : current
+          ));
+          return data;
+        } catch (error: unknown) {
+          if (error instanceof Error && error.message.trim()) {
+            return { error: error.message };
+          }
+          return { error: "Failed to commit thread" };
+        }
+      }}
+      onCloneThread={async (threadProjectId, payload) => {
+        const title = typeof payload?.title === "string" ? payload.title.trim() : "";
+        const description = typeof payload?.description === "string" ? payload.description.trim() : "";
+        try {
+          const res = await apiFetch(
+            `/projects/${encodeURIComponent(handle!)}/${encodeURIComponent(projectName!)}/thread/${threadProjectId}/clone`,
+            {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ title, description }),
+            },
+          );
+          if (!res.ok) {
+            return { error: await readError(res, "Failed to create thread") };
+          }
+          const data = (await res.json()) as { thread: ThreadDetail };
+          if (!data?.thread?.projectThreadId) {
+            return { error: "New thread not found" };
+          }
+          navigate(`/${encodeURIComponent(handle!)}/${encodeURIComponent(projectName!)}/thread/${data.thread.projectThreadId}`);
+          return data;
+        } catch (error: unknown) {
+          if (error instanceof Error && error.message.trim()) {
+            return { error: error.message };
+          }
+          return { error: "Failed to create thread" };
+        }
+      }}
+    />
+  );
 }
 
 function SettingsRoute() {
@@ -597,6 +686,7 @@ function ThreadRoute() {
     threadId: string;
   }>();
   const { isAuthenticated } = useAuth0();
+  const navigate = useNavigate();
   const apiFetch = useApi();
   const [searchParams, setSearchParams] = useSearchParams();
   const [detail, setDetail] = useState<ThreadDetailPayload | null>(null);
@@ -917,6 +1007,72 @@ function ThreadRoute() {
         ));
         return data;
       }}
+      onCloseThread={async () => {
+        try {
+          const res = await apiFetch(
+            `/projects/${encodeURIComponent(handle!)}/${encodeURIComponent(projectName!)}/thread/${encodeURIComponent(threadId!)}/close`,
+            { method: "POST" },
+          );
+          if (!res.ok) {
+            return { error: await readError(res, "Failed to close thread") };
+          }
+          const data = (await res.json()) as { thread: ThreadDetail };
+          setDetail((prev) => (prev ? { ...prev, thread: data.thread } : prev));
+          return data;
+        } catch (error: unknown) {
+          if (error instanceof Error && error.message.trim()) {
+            return { error: error.message };
+          }
+          return { error: "Failed to close thread" };
+        }
+      }}
+      onCommitThread={async () => {
+        try {
+          const res = await apiFetch(
+            `/projects/${encodeURIComponent(handle!)}/${encodeURIComponent(projectName!)}/thread/${encodeURIComponent(threadId!)}/commit`,
+            { method: "POST" },
+          );
+          if (!res.ok) {
+            return { error: await readError(res, "Failed to commit thread") };
+          }
+          const data = (await res.json()) as { thread: ThreadDetail };
+          setDetail((prev) => (prev ? { ...prev, thread: data.thread } : prev));
+          return data;
+        } catch (error: unknown) {
+          if (error instanceof Error && error.message.trim()) {
+            return { error: error.message };
+          }
+          return { error: "Failed to commit thread" };
+        }
+      }}
+      onCloneThread={async (payload) => {
+        const title = typeof payload?.title === "string" ? payload.title.trim() : "";
+        const description = typeof payload?.description === "string" ? payload.description.trim() : "";
+        try {
+          const res = await apiFetch(
+            `/projects/${encodeURIComponent(handle!)}/${encodeURIComponent(projectName!)}/thread/${encodeURIComponent(threadId!)}/clone`,
+            {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ title, description }),
+            },
+          );
+          if (!res.ok) {
+            return { error: await readError(res, "Failed to create thread") };
+          }
+          const data = (await res.json()) as { thread: ThreadDetail };
+          if (!data?.thread?.projectThreadId) {
+            return { error: "New thread not found" };
+          }
+          navigate(`/${encodeURIComponent(handle!)}/${encodeURIComponent(projectName!)}/thread/${data.thread.projectThreadId}`);
+          return data;
+        } catch (error: unknown) {
+          if (error instanceof Error && error.message.trim()) {
+            return { error: error.message };
+          }
+          return { error: "Failed to create thread" };
+        }
+      }}
     />
   );
 }
@@ -972,6 +1128,9 @@ export function App() {
           <Route path="/:handle" element={<ProfileRoute />} />
           <Route path="/:handle/:project/thread/:threadId" element={<ThreadRoute />} />
         </Routes>
+        <footer className="site-footer">
+          Built by <a href="https://x.com/wutheringsf" target="_blank" rel="noreferrer">@wutheringsf</a>
+        </footer>
       </BrowserRouter>
     </AuthContext.Provider>
   );

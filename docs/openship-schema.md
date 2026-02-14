@@ -113,7 +113,10 @@ A **conversation/editing session** within a project. Starts from a `seed_system_
 - `project_thread_id`: monotonic increasing per project (gaps allowed, no reuse)
 - `seed_system_id`: the starting system snapshot
 - `source_thread_id`: if cloned, points to the origin thread
-- `status`: `'open'` or `'closed'`
+- `status`: `'open'`, `'closed'`, or `'committed'`
+  - `'closed'` and `'committed'` are both finalized thread states
+  - closed threads are created by the close flow
+  - committed threads are created by the commit flow
 
 ### Action
 
@@ -182,7 +185,7 @@ Project
 | `upsert_file_content(path, content)` | Store file, return hash |
 | `thread_current_system(thread_id)` | Get latest snapshot for a thread |
 | `create_thread(...)` | Start a new thread from a seed system |
-| `clone_thread(...)` | Fork a thread from another thread's current state |
+| `clone_thread(...)` | Fork a thread from another thread's current state (only committed/closed source threads) |
 | `begin_action(thread_id, action_id, type)` | Fork system, create action |
 | `commit_action_empty(thread_id, action_id)` | Clean up fork if action had no changes |
 | `close_thread(thread_id)` | Mark thread as closed |
