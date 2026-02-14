@@ -101,9 +101,34 @@ export interface MatrixDocument {
 export interface ChatMessage {
   id: string;
   actionId: string;
+  actionType?: string;
+  actionPosition?: number;
   role: MessageRole;
   content: string;
   createdAt: string;
+}
+
+export type AssistantRunMode = "direct" | "plan";
+
+export interface AssistantRunRequest {
+  chatMessageId: string | null;
+  mode: AssistantRunMode;
+  planActionId: string | null;
+}
+
+export interface AssistantRunResponse {
+  planActionId: string | null;
+  planResponseActionId: string | null;
+  executeActionId: string | null;
+  executeResponseActionId: string | null;
+  updateActionId: string | null;
+  summary: {
+    status: "success" | "failed";
+    messages: string[];
+  };
+  changesCount: number;
+  messages: ChatMessage[];
+  systemId: string;
 }
 
 export interface ThreadDetail {
@@ -227,6 +252,7 @@ interface ThreadPageProps {
   onCreateMatrixDocument?: (payload: MatrixDocumentCreateInput) => Promise<MutationResult<MatrixDocumentCreateResponse>>;
   onReplaceMatrixDocument?: (documentHash: string, payload: MatrixDocumentReplaceInput) => Promise<MutationResult<MatrixDocumentReplaceResponse>>;
   onSendChatMessage?: (payload: { content: string }) => Promise<MutationResult<{ messages: ChatMessage[] }>>;
+  onRunAssistant?: (payload: AssistantRunRequest) => Promise<MutationResult<AssistantRunResponse>>;
   integrationStatuses?: IntegrationStatusRecord;
 }
 
@@ -908,6 +934,7 @@ export function ThreadPage({
   onCreateMatrixDocument,
   onReplaceMatrixDocument,
   onSendChatMessage,
+  onRunAssistant,
   integrationStatuses,
 }: ThreadPageProps) {
   const [isTopologyCollapsed, setIsTopologyCollapsed] = useState(false);
@@ -930,6 +957,10 @@ export function ThreadPage({
   const [chatInput, setChatInput] = useState("");
   const [chatError, setChatError] = useState("");
   const [isSendingChat, setIsSendingChat] = useState(false);
+  const [assistantError, setAssistantError] = useState("");
+  const [assistantSummary, setAssistantSummary] = useState("");
+  const [isRunningAssistant, setIsRunningAssistant] = useState(false);
+  const [pendingPlanActionId, setPendingPlanActionId] = useState<string | null>(null);
   const [topologyError, setTopologyError] = useState("");
   const [isSavingTopologyLayout, setIsSavingTopologyLayout] = useState(false);
   const [documentModal, setDocumentModal] = useState<(MatrixDocumentModal & {
@@ -1813,7 +1844,49 @@ export function ThreadPage({
       return;
     }
 
+    setPendingPlanActionId(null);
+    setAssistantSummary("");
     setChatInput("");
+  }
+
+  async function handleRunAssistant(mode: AssistantRunMode, planActionId: string | null = null) {
+    if (!onRunAssistant || !detail.permissions.canChat) return;
+
+    setIsRunningAssistant(true);
+    setAssistantError("");
+    setAssistantSummary("");
+
+    try {
+      const result = await onRunAssistant({
+        chatMessageId: null,
+        mode,
+        planActionId: mode === "direct" ? (planActionId ?? null) : null,
+      });
+
+      const error = getErrorMessage(result);
+      if (error) {
+        setAssistantError(error);
+        return;
+      }
+
+      if (!result) {
+        setAssistantError("No response from assistant endpoint.");
+        return;
+      }
+
+      const payload = result as AssistantRunResponse;
+      setAssistantSummary(payload.summary.messages.join(" "));
+
+      if (mode === "plan" && payload.planActionId) {
+        setPendingPlanActionId(payload.planActionId);
+      }
+
+      if (mode === "direct") {
+        setPendingPlanActionId(null);
+      }
+    } finally {
+      setIsRunningAssistant(false);
+    }
   }
 
   const handleNodeDragStop = useCallback<NodeMouseHandler>(
@@ -2584,6 +2657,37 @@ export function ThreadPage({
         const renderChatBody = () => (
           <div className={detail.permissions.canChat ? "" : "thread-chat-disabled"}>
             <div className="thread-chat-form">
+              {onRunAssistant ? (
+                <div className="thread-chat-run-actions">
+                  <button
+                    className="btn btn-secondary thread-chat-run-action"
+                    type="button"
+                    onClick={() => handleRunAssistant("direct")}
+                    disabled={isRunningAssistant || !detail.permissions.canChat}
+                  >
+                    Run
+                  </button>
+                  <button
+                    className="btn btn-secondary thread-chat-run-action"
+                    type="button"
+                    onClick={() => handleRunAssistant("plan")}
+                    disabled={isRunningAssistant || !detail.permissions.canChat}
+                  >
+                    Plan first
+                  </button>
+                  {pendingPlanActionId && (
+                    <button
+                      className="btn btn-secondary thread-chat-run-action"
+                      type="button"
+                      onClick={() => handleRunAssistant("direct", pendingPlanActionId)}
+                      disabled={isRunningAssistant || !detail.permissions.canChat}
+                    >
+                      Apply plan
+                    </button>
+                  )}
+                </div>
+              ) : null}
+              {assistantSummary && <p className="thread-chat-run-summary">{assistantSummary}</p>}
               <div className="thread-chat-input-row">
                 <textarea
                   className="field-input thread-chat-input"
@@ -2603,11 +2707,13 @@ export function ThreadPage({
                   <Send size={14} />
                 </button>
               </div>
-              {!detail.permissions.canChat && (
-                <p className="thread-chat-disabled-copy">Only owners and editors can send messages.</p>
-              )}
-              {chatError && <p className="field-error">{chatError}</p>}
-            </div>
+                {!detail.permissions.canChat && (
+                  <p className="thread-chat-disabled-copy">Only owners and editors can send messages.</p>
+                )}
+                {chatError && <p className="field-error">{chatError}</p>}
+                {assistantError && <p className="field-error">{assistantError}</p>}
+                {isRunningAssistant && <p>Agent running…</p>}
+              </div>
 
             <h4 className="thread-chat-history-title">Chat History</h4>
             <div className="thread-chat-history">
@@ -2620,7 +2726,10 @@ export function ThreadPage({
                     className={`thread-chat-message thread-chat-message--${message.role.toLowerCase()}`}
                   >
                     <header>
-                      <strong>{message.role}</strong>
+                      <div className="thread-chat-message-header-left">
+                        <strong>{message.role}</strong>
+                        {message.actionType ? <span className="thread-chat-action-type">{message.actionType}</span> : null}
+                      </div>
                       <span>{formatDateTime(message.createdAt)}</span>
                     </header>
                     <p>{message.content}</p>

@@ -87,9 +87,91 @@ interface ArtifactRow {
 interface ChatMessageRow {
   id: string;
   action_id: string;
+  action_position: number;
+  action_type: string;
   role: "User" | "Assistant" | "System";
   content: string;
   created_at: Date;
+}
+
+interface ChatActionRow {
+  id: string;
+  position: number;
+  type: string;
+  title: string | null;
+}
+
+interface AssistantRunActionRow {
+  id: string;
+  position: number;
+  type: string;
+}
+
+interface ActionPlanRow {
+  id: string;
+  position: number;
+}
+
+interface MessageReferenceRow {
+  id: string;
+  role: "User" | "Assistant" | "System";
+  content: string;
+}
+
+interface AssistantRunPlanChange {
+  target_table: string;
+  operation: "Create" | "Update" | "Delete";
+  target_id: Record<string, unknown>;
+  previous: Record<string, unknown> | null;
+  current: Record<string, unknown> | null;
+}
+
+interface AssistantRunMessageLookupRow {
+  id: string;
+  role: "User" | "Assistant" | "System";
+  content: string;
+  created_at: Date;
+  action_type: string;
+  action_position: number;
+}
+
+interface AssistantRunMessageRow {
+  action_id: string;
+  action_type: string;
+  action_position: number;
+  id: string;
+  role: "User" | "Assistant" | "System";
+  content: string;
+  created_at: Date;
+}
+
+interface AssistantRunPlanResponse {
+  planActionId: string | null;
+  planResponseActionId: string | null;
+  executeActionId: string | null;
+  executeResponseActionId: string | null;
+  updateActionId: string | null;
+  summary: {
+    status: "success" | "failed";
+    messages: string[];
+  };
+  changesCount: number;
+  messages: Array<{
+    id: string;
+    actionId: string;
+    role: "User" | "Assistant" | "System";
+    actionType: string;
+    actionPosition: number;
+    content: string;
+    createdAt: Date;
+  }>;
+  systemId: string;
+}
+
+interface AssistantRunRequestBody {
+  chatMessageId: string | null;
+  mode: "direct" | "plan";
+  planActionId: string | null;
 }
 
 interface BeginActionRow {
@@ -234,6 +316,144 @@ function parseThreadId(threadId: string): number | null {
   const parsed = Number(threadId);
   if (!Number.isInteger(parsed) || parsed <= 0) return null;
   return parsed;
+}
+
+function parseAssistantRunMode(value: unknown): "direct" | "plan" | null {
+  if (value !== "direct" && value !== "plan") return null;
+  return value;
+}
+
+function parseOptionalUuid(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const normalized = value.trim();
+  return normalized.length ? normalized : null;
+}
+
+function parseAssistantRunRequest(body: unknown): AssistantRunRequestBody | null {
+  if (!body || typeof body !== "object") return null;
+  const payload = body as Partial<{
+    chatMessageId: unknown;
+    mode: unknown;
+    planActionId: unknown;
+  }>;
+  const mode = parseAssistantRunMode(payload.mode);
+  if (!mode) return null;
+
+  const chatMessageId = parseOptionalUuid(payload.chatMessageId);
+  const planActionId = parseOptionalUuid(payload.planActionId);
+  return { mode, chatMessageId, planActionId };
+}
+
+async function getAssistantRunTriggerMessage(threadId: string, chatMessageId: string | null): Promise<AssistantRunMessageLookupRow | null> {
+  if (chatMessageId) {
+    const result = await query<AssistantRunMessageLookupRow>(
+      `SELECT m.id, m.role, m.content, m.created_at, a.type AS action_type, a.position AS action_position
+       FROM messages m
+       JOIN actions a ON a.thread_id = m.thread_id AND a.id = m.action_id
+       WHERE m.thread_id = $1 AND m.id = $2
+       LIMIT 1`,
+      [threadId, chatMessageId],
+    );
+    if (result.rowCount) return result.rows[0];
+  }
+
+  const fallback = await query<AssistantRunMessageLookupRow>(
+    `SELECT m.id, m.role, m.content, m.created_at, a.type AS action_type, a.position AS action_position
+     FROM messages m
+     JOIN actions a ON a.thread_id = m.thread_id AND a.id = m.action_id
+     WHERE m.thread_id = $1 AND m.role = 'User'
+     ORDER BY a.position DESC, m.position DESC
+     LIMIT 1`,
+    [threadId],
+  );
+
+  return fallback.rows[0] ?? null;
+}
+
+async function loadAction(contextThreadId: string, actionId: string): Promise<AssistantRunActionRow | null> {
+  const result = await query<AssistantRunActionRow>(
+    `SELECT id, type, position FROM actions WHERE thread_id = $1 AND id = $2`,
+    [contextThreadId, actionId],
+  );
+  return result.rows[0] ?? null;
+}
+
+function assistantRunSummary(status: "success" | "failed", messages: string[]): AssistantRunPlanResponse["summary"] {
+  return { status, messages };
+}
+
+function mapAssistantRunMessages(rows: AssistantRunMessageRow[]): AssistantRunPlanResponse["messages"] {
+  return rows.map((row) => ({
+    id: row.id,
+    actionId: row.action_id,
+    role: row.role,
+    actionType: row.action_type,
+    actionPosition: row.action_position,
+    content: row.content,
+    createdAt: row.created_at,
+  }));
+}
+
+function generatePlanResponseContent(prompt: string): string {
+  const trimmed = prompt.trim();
+  if (!trimmed) {
+    return "Plan request received. Please provide a message with concrete edits to execute.";
+  }
+  return `Proposed plan:
+1. Parse the user request: "${trimmed}".
+2. Identify impacted resources in the thread.
+3. Execute a minimal, safe update.
+4. Return a concise summary and changed artifacts.`;
+}
+
+function simulateAssistantExecution(prompt: string, hasPlan: boolean): {
+  status: "success" | "failed";
+  messages: string[];
+  changes: AssistantRunPlanChange[];
+} {
+  const input = prompt.trim();
+  if (!input) {
+    return {
+      status: "failed",
+      messages: ["No actionable prompt was provided."],
+      changes: [],
+    };
+  }
+
+  if (hasPlan) {
+    return {
+      status: "success",
+      messages: [
+        "Plan review completed.",
+        "No direct topology or document mutation hooks were triggered in this invocation.",
+      ],
+      changes: [],
+    };
+  }
+
+  return {
+    status: "success",
+    messages: [
+      "Execution completed.",
+      "No system changes were required for this request.",
+    ],
+    changes: [],
+  };
+}
+
+function resolvePlanActionFromResponse(
+  actionType: string,
+  responseIndex: number,
+  all: Array<{ type: string; position: number; id: string }>,
+): string | null {
+  if (actionType === "Plan") return null;
+  if (actionType === "PlanResponse") {
+    const prior = all
+      .filter((entry) => entry.type === "Plan" && entry.position < responseIndex)
+      .sort((a, b) => b.position - a.position)[0];
+    return prior?.id ?? null;
+  }
+  return null;
 }
 
 function isConnectedProvider(provider: string): provider is "notion" | "google" {
@@ -885,7 +1105,7 @@ export async function threadRoutes(app: FastifyInstance) {
             [systemId],
           ),
           query<ChatMessageRow>(
-            `SELECT m.id, m.action_id, m.role, m.content, m.created_at
+            `SELECT m.id, m.action_id, m.role, m.content, m.created_at, a.position AS action_position, a.type AS action_type
              FROM messages m
              JOIN actions a ON a.thread_id = m.thread_id AND a.id = m.action_id
              WHERE m.thread_id = $1
@@ -999,6 +1219,8 @@ export async function threadRoutes(app: FastifyInstance) {
           messages: messagesResult.rows.map((row) => ({
             id: row.id,
             actionId: row.action_id,
+            actionType: row.action_type,
+            actionPosition: row.action_position,
             role: row.role,
             content: row.content,
             createdAt: row.created_at,
@@ -1764,10 +1986,11 @@ export async function threadRoutes(app: FastifyInstance) {
         );
 
         const messagesResult = await client.query<ChatMessageRow>(
-          `SELECT id, action_id, role, content, created_at
-           FROM messages
-           WHERE thread_id = $1 AND action_id = $2
-           ORDER BY position`,
+          `SELECT m.id, m.action_id, m.role, m.content, m.created_at, a.position AS action_position, a.type AS action_type
+           FROM messages m
+           JOIN actions a ON a.thread_id = m.thread_id AND a.id = m.action_id
+           WHERE m.thread_id = $1 AND m.action_id = $2
+           ORDER BY m.position`,
           [context.threadId, actionId],
         );
 
@@ -1778,6 +2001,8 @@ export async function threadRoutes(app: FastifyInstance) {
           messages: messagesResult.rows.map((row) => ({
             id: row.id,
             actionId: row.action_id,
+            actionType: row.action_type,
+            actionPosition: row.action_position,
             role: row.role,
             content: row.content,
             createdAt: row.created_at,
@@ -1795,6 +2020,312 @@ export async function threadRoutes(app: FastifyInstance) {
       } finally {
         client.release();
       }
+    },
+  );
+
+  app.post<{ Params: { handle: string; projectName: string; threadId: string }; Body: AssistantRunRequestBody }>(
+    "/projects/:handle/:projectName/thread/:threadId/assistant/run",
+    async (req, reply) => {
+      const { handle, projectName, threadId } = req.params;
+      const parsedBody = parseAssistantRunRequest(req.body);
+      if (!parsedBody) {
+        return reply.code(400).send({ error: "Invalid request body" });
+      }
+
+      const context = await requireContext(reply, req.auth.id, handle, projectName, threadId);
+      if (!context) return;
+
+      if (!canEdit(context.accessRole)) {
+        return reply.code(403).send({ error: "Forbidden" });
+      }
+
+      const triggerMessage = await getAssistantRunTriggerMessage(context.threadId, parsedBody.chatMessageId);
+      const actionIds: string[] = [];
+      const runPrompt = triggerMessage ? triggerMessage.content : "";
+
+      let planActionId: string | null = null;
+      let planResponseActionId: string | null = null;
+      let executeActionId: string | null = null;
+      let executeResponseActionId: string | null = null;
+      let updateActionId: string | null = null;
+      let execution: {
+        status: "success" | "failed";
+        messages: string[];
+        changes: AssistantRunPlanChange[];
+      } = { status: "success", messages: ["No execution run yet."], changes: [] };
+
+      if (parsedBody.mode === "direct") {
+        if (parsedBody.planActionId) {
+          const requestedPlan = await loadAction(context.threadId, parsedBody.planActionId);
+          if (!requestedPlan || requestedPlan.type !== "Plan") {
+            return reply.code(400).send({ error: "Invalid planActionId" });
+          }
+          planActionId = requestedPlan.id;
+        }
+
+        const executeActionClient = await pool.connect();
+        let inTransaction = false;
+        try {
+          await executeActionClient.query("BEGIN");
+          inTransaction = true;
+
+          executeActionId = randomUUID();
+          const executeUserMessageId = randomUUID();
+          const executeSystemMessageId = randomUUID();
+
+          await executeActionClient.query(
+            `SELECT begin_action($1, $2, $3::action_type, $4) AS output_system_id`,
+            [context.threadId, executeActionId, "Execute", "Agent execution request"],
+          );
+          await executeActionClient.query("SELECT commit_action_empty($1, $2)", [context.threadId, executeActionId]);
+
+          await executeActionClient.query(
+            `INSERT INTO messages (id, thread_id, action_id, role, content, position)
+             VALUES
+               ($1, $2, $3, 'User'::message_role, $4, 1),
+               ($5, $2, $3, 'System'::message_role, $6, 2)`,
+            [
+              executeUserMessageId,
+              context.threadId,
+              executeActionId,
+              runPrompt || "Run this request.",
+              executeSystemMessageId,
+              parsedBody.planActionId ? `Execution requested with plan action ${parsedBody.planActionId}.` : "Execution requested directly.",
+            ],
+          );
+
+          await executeActionClient.query("COMMIT");
+          inTransaction = false;
+        } catch (error) {
+          if (inTransaction) {
+            try {
+              await executeActionClient.query("ROLLBACK");
+            } catch {
+              // Best effort rollback.
+            }
+          }
+          throw error;
+        } finally {
+          executeActionClient.release();
+        }
+
+        if (!executeActionId) {
+          return reply.code(500).send({ error: "Unable to create execution action" });
+        }
+        actionIds.push(executeActionId);
+
+        execution = simulateAssistantExecution(runPrompt, Boolean(planActionId));
+
+        const executeResponseActionClient = await pool.connect();
+        let responseInTransaction = false;
+        try {
+          await executeResponseActionClient.query("BEGIN");
+          responseInTransaction = true;
+
+          executeResponseActionId = randomUUID();
+          const executeResponseMessageId = randomUUID();
+          await executeResponseActionClient.query(
+            `SELECT begin_action($1, $2, $3::action_type, $4) AS output_system_id`,
+            [context.threadId, executeResponseActionId, "ExecuteResponse", "Agent execution response"],
+          );
+          await executeResponseActionClient.query("SELECT commit_action_empty($1, $2)", [context.threadId, executeResponseActionId]);
+
+          await executeResponseActionClient.query(
+            `INSERT INTO messages (id, thread_id, action_id, role, content, position)
+             VALUES ($1, $2, $3, 'Assistant'::message_role, $4, 1)`,
+            [
+              executeResponseMessageId,
+              context.threadId,
+              executeResponseActionId,
+              `${execution.status.toUpperCase()}: ${execution.messages.join(" | ")}`,
+            ],
+          );
+
+          await executeResponseActionClient.query("COMMIT");
+          responseInTransaction = false;
+        } catch (error) {
+          if (responseInTransaction) {
+            try {
+              await executeResponseActionClient.query("ROLLBACK");
+            } catch {
+              // Best effort rollback.
+            }
+          }
+          throw error;
+        } finally {
+          executeResponseActionClient.release();
+        }
+
+        if (!executeResponseActionId) {
+          return reply.code(500).send({ error: "Unable to create execution response action" });
+        }
+        actionIds.push(executeResponseActionId);
+
+        if (execution.changes.length > 0) {
+          const updateClient = await pool.connect();
+          let updateInTransaction = false;
+
+          try {
+            await updateClient.query("BEGIN");
+            updateInTransaction = true;
+
+            updateActionId = randomUUID();
+            const beginUpdateResult = await updateClient.query<BeginActionRow>(
+              `SELECT begin_action($1, $2, $3::action_type, $4) AS output_system_id`,
+              [context.threadId, updateActionId, "Update", "Agent execution changes"],
+            );
+
+            if (!beginUpdateResult.rows[0]?.output_system_id) {
+              await updateClient.query("ROLLBACK");
+              updateInTransaction = false;
+              return reply.code(500).send({ error: "Unable to create update action" });
+            }
+
+            for (const change of execution.changes) {
+              await updateClient.query(
+                `INSERT INTO changes (
+                   id, thread_id, action_id, target_table, operation, target_id, previous, current
+                 )
+                 VALUES ($1, $2, $3, $4, $5::change_operation, $6, $7, $8)`,
+                [
+                  randomUUID(),
+                  context.threadId,
+                  updateActionId,
+                  change.target_table,
+                  change.operation,
+                  JSON.stringify(change.target_id),
+                  change.previous ? JSON.stringify(change.previous) : null,
+                  change.current ? JSON.stringify(change.current) : null,
+                ],
+              );
+            }
+
+            await updateClient.query("COMMIT");
+            updateInTransaction = false;
+          } catch (error) {
+            if (updateInTransaction) {
+              try {
+                await updateClient.query("ROLLBACK");
+              } catch {
+                // Best effort rollback.
+              }
+            }
+            throw error;
+          } finally {
+            updateClient.release();
+          }
+
+          actionIds.push(updateActionId);
+        }
+      } else {
+        const planActionClient = await pool.connect();
+        let planInTransaction = false;
+        try {
+          await planActionClient.query("BEGIN");
+          planInTransaction = true;
+
+          planActionId = randomUUID();
+          const planUserMessageId = randomUUID();
+
+          await planActionClient.query(
+            `SELECT begin_action($1, $2, $3::action_type, $4) AS output_system_id`,
+            [context.threadId, planActionId, "Plan", "Assistant plan request"],
+          );
+          await planActionClient.query("SELECT commit_action_empty($1, $2)", [context.threadId, planActionId]);
+          await planActionClient.query(
+            `INSERT INTO messages (id, thread_id, action_id, role, content, position)
+             VALUES ($1, $2, $3, 'User'::message_role, $4, 1)`,
+            [planUserMessageId, context.threadId, planActionId, runPrompt || "Run this request in plan mode."],
+          );
+          await planActionClient.query("COMMIT");
+          planInTransaction = false;
+        } catch (error) {
+          if (planInTransaction) {
+            try {
+              await planActionClient.query("ROLLBACK");
+            } catch {
+              // Best effort rollback.
+            }
+          }
+          throw error;
+        } finally {
+          planActionClient.release();
+        }
+
+        if (!planActionId) {
+          return reply.code(500).send({ error: "Unable to create plan action" });
+        }
+        actionIds.push(planActionId);
+
+        const planResponseClient = await pool.connect();
+        let planResponseInTransaction = false;
+        try {
+          await planResponseClient.query("BEGIN");
+          planResponseInTransaction = true;
+
+          planResponseActionId = randomUUID();
+          const planResponseMessageId = randomUUID();
+          await planResponseClient.query(
+            `SELECT begin_action($1, $2, $3::action_type, $4) AS output_system_id`,
+            [context.threadId, planResponseActionId, "PlanResponse", "Assistant plan response"],
+          );
+          await planResponseClient.query("SELECT commit_action_empty($1, $2)", [context.threadId, planResponseActionId]);
+          await planResponseClient.query(
+            `INSERT INTO messages (id, thread_id, action_id, role, content, position)
+             VALUES ($1, $2, $3, 'Assistant'::message_role, $4, 1)`,
+            [planResponseMessageId, context.threadId, planResponseActionId, generatePlanResponseContent(runPrompt)],
+          );
+
+          await planResponseClient.query("COMMIT");
+          planResponseInTransaction = false;
+        } catch (error) {
+          if (planResponseInTransaction) {
+            try {
+              await planResponseClient.query("ROLLBACK");
+            } catch {
+              // Best effort rollback.
+            }
+          }
+          throw error;
+        } finally {
+          planResponseClient.release();
+        }
+        if (!planResponseActionId) {
+          return reply.code(500).send({ error: "Unable to create plan response action" });
+        }
+        actionIds.push(planResponseActionId);
+      }
+
+      const messagesResult = await query<AssistantRunMessageRow>(
+        `SELECT m.id, m.action_id, m.role, m.content, m.created_at, a.position AS action_position, a.type AS action_type
+         FROM messages m
+         JOIN actions a ON a.thread_id = m.thread_id AND a.id = m.action_id
+         WHERE m.thread_id = $1 AND m.action_id = ANY($2::text[])
+         ORDER BY a.position, m.position`,
+        [context.threadId, actionIds],
+      );
+
+      const systemId = await getThreadSystemId(context.threadId);
+      if (!systemId) {
+        return reply.code(500).send({ error: "Unable to resolve thread system" });
+      }
+
+      const summary = parsedBody.mode === "direct"
+        ? assistantRunSummary(execution.status, execution.messages.length > 0 ? execution.messages : ["Execution completed."])
+        : assistantRunSummary("success", ["Plan generated."]);
+
+      const changesCount = parsedBody.mode === "direct" ? execution.changes.length : 0;
+      return {
+        planActionId,
+        planResponseActionId,
+        executeActionId,
+        executeResponseActionId,
+        updateActionId,
+        summary,
+        changesCount,
+        messages: mapAssistantRunMessages(messagesResult.rows),
+        systemId,
+      };
     },
   );
 }

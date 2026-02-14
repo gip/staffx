@@ -10,6 +10,7 @@ import {
   UserProfilePage,
   setNavigate,
   type AuthUser,
+  type AssistantRunResponse,
   type Collaborator,
   type Concern,
   type UserProfile,
@@ -884,6 +885,33 @@ function ThreadRoute({ isAuthenticated }: { isAuthenticated: boolean }) {
           prev
             ? {
                 ...prev,
+                chat: {
+                  ...prev.chat,
+                  messages: mergeChatMessages(prev.chat.messages, data.messages),
+                },
+              }
+            : prev
+        ));
+        return data;
+      }}
+      onRunAssistant={async (payload) => {
+        const res = await apiFetch(
+          `/projects/${encodeURIComponent(handle!)}/${encodeURIComponent(projectName!)}/thread/${encodeURIComponent(threadId!)}/assistant/run`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          },
+        );
+        if (!res.ok) {
+          return { error: await readError(res, "Failed to run assistant") };
+        }
+        const data = (await res.json()) as AssistantRunResponse;
+        setDetail((prev) => (
+          prev
+            ? {
+                ...prev,
+                systemId: data.systemId,
                 chat: {
                   ...prev.chat,
                   messages: mergeChatMessages(prev.chat.messages, data.messages),

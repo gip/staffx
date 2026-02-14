@@ -124,7 +124,11 @@ A **step** within a thread, ordered by `position`.
 | `Chat` | Conversation with messages |
 | `Edit` | Direct edit to the system |
 | `Import` | Import external data |
-| `Custom` | Extension point |
+| `Plan` | User requested a plan for an agent run |
+| `PlanResponse` | Claude response with proposed plan |
+| `Execute` | Agent execution request/attempt |
+| `ExecuteResponse` | Claude execution summary result |
+| `Update` | System-mutation action with persisted `changes` |
 
 - Table: `actions` — composite PK `(thread_id, id)`
 - `output_system_id`: the forked system snapshot produced by this action (null if no changes)

@@ -289,7 +289,7 @@ create index idx_member_roles_role on project_member_roles (project_id, role_nam
 -- THREADS
 -- ============================================================
 
-create type action_type as enum ('Chat', 'Edit', 'Import', 'Custom');
+create type action_type as enum ('Chat', 'Edit', 'Import', 'Plan', 'PlanResponse', 'Execute', 'ExecuteResponse', 'Update');
 create type message_role as enum ('User', 'Assistant', 'System');
 create type change_operation as enum ('Create', 'Update', 'Delete');
 
