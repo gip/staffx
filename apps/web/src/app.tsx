@@ -446,6 +446,62 @@ function ProjectRoute() {
   return (
     <ProjectPage
       project={project}
+      onCloseThread={async (threadProjectId) => {
+        try {
+          const res = await apiFetch(
+            `/projects/${encodeURIComponent(handle!)}/${encodeURIComponent(projectName!)}/thread/${threadProjectId}/close`,
+            { method: "POST" },
+          );
+          if (!res.ok) {
+            return { error: await readError(res, "Failed to close thread") };
+          }
+          const data = (await res.json()) as { thread: ThreadDetail };
+          setProject((current) => (
+            current
+              ? {
+                  ...current,
+                  threads: current.threads.map((thread) =>
+                    thread.projectThreadId === threadProjectId ? { ...thread, status: data.thread.status } : thread,
+                  ),
+                }
+              : current
+          ));
+          return data;
+        } catch (error: unknown) {
+          if (error instanceof Error && error.message.trim()) {
+            return { error: error.message };
+          }
+          return { error: "Failed to close thread" };
+        }
+      }}
+      onCommitThread={async (threadProjectId) => {
+        try {
+          const res = await apiFetch(
+            `/projects/${encodeURIComponent(handle!)}/${encodeURIComponent(projectName!)}/thread/${threadProjectId}/commit`,
+            { method: "POST" },
+          );
+          if (!res.ok) {
+            return { error: await readError(res, "Failed to commit thread") };
+          }
+          const data = (await res.json()) as { thread: ThreadDetail };
+          setProject((current) => (
+            current
+              ? {
+                  ...current,
+                  threads: current.threads.map((thread) =>
+                    thread.projectThreadId === threadProjectId ? { ...thread, status: data.thread.status } : thread,
+                  ),
+                }
+              : current
+          ));
+          return data;
+        } catch (error: unknown) {
+          if (error instanceof Error && error.message.trim()) {
+            return { error: error.message };
+          }
+          return { error: "Failed to commit thread" };
+        }
+      }}
       onCloneThread={async (threadProjectId, payload) => {
         const title = typeof payload?.title === "string" ? payload.title.trim() : "";
         const description = typeof payload?.description === "string" ? payload.description.trim() : "";
@@ -968,6 +1024,25 @@ function ThreadRoute() {
             return { error: error.message };
           }
           return { error: "Failed to close thread" };
+        }
+      }}
+      onCommitThread={async () => {
+        try {
+          const res = await apiFetch(
+            `/projects/${encodeURIComponent(handle!)}/${encodeURIComponent(projectName!)}/thread/${encodeURIComponent(threadId!)}/commit`,
+            { method: "POST" },
+          );
+          if (!res.ok) {
+            return { error: await readError(res, "Failed to commit thread") };
+          }
+          const data = (await res.json()) as { thread: ThreadDetail };
+          setDetail((prev) => (prev ? { ...prev, thread: data.thread } : prev));
+          return data;
+        } catch (error: unknown) {
+          if (error instanceof Error && error.message.trim()) {
+            return { error: error.message };
+          }
+          return { error: "Failed to commit thread" };
         }
       }}
       onCloneThread={async (payload) => {

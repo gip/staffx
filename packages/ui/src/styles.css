@@ -638,6 +638,11 @@ select.field-input {
   background: rgba(128, 128, 128, 0.1);
 }
 
+.thread-status--committed {
+  color: var(--fg-muted);
+  background: rgba(128, 128, 128, 0.1);
+}
+
 /* Thread detail page */
 
 .thread-detail-title {
@@ -1028,6 +1033,16 @@ a.project-card {
   align-items: center;
   gap: 16px;
   padding: 16px 20px;
+}
+
+.thread-commit-actions-card {
+  align-items: center;
+}
+
+.thread-commit-buttons {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .thread-commit-text {

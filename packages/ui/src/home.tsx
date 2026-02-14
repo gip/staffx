@@ -3,12 +3,17 @@ import { Plus } from "lucide-react";
 import { useAuth } from "./auth-context";
 import { Link } from "./link";
 
+export type ThreadStatus = "open" | "closed" | "committed";
+
+export const isFinalizedThreadStatus = (status: ThreadStatus): boolean =>
+  status === "closed" || status === "committed";
+
 export interface Thread {
   id: string;
   title: string | null;
   description: string | null;
   projectThreadId: number | null;
-  status: string;
+  status: ThreadStatus;
   createdBy?: string;
   createdAt?: string;
   updatedAt: string;

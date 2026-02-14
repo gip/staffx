@@ -50,6 +50,7 @@ async function migrate() {
     drop function if exists begin_action cascade;
     drop function if exists commit_action_empty cascade;
     drop function if exists close_thread cascade;
+    drop function if exists commit_thread cascade;
     drop function if exists diff_artifact_files cascade;
     drop function if exists diff_thread cascade;
 

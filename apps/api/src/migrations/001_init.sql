@@ -303,7 +303,7 @@ create table threads (
   seed_system_id   text not null references systems(id),
   source_thread_id text references threads(id),
   status           text not null default 'open'
-    check (status in ('open', 'closed')),
+    check (status in ('open', 'closed', 'committed')),
   created_at       timestamptz not null default now(),
   updated_at       timestamptz not null default now()
 );
@@ -657,6 +657,13 @@ $$ language plpgsql;
 create or replace function close_thread(p_thread_id text) returns void as $$
 begin
   update threads set status = 'closed', updated_at = now()
+  where id = p_thread_id;
+end;
+$$ language plpgsql;
+
+create or replace function commit_thread(p_thread_id text) returns void as $$
+begin
+  update threads set status = 'committed', updated_at = now()
   where id = p_thread_id;
 end;
 $$ language plpgsql;

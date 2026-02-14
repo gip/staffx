@@ -8,13 +8,15 @@ import { getProviderClient, sourceTypeToProvider, type DocSourceType } from "../
 const EDIT_ROLES = new Set(["Owner", "Editor"]);
 const PLACEHOLDER_ASSISTANT_MESSAGE = "Received. I captured your request in this thread.";
 
+type ThreadStatus = "open" | "closed" | "committed";
+
 interface ThreadContextRow {
   thread_id: string;
   project_thread_id: number;
   project_id: string;
   title: string | null;
   description: string | null;
-  status: string;
+  status: ThreadStatus;
   created_at: Date;
   created_by_handle: string;
   project_name: string;
@@ -179,12 +181,16 @@ interface BeginActionRow {
   output_system_id: string | null;
 }
 
+function isFinalizedThreadStatus(status: string): status is "closed" | "committed" {
+  return status === "closed" || status === "committed";
+}
+
 interface UpsertThreadRow {
   id: string;
   project_thread_id: number;
   title: string;
   description: string | null;
-  status: string;
+  status: ThreadStatus;
 }
 
 interface ClonedThreadRow {
@@ -192,7 +198,7 @@ interface ClonedThreadRow {
   project_thread_id: number;
   title: string;
   description: string | null;
-  status: string;
+  status: ThreadStatus;
   created_at: Date;
   created_by_handle: string;
   project_name: string;
@@ -209,7 +215,7 @@ interface ThreadContext {
   projectId: string;
   title: string;
   description: string | null;
-  status: string;
+  status: ThreadStatus;
   createdAt: Date;
   createdByHandle: string;
   projectName: string;
@@ -1360,6 +1366,47 @@ export async function threadRoutes(app: FastifyInstance) {
     },
   );
 
+  app.post<{ Params: { handle: string; projectName: string; threadId: string } }>(
+    "/projects/:handle/:projectName/thread/:threadId/commit",
+    async (req, reply) => {
+      const { handle, projectName, threadId } = req.params;
+      const context = await requireContext(reply, req.auth.id, handle, projectName, threadId);
+      if (!context) return;
+
+      if (!canEdit(context.accessRole)) {
+        return reply.code(403).send({ error: "Forbidden" });
+      }
+
+      if (context.status !== "open") {
+        return reply.code(409).send({ error: "Thread is already committed" });
+      }
+
+      await query("SELECT commit_thread($1)", [context.threadId]);
+
+      const result = await query<UpsertThreadRow>(
+        `SELECT id, project_thread_id, title, description, status
+         FROM threads WHERE id = $1`,
+        [context.threadId],
+      );
+
+      const updated = result.rows[0];
+      return {
+        thread: {
+          id: updated.id,
+          projectThreadId: updated.project_thread_id,
+          title: updated.title,
+          description: updated.description,
+          status: updated.status,
+          createdAt: context.createdAt,
+          createdByHandle: context.createdByHandle,
+          ownerHandle: context.ownerHandle,
+          projectName: context.projectName,
+          accessRole: context.accessRole,
+        },
+      };
+    },
+  );
+
   app.post<{
     Params: { handle: string; projectName: string; threadId: string };
     Body: CloneThreadBody;
@@ -1374,8 +1421,8 @@ export async function threadRoutes(app: FastifyInstance) {
         return reply.code(403).send({ error: "Forbidden" });
       }
 
-      if (context.status !== "closed") {
-        return reply.code(409).send({ error: "Thread is not committed" });
+      if (!isFinalizedThreadStatus(context.status)) {
+        return reply.code(409).send({ error: "Thread is not finalized" });
       }
 
       const hasRequestedDescription = typeof req.body?.description === "string";

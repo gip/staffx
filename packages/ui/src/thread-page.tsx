@@ -28,6 +28,7 @@ import ReactFlow, {
 import "reactflow/dist/style.css";
 import { Link } from "./link";
 import { useAuth } from "./auth-context";
+import { isFinalizedThreadStatus, type ThreadStatus } from "./home";
 
 type DocKind = "Document" | "Skill";
 type MessageRole = "User" | "Assistant" | "System";
@@ -136,7 +137,7 @@ export interface ThreadDetail {
   projectThreadId: number;
   title: string;
   description: string | null;
-  status: string;
+  status: ThreadStatus;
   createdAt: string;
   createdByHandle: string;
   ownerHandle: string;
@@ -254,6 +255,7 @@ interface ThreadPageProps {
   onSendChatMessage?: (payload: { content: string }) => Promise<MutationResult<{ messages: ChatMessage[] }>>;
   onRunAssistant?: (payload: AssistantRunRequest) => Promise<MutationResult<AssistantRunResponse>>;
   onCloseThread?: () => Promise<MutationResult<{ thread: ThreadDetail }>>;
+  onCommitThread?: () => Promise<MutationResult<{ thread: ThreadDetail }>>;
   onCloneThread?: (payload: { title: string; description: string }) => Promise<MutationResult<{ thread: ThreadDetail }>>;
   integrationStatuses?: IntegrationStatusRecord;
 }
@@ -365,9 +367,16 @@ function getErrorMessage<T>(result: MutationResult<T>): string | null {
   return typeof value === "string" ? value : "Request failed";
 }
 
-function getStatusLabel(status: string) {
+function getStatusLabel(status: ThreadStatus) {
   if (status === "open") return "Working";
-  if (status === "closed") return "Committed";
+  if (status === "closed") return "Closed";
+  if (status === "committed") return "Committed";
+  return status;
+}
+
+function getThreadStatusClass(status: ThreadStatus) {
+  if (status === "committed") return "committed";
+  if (status === "closed") return "closed";
   return status;
 }
 
@@ -940,6 +949,7 @@ export function ThreadPage({
   onSendChatMessage,
   onRunAssistant,
   onCloseThread,
+  onCommitThread,
   onCloneThread,
   integrationStatuses,
 }: ThreadPageProps) {
@@ -967,10 +977,13 @@ export function ThreadPage({
   const [assistantSummary, setAssistantSummary] = useState("");
   const [isRunningAssistant, setIsRunningAssistant] = useState(false);
   const [isClosingThread, setIsClosingThread] = useState(false);
+  const [isCommittingThread, setIsCommittingThread] = useState(false);
   const [isCloningThread, setIsCloningThread] = useState(false);
   const [showCloneModal, setShowCloneModal] = useState(false);
   const [showCommitModal, setShowCommitModal] = useState(false);
+  const [showCloseModal, setShowCloseModal] = useState(false);
   const [commitError, setCommitError] = useState("");
+  const [closeError, setCloseError] = useState("");
   const [cloneError, setCloneError] = useState("");
   const [cloneTitle, setCloneTitle] = useState(detail.thread.title);
   const [cloneDescription, setCloneDescription] = useState(detail.thread.description ?? "");
@@ -1000,7 +1013,7 @@ export function ThreadPage({
 
   const isThreadOpen = detail.thread.status === "open";
   const effectiveCanEdit = detail.permissions.canEdit && isThreadOpen;
-  const canCloneThread = detail.thread.status === "closed" && detail.permissions.canEdit && !!onCloneThread;
+  const canCloneThread = isFinalizedThreadStatus(detail.thread.status) && detail.permissions.canEdit && !!onCloneThread;
 
   type FullscreenTab = "topology" | "matrix" | "chat";
   const titleInputRef = useRef<HTMLInputElement>(null);
@@ -2400,7 +2413,7 @@ export function ThreadPage({
       </div>
 
       <div className="thread-view-meta">
-        <span className={`thread-status thread-status--${detail.thread.status}`}>
+        <span className={`thread-status thread-status--${getThreadStatusClass(detail.thread.status)}`}>
           {getStatusLabel(detail.thread.status)}
         </span>
         <span className="thread-view-meta-text">
@@ -2843,7 +2856,7 @@ export function ThreadPage({
             {canCloneThread && (
               <section className="thread-card thread-commit-card">
                 <p className="thread-commit-text">
-                  Create a new open thread from this committed thread.
+                  Create a new open thread from this finalized thread.
                 </p>
                 {cloneError && <p className="field-error">{cloneError}</p>}
                 <button
@@ -2860,18 +2873,35 @@ export function ThreadPage({
               </section>
             )}
 
-            {detail.permissions.canEdit && isThreadOpen && onCloseThread && (
-              <section className="thread-card thread-commit-card">
+            {detail.permissions.canEdit && isThreadOpen && onCloseThread && onCommitThread && (
+              <section className="thread-card thread-commit-card thread-commit-actions-card">
                 <p className="thread-commit-text">
-                  Committing a thread finalizes it. This action cannot be undone.
+                  Finalize thread by either closing it or committing it. This action cannot be undone.
                 </p>
-                <button
-                  className="btn"
-                  type="button"
-                  onClick={() => { setCommitError(""); setShowCommitModal(true); }}
-                >
-                  Commit
-                </button>
+                <div className="thread-commit-buttons">
+                  <button
+                    className="btn btn-secondary"
+                    type="button"
+                    disabled={isClosingThread || isCommittingThread}
+                    onClick={() => {
+                      setCloseError("");
+                      setShowCloseModal(true);
+                    }}
+                  >
+                    {isClosingThread ? "Closing…" : "Close"}
+                  </button>
+                  <button
+                    className="btn"
+                    type="button"
+                    disabled={isClosingThread || isCommittingThread}
+                    onClick={() => {
+                      setCommitError("");
+                      setShowCommitModal(true);
+                    }}
+                  >
+                    {isCommittingThread ? "Committing…" : "Commit"}
+                  </button>
+                </div>
               </section>
             )}
 
@@ -2919,20 +2949,20 @@ export function ThreadPage({
         );
       })()}
 
-      {showCommitModal && onCloseThread && (
-        <div className="modal-overlay" onMouseDown={(e) => { if (e.target === e.currentTarget && !isClosingThread) setShowCommitModal(false); }}>
+      {showCloseModal && onCloseThread && (
+        <div className="modal-overlay" onMouseDown={(e) => { if (e.target === e.currentTarget && !isClosingThread) setShowCloseModal(false); }}>
           <div className="modal thread-commit-modal">
-            <h3 className="modal-title">Commit thread</h3>
+            <h3 className="modal-title">Close thread</h3>
             <p className="thread-commit-modal-text">
-              This will finalize the thread. Once committed, no further edits can be made. This action cannot be undone.
+              This will mark the thread as closed. Once closed, this action cannot be undone.
             </p>
-            {commitError && <p className="field-error">{commitError}</p>}
+            {closeError && <p className="field-error">{closeError}</p>}
             <div className="modal-actions">
               <button
                 className="btn btn-secondary"
                 type="button"
                 disabled={isClosingThread}
-                onClick={() => setShowCommitModal(false)}
+                onClick={() => setShowCloseModal(false)}
               >
                 Cancel
               </button>
@@ -2942,9 +2972,55 @@ export function ThreadPage({
                 disabled={isClosingThread}
                 onClick={async () => {
                   setIsClosingThread(true);
-                  setCommitError("");
+                  setCloseError("");
                   try {
                     const result = await onCloseThread();
+                    const error = getErrorMessage(result);
+                    if (error) {
+                      setCloseError(error);
+                    } else {
+                      setShowCloseModal(false);
+                    }
+                  } catch {
+                    setCloseError("Failed to close thread");
+                  } finally {
+                    setIsClosingThread(false);
+                  }
+                }}
+              >
+                {isClosingThread ? "Closing…" : "Confirm"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showCommitModal && onCommitThread && (
+        <div className="modal-overlay" onMouseDown={(e) => { if (e.target === e.currentTarget && !isCommittingThread) setShowCommitModal(false); }}>
+          <div className="modal thread-commit-modal">
+            <h3 className="modal-title">Commit thread</h3>
+            <p className="thread-commit-modal-text">
+              This will mark the thread as committed. Once committed, no further edits can be made.
+            </p>
+            {commitError && <p className="field-error">{commitError}</p>}
+            <div className="modal-actions">
+              <button
+                className="btn btn-secondary"
+                type="button"
+                disabled={isCommittingThread}
+                onClick={() => setShowCommitModal(false)}
+              >
+                Cancel
+              </button>
+              <button
+                className="btn"
+                type="button"
+                disabled={isCommittingThread}
+                onClick={async () => {
+                  setIsCommittingThread(true);
+                  setCommitError("");
+                  try {
+                    const result = await onCommitThread();
                     const error = getErrorMessage(result);
                     if (error) {
                       setCommitError(error);
@@ -2954,11 +3030,11 @@ export function ThreadPage({
                   } catch {
                     setCommitError("Failed to commit thread");
                   } finally {
-                    setIsClosingThread(false);
+                    setIsCommittingThread(false);
                   }
                 }}
               >
-                {isClosingThread ? "Committing…" : "Confirm"}
+                {isCommittingThread ? "Committing…" : "Confirm"}
               </button>
             </div>
           </div>
