@@ -25,8 +25,8 @@ create table if not exists users (
 
 create type node_kind as enum ('Root', 'Host', 'Container', 'Process', 'Library');
 create type edge_type as enum ('Runtime', 'Dataflow', 'Dependency');
-create type doc_kind as enum ('Document', 'Skill');
-create type ref_type as enum ('Document', 'Skill');
+create type doc_kind as enum ('Document', 'Skill', 'Prompt');
+create type ref_type as enum ('Document', 'Skill', 'Prompt');
 create type provider as enum ('notion', 'google');
 create type doc_source_type as enum ('local', 'notion', 'google_doc');
 create type artifact_type as enum ('Summary', 'Code', 'Docs');

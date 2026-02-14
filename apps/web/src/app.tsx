@@ -90,6 +90,13 @@ type MatrixRefMutationResponse = {
   systemId: string;
   cell?: MatrixCell;
   cells?: MatrixCell[];
+  systemPrompt?: string | null;
+  systemPromptTitle?: string | null;
+  systemPrompts?: Array<{
+    hash: string;
+    title: string;
+    text: string;
+  }>;
   messages?: ChatMessage[];
 };
 
@@ -98,6 +105,13 @@ interface MatrixDocumentCreateResponse {
   document: MatrixDocument;
   cell?: MatrixCell;
   cells?: MatrixCell[];
+  systemPrompt?: string | null;
+  systemPromptTitle?: string | null;
+  systemPrompts?: Array<{
+    hash: string;
+    title: string;
+    text: string;
+  }>;
   messages?: ChatMessage[];
 }
 
@@ -106,6 +120,13 @@ interface MatrixDocumentReplaceResponse {
   oldHash: string;
   document: MatrixDocument;
   replacedRefs: number;
+  systemPrompt?: string | null;
+  systemPromptTitle?: string | null;
+  systemPrompts?: Array<{
+    hash: string;
+    title: string;
+    text: string;
+  }>;
   messages?: ChatMessage[];
 }
 
@@ -917,12 +938,17 @@ function ThreadRoute() {
         }
         const data = (await res.json()) as MatrixRefMutationResponse;
         const nextCells = normalizeMutationCells(data);
+        const hasSystemPromptUpdate =
+          typeof data.systemPrompt !== "undefined" || typeof data.systemPromptTitle !== "undefined" || typeof data.systemPrompts !== "undefined";
         setDetail((prev) => (
           prev
             ? {
                 ...prev,
                 systemId: data.systemId,
-                matrix: { ...prev.matrix, cells: applyMutationCells(prev.matrix.cells, nextCells) },
+                ...(hasSystemPromptUpdate ? {} : { matrix: { ...prev.matrix, cells: applyMutationCells(prev.matrix.cells, nextCells) } }),
+                ...(typeof data.systemPrompt === "undefined" ? {} : { systemPrompt: data.systemPrompt }),
+                ...(typeof data.systemPromptTitle === "undefined" ? {} : { systemPromptTitle: data.systemPromptTitle }),
+                ...(typeof data.systemPrompts === "undefined" ? {} : { systemPrompts: data.systemPrompts }),
                 chat: {
                   ...prev.chat,
                   messages: mergeChatMessages(prev.chat.messages, data.messages ?? []),
@@ -946,12 +972,17 @@ function ThreadRoute() {
         }
         const data = (await res.json()) as MatrixRefMutationResponse;
         const nextCells = normalizeMutationCells(data);
+        const hasSystemPromptUpdate =
+          typeof data.systemPrompt !== "undefined" || typeof data.systemPromptTitle !== "undefined" || typeof data.systemPrompts !== "undefined";
         setDetail((prev) => (
           prev
             ? {
                 ...prev,
                 systemId: data.systemId,
-                matrix: { ...prev.matrix, cells: applyMutationCells(prev.matrix.cells, nextCells) },
+                ...(hasSystemPromptUpdate ? {} : { matrix: { ...prev.matrix, cells: applyMutationCells(prev.matrix.cells, nextCells) } }),
+                ...(typeof data.systemPrompt === "undefined" ? {} : { systemPrompt: data.systemPrompt }),
+                ...(typeof data.systemPromptTitle === "undefined" ? {} : { systemPromptTitle: data.systemPromptTitle }),
+                ...(typeof data.systemPrompts === "undefined" ? {} : { systemPrompts: data.systemPrompts }),
                 chat: {
                   ...prev.chat,
                   messages: mergeChatMessages(prev.chat.messages, data.messages ?? []),
@@ -974,33 +1005,47 @@ function ThreadRoute() {
           return { error: await readError(res, "Failed to create matrix document") };
         }
         const typedData = (await res.json()) as MatrixDocumentCreateResponse;
+        const hasSystemPromptUpdate =
+          typeof typedData.systemPrompt !== "undefined" || typeof typedData.systemPromptTitle !== "undefined" || typeof typedData.systemPrompts !== "undefined";
         setDetail((prev) => {
           if (!prev) return prev;
           const nextCells = normalizeMutationCells(typedData);
           const attachConcerns = payload.attach ? getAttachConcerns(payload.attach) : [];
+          const isPrompt = payload.kind === "Prompt";
+          const shouldUpdateMatrixCollections = !hasSystemPromptUpdate && !isPrompt;
           const fallbackCells =
-            nextCells.length > 0
-              ? nextCells
-              : payload.attach && attachConcerns.length > 0
-                ? buildFallbackAttachedCells(
-                    prev.matrix.cells,
-                    payload.attach.nodeId,
-                    attachConcerns,
-                    payload.attach.refType,
-                    typedData.document,
-                  )
+            shouldUpdateMatrixCollections && nextCells.length === 0 && payload.attach && attachConcerns.length > 0
+              ? buildFallbackAttachedCells(
+                  prev.matrix.cells,
+                  payload.attach.nodeId,
+                  attachConcerns,
+                  payload.attach.refType as "Document" | "Skill",
+                  typedData.document,
+                )
+              : nextCells.length > 0
+                ? nextCells
                 : typedData.cell
                   ? [typedData.cell]
                   : [];
+          const shouldUpdateMatrixCells = shouldUpdateMatrixCollections && !isPrompt;
 
           return {
             ...prev,
             systemId: typedData.systemId,
-            matrix: {
-              ...prev.matrix,
-              documents: upsertMatrixDocument(prev.matrix.documents, typedData.document),
-              cells: applyMutationCells(prev.matrix.cells, fallbackCells),
-            },
+            ...(shouldUpdateMatrixCollections
+              ? {
+                  matrix: {
+                    ...prev.matrix,
+                    documents: upsertMatrixDocument(prev.matrix.documents, typedData.document),
+                    ...(shouldUpdateMatrixCells
+                      ? { cells: applyMutationCells(prev.matrix.cells, fallbackCells) }
+                      : {}),
+                  },
+                }
+              : {}),
+            ...(typeof typedData.systemPrompt === "undefined" ? {} : { systemPrompt: typedData.systemPrompt }),
+            ...(typeof typedData.systemPromptTitle === "undefined" ? {} : { systemPromptTitle: typedData.systemPromptTitle }),
+            ...(typeof typedData.systemPrompts === "undefined" ? {} : { systemPrompts: typedData.systemPrompts }),
             chat: {
               ...prev.chat,
               messages: mergeChatMessages(prev.chat.messages, typedData.messages ?? []),
@@ -1022,24 +1067,34 @@ function ThreadRoute() {
           return { error: await readError(res, "Failed to replace matrix document") };
         }
         const data = (await res.json()) as MatrixDocumentReplaceResponse;
+        const hasSystemPromptUpdate =
+          typeof data.systemPrompt !== "undefined" || typeof data.systemPromptTitle !== "undefined" || typeof data.systemPrompts !== "undefined";
         setDetail((prev) => {
           if (!prev) return prev;
+          const shouldUpdateMatrixCollections = !hasSystemPromptUpdate;
           return {
             ...prev,
             systemId: data.systemId,
-            matrix: {
-              ...prev.matrix,
-              documents: replaceMatrixDocumentInGlobalList(
-                prev.matrix.documents,
-                data.oldHash,
-                data.document,
-              ),
-              cells: replaceMatrixDocumentReferences(
-                prev.matrix.cells,
-                data.oldHash,
-                data.document,
-              ),
-            },
+            ...(shouldUpdateMatrixCollections
+              ? {
+                  matrix: {
+                    ...prev.matrix,
+                    documents: replaceMatrixDocumentInGlobalList(
+                      prev.matrix.documents,
+                      data.oldHash,
+                      data.document,
+                    ),
+                    cells: replaceMatrixDocumentReferences(
+                      prev.matrix.cells,
+                      data.oldHash,
+                      data.document,
+                    ),
+                  },
+                }
+              : {}),
+            ...(typeof data.systemPrompt === "undefined" ? {} : { systemPrompt: data.systemPrompt }),
+            ...(typeof data.systemPromptTitle === "undefined" ? {} : { systemPromptTitle: data.systemPromptTitle }),
+            ...(typeof data.systemPrompts === "undefined" ? {} : { systemPrompts: data.systemPrompts }),
             chat: {
               ...prev.chat,
               messages: mergeChatMessages(prev.chat.messages, data.messages ?? []),
