@@ -3116,6 +3116,10 @@ export async function threadRoutes(app: FastifyInstance) {
     async (req, reply) => {
       const { handle, projectName, threadId } = req.params;
 
+      if (!process.env.ANTHROPIC_API_KEY) {
+        return reply.code(503).send({ error: "Agent execution not available (no API key configured)" });
+      }
+
       const context = await requireContext(reply, getViewerUserId(req), handle, projectName, threadId);
       if (!context) return;
 
