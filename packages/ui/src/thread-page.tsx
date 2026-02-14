@@ -253,6 +253,7 @@ interface ThreadPageProps {
   onReplaceMatrixDocument?: (documentHash: string, payload: MatrixDocumentReplaceInput) => Promise<MutationResult<MatrixDocumentReplaceResponse>>;
   onSendChatMessage?: (payload: { content: string }) => Promise<MutationResult<{ messages: ChatMessage[] }>>;
   onRunAssistant?: (payload: AssistantRunRequest) => Promise<MutationResult<AssistantRunResponse>>;
+  onCloseThread?: () => Promise<MutationResult<{ thread: ThreadDetail }>>;
   integrationStatuses?: IntegrationStatusRecord;
 }
 
@@ -364,7 +365,9 @@ function getErrorMessage<T>(result: MutationResult<T>): string | null {
 }
 
 function getStatusLabel(status: string) {
-  return status === "open" ? "Working" : status;
+  if (status === "open") return "Working";
+  if (status === "closed") return "Committed";
+  return status;
 }
 
 function getIntegrationStatus(
@@ -935,6 +938,7 @@ export function ThreadPage({
   onReplaceMatrixDocument,
   onSendChatMessage,
   onRunAssistant,
+  onCloseThread,
   integrationStatuses,
 }: ThreadPageProps) {
   const [isTopologyCollapsed, setIsTopologyCollapsed] = useState(false);
@@ -960,6 +964,9 @@ export function ThreadPage({
   const [assistantError, setAssistantError] = useState("");
   const [assistantSummary, setAssistantSummary] = useState("");
   const [isRunningAssistant, setIsRunningAssistant] = useState(false);
+  const [isClosingThread, setIsClosingThread] = useState(false);
+  const [showCommitModal, setShowCommitModal] = useState(false);
+  const [commitError, setCommitError] = useState("");
   const [pendingPlanActionId, setPendingPlanActionId] = useState<string | null>(null);
   const [topologyError, setTopologyError] = useState("");
   const [isSavingTopologyLayout, setIsSavingTopologyLayout] = useState(false);
@@ -983,6 +990,9 @@ export function ThreadPage({
   const [isDocumentModalBusy, setIsDocumentModalBusy] = useState(false);
   const [documentModalError, setDocumentModalError] = useState("");
   const { user } = useAuth();
+
+  const isThreadOpen = detail.thread.status === "open";
+  const effectiveCanEdit = detail.permissions.canEdit && isThreadOpen;
 
   type FullscreenTab = "topology" | "matrix" | "chat";
   const titleInputRef = useRef<HTMLInputElement>(null);
@@ -1246,9 +1256,9 @@ export function ThreadPage({
         nodeArtifacts,
         openTopologyDocumentPicker,
         openEditDocumentModal,
-        detail.permissions.canEdit,
+        effectiveCanEdit,
       ),
-    [flowLayoutModel, nodeDocumentGroups, nodeArtifacts, openTopologyDocumentPicker, openEditDocumentModal, detail.permissions.canEdit],
+    [flowLayoutModel, nodeDocumentGroups, nodeArtifacts, openTopologyDocumentPicker, openEditDocumentModal, effectiveCanEdit],
   );
   const [flowNodes, setFlowNodes, onFlowNodesChange] = useNodesState(initialFlowNodes);
   const flowEdges = useMemo(() => buildFlowEdges(detail.topology.edges, flowLayoutModel), [detail.topology.edges, flowLayoutModel]);
@@ -1532,7 +1542,7 @@ export function ThreadPage({
   }
 
   function switchToDocumentCreateMode() {
-    if (!documentModal || !detail.permissions.canEdit) return;
+    if (!documentModal || !effectiveCanEdit) return;
     if (documentModal.selectedConcerns.length === 0) {
       setDocModalValidationError("Choose one or more concerns before creating.");
       return;
@@ -1832,7 +1842,7 @@ export function ThreadPage({
   }
 
   async function handleSendChat() {
-    if (!onSendChatMessage || !detail.permissions.canChat || !chatInput.trim()) return;
+    if (!onSendChatMessage || !effectiveCanEdit || !chatInput.trim()) return;
     setChatError("");
     setIsSendingChat(true);
 
@@ -1850,7 +1860,7 @@ export function ThreadPage({
   }
 
   async function handleRunAssistant(mode: AssistantRunMode, planActionId: string | null = null) {
-    if (!onRunAssistant || !detail.permissions.canChat) return;
+    if (!onRunAssistant || !effectiveCanEdit) return;
 
     setIsRunningAssistant(true);
     setAssistantError("");
@@ -1892,7 +1902,7 @@ export function ThreadPage({
   const handleNodeDragStop = useCallback<NodeMouseHandler>(
     async (_event, node) => {
       if (node.type === "rootGroup") return;
-      if (!detail.permissions.canEdit || !onSaveTopologyLayout) return;
+      if (!effectiveCanEdit || !onSaveTopologyLayout) return;
       setTopologyError("");
       setIsSavingTopologyLayout(true);
       const result = await onSaveTopologyLayout({
@@ -1904,7 +1914,7 @@ export function ThreadPage({
         setTopologyError(error);
       }
     },
-    [detail.permissions.canEdit, onSaveTopologyLayout],
+    [effectiveCanEdit, onSaveTopologyLayout],
   );
 
   const renderDocumentModal = () => {
@@ -2363,7 +2373,7 @@ export function ThreadPage({
               {detail.thread.title}{" "}
               <span className="thread-view-title-number">#{detail.thread.projectThreadId}</span>
             </h1>
-            {detail.permissions.canEdit && (
+            {effectiveCanEdit && (
               <button
                 className="btn btn-secondary thread-view-edit-btn"
                 type="button"
@@ -2386,7 +2396,7 @@ export function ThreadPage({
       </div>
 
       <section className="thread-card thread-description-card">
-        {detail.permissions.canEdit && !isDescriptionEditing && (
+        {effectiveCanEdit && !isDescriptionEditing && (
           <button
             className="btn-icon thread-card-action thread-description-edit"
             type="button"
@@ -2485,7 +2495,7 @@ export function ThreadPage({
                 onInit={(instance) => { reactFlowRef.current = instance; }}
                 fitView
                 minZoom={0.1}
-                nodesDraggable={detail.permissions.canEdit && Boolean(onSaveTopologyLayout)}
+                nodesDraggable={effectiveCanEdit && Boolean(onSaveTopologyLayout)}
                 nodesConnectable={false}
                 elementsSelectable={false}
                 deleteKeyCode={null}
@@ -2557,7 +2567,7 @@ export function ThreadPage({
                             key={key}
                             className={isEmpty ? "matrix-td-empty" : undefined}
                             onClick={
-                              isEmpty && detail.permissions.canEdit
+                              isEmpty && effectiveCanEdit
                                 ? () => openMatrixCellDocumentPicker(node.id, concern.name, DOC_TYPES[0] as DocKind)
                                 : undefined
                             }
@@ -2575,17 +2585,17 @@ export function ThreadPage({
                                           <div
                                             key={`${doc.hash}:${doc.refType}`}
                                             className={`matrix-doc-chip matrix-doc-chip--${doc.refType.toLowerCase()} ${doc.sourceType === "notion" || doc.sourceType === "google_doc" ? "matrix-doc-chip--external" : ""}`}
-                                            role={detail.permissions.canEdit ? "button" : undefined}
-                                            tabIndex={detail.permissions.canEdit ? 0 : -1}
+                                            role={effectiveCanEdit ? "button" : undefined}
+                                            tabIndex={effectiveCanEdit ? 0 : -1}
                                             onClick={() => {
-                                              if (detail.permissions.canEdit) {
+                                              if (effectiveCanEdit) {
                                                 openEditDocumentModal(doc, node.id, concern.name);
                                               }
                                             }}
                                             onKeyDown={(event) => {
                                               if (event.key === "Enter" || event.key === " ") {
                                                 event.preventDefault();
-                                                if (detail.permissions.canEdit) {
+                                                if (effectiveCanEdit) {
                                                   openEditDocumentModal(doc, node.id, concern.name);
                                                 }
                                               }
@@ -2627,7 +2637,7 @@ export function ThreadPage({
                                 </div>
                               )}
 
-                              {detail.permissions.canEdit && (
+                              {effectiveCanEdit && (
                                 <button
                                   className="matrix-add-doc-btn"
                                   type="button"
@@ -2655,7 +2665,7 @@ export function ThreadPage({
         );
 
         const renderChatBody = () => (
-          <div className={detail.permissions.canChat ? "" : "thread-chat-disabled"}>
+          <div className={effectiveCanEdit ? "" : "thread-chat-disabled"}>
             <div className="thread-chat-form">
               {onRunAssistant ? (
                 <div className="thread-chat-run-actions">
@@ -2663,7 +2673,7 @@ export function ThreadPage({
                     className="btn btn-secondary thread-chat-run-action"
                     type="button"
                     onClick={() => handleRunAssistant("direct")}
-                    disabled={isRunningAssistant || !detail.permissions.canChat}
+                    disabled={isRunningAssistant || !effectiveCanEdit}
                   >
                     Run
                   </button>
@@ -2671,7 +2681,7 @@ export function ThreadPage({
                     className="btn btn-secondary thread-chat-run-action"
                     type="button"
                     onClick={() => handleRunAssistant("plan")}
-                    disabled={isRunningAssistant || !detail.permissions.canChat}
+                    disabled={isRunningAssistant || !effectiveCanEdit}
                   >
                     Plan first
                   </button>
@@ -2680,7 +2690,7 @@ export function ThreadPage({
                       className="btn btn-secondary thread-chat-run-action"
                       type="button"
                       onClick={() => handleRunAssistant("direct", pendingPlanActionId)}
-                      disabled={isRunningAssistant || !detail.permissions.canChat}
+                      disabled={isRunningAssistant || !effectiveCanEdit}
                     >
                       Apply plan
                     </button>
@@ -2695,19 +2705,19 @@ export function ThreadPage({
                   placeholder="Ask Ideating anything"
                   value={chatInput}
                   onChange={(event) => setChatInput(event.target.value)}
-                  disabled={!detail.permissions.canChat || isSendingChat}
+                  disabled={!effectiveCanEdit || isSendingChat}
                 />
                 <button
                   className="thread-chat-send"
                   type="button"
                   onClick={handleSendChat}
-                  disabled={!detail.permissions.canChat || isSendingChat || !chatInput.trim()}
+                  disabled={!effectiveCanEdit || isSendingChat || !chatInput.trim()}
                   aria-label="Send message"
                 >
                   <Send size={14} />
                 </button>
               </div>
-                {!detail.permissions.canChat && (
+                {!effectiveCanEdit && (
                   <p className="thread-chat-disabled-copy">Only owners and editors can send messages.</p>
                 )}
                 {chatError && <p className="field-error">{chatError}</p>}
@@ -2817,6 +2827,21 @@ export function ThreadPage({
               )}
             </section>
 
+            {detail.permissions.canEdit && isThreadOpen && onCloseThread && (
+              <section className="thread-card thread-commit-card">
+                <p className="thread-commit-text">
+                  Committing a thread finalizes it. This action cannot be undone.
+                </p>
+                <button
+                  className="btn"
+                  type="button"
+                  onClick={() => { setCommitError(""); setShowCommitModal(true); }}
+                >
+                  Commit
+                </button>
+              </section>
+            )}
+
             <section ref={fullscreenRef} className={isFullscreen ? "thread-fullscreen" : "thread-fullscreen-hidden"}>
               <div className="thread-fullscreen-header">
                 <div className="thread-fullscreen-tabs">
@@ -2860,6 +2885,52 @@ export function ThreadPage({
           </>
         );
       })()}
+
+      {showCommitModal && onCloseThread && (
+        <div className="modal-overlay" onMouseDown={(e) => { if (e.target === e.currentTarget && !isClosingThread) setShowCommitModal(false); }}>
+          <div className="modal thread-commit-modal">
+            <h3 className="modal-title">Commit thread</h3>
+            <p className="thread-commit-modal-text">
+              This will finalize the thread. Once committed, no further edits can be made. This action cannot be undone.
+            </p>
+            {commitError && <p className="field-error">{commitError}</p>}
+            <div className="modal-actions">
+              <button
+                className="btn btn-secondary"
+                type="button"
+                disabled={isClosingThread}
+                onClick={() => setShowCommitModal(false)}
+              >
+                Cancel
+              </button>
+              <button
+                className="btn"
+                type="button"
+                disabled={isClosingThread}
+                onClick={async () => {
+                  setIsClosingThread(true);
+                  setCommitError("");
+                  try {
+                    const result = await onCloseThread();
+                    const error = getErrorMessage(result);
+                    if (error) {
+                      setCommitError(error);
+                    } else {
+                      setShowCommitModal(false);
+                    }
+                  } catch {
+                    setCommitError("Failed to commit thread");
+                  } finally {
+                    setIsClosingThread(false);
+                  }
+                }}
+              >
+                {isClosingThread ? "Committing…" : "Confirm"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {renderDocumentModal()}
     </main>

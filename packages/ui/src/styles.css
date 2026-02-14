@@ -990,6 +990,31 @@ a.project-card {
   }
 }
 
+.thread-commit-card {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 16px 20px;
+}
+
+.thread-commit-text {
+  flex: 1;
+  font-size: 13px;
+  color: var(--fg-muted);
+  margin: 0;
+}
+
+.thread-commit-modal {
+  max-width: 420px;
+}
+
+.thread-commit-modal-text {
+  font-size: 14px;
+  color: var(--fg-muted);
+  line-height: 1.5;
+  margin: 0;
+}
+
 .thread-fullscreen-hidden {
   display: none;
 }

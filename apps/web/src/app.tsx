@@ -917,6 +917,25 @@ function ThreadRoute() {
         ));
         return data;
       }}
+      onCloseThread={async () => {
+        try {
+          const res = await apiFetch(
+            `/projects/${encodeURIComponent(handle!)}/${encodeURIComponent(projectName!)}/thread/${encodeURIComponent(threadId!)}/close`,
+            { method: "POST" },
+          );
+          if (!res.ok) {
+            return { error: await readError(res, "Failed to close thread") };
+          }
+          const data = (await res.json()) as { thread: ThreadDetail };
+          setDetail((prev) => (prev ? { ...prev, thread: data.thread } : prev));
+          return data;
+        } catch (error: unknown) {
+          if (error instanceof Error && error.message.trim()) {
+            return { error: error.message };
+          }
+          return { error: "Failed to close thread" };
+        }
+      }}
     />
   );
 }

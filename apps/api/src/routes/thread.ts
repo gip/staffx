@@ -1298,6 +1298,47 @@ export async function threadRoutes(app: FastifyInstance) {
     },
   );
 
+  app.post<{ Params: { handle: string; projectName: string; threadId: string } }>(
+    "/projects/:handle/:projectName/thread/:threadId/close",
+    async (req, reply) => {
+      const { handle, projectName, threadId } = req.params;
+      const context = await requireContext(reply, req.auth.id, handle, projectName, threadId);
+      if (!context) return;
+
+      if (!canEdit(context.accessRole)) {
+        return reply.code(403).send({ error: "Forbidden" });
+      }
+
+      if (context.status !== "open") {
+        return reply.code(409).send({ error: "Thread is already closed" });
+      }
+
+      await query("SELECT close_thread($1)", [context.threadId]);
+
+      const result = await query<UpsertThreadRow>(
+        `SELECT id, project_thread_id, title, description, status
+         FROM threads WHERE id = $1`,
+        [context.threadId],
+      );
+
+      const updated = result.rows[0];
+      return {
+        thread: {
+          id: updated.id,
+          projectThreadId: updated.project_thread_id,
+          title: updated.title,
+          description: updated.description,
+          status: updated.status,
+          createdAt: context.createdAt,
+          createdByHandle: context.createdByHandle,
+          ownerHandle: context.ownerHandle,
+          projectName: context.projectName,
+          accessRole: context.accessRole,
+        },
+      };
+    },
+  );
+
   app.patch<{ Params: { handle: string; projectName: string; threadId: string }; Body: TopologyLayoutBody }>(
     "/projects/:handle/:projectName/thread/:threadId/topology/layout",
     async (req, reply) => {

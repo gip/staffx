@@ -48,7 +48,7 @@ export function ProjectPage({ project }: ProjectPageProps) {
                 <span className="thread-row-id">#{t.projectThreadId}</span>
                 <span className="thread-row-title">{t.title ?? "Untitled"}</span>
                 <span className={`thread-status thread-status--${t.status}`}>
-                  {t.status}
+                  {t.status === "open" ? "Open" : t.status === "closed" ? "Committed" : t.status}
                 </span>
                 <span className="thread-row-date">{formatDate(t.updatedAt)}</span>
               </Link>
