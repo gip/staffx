@@ -29,6 +29,7 @@ async function migrate() {
     drop table if exists file_contents cascade;
     drop table if exists artifacts cascade;
     drop table if exists matrix_refs cascade;
+    drop table if exists external_document_sync_notifications cascade;
     drop table if exists user_integrations cascade;
     drop table if exists integration_oauth_states cascade;
     drop table if exists documents cascade;
