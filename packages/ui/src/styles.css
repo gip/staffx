@@ -69,6 +69,29 @@ a.header-logo {
   color: var(--fg);
 }
 
+.header--desktop {
+  -webkit-app-region: drag;
+  position: relative;
+  background: var(--bg);
+  border-bottom: none;
+}
+
+.header--desktop .header-left {
+  min-width: 78px;
+}
+
+.header-center {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+}
+
+.header-no-drag {
+  -webkit-app-region: no-drag;
+}
+
 .header-right {
   display: flex;
   align-items: center;

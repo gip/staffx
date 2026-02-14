@@ -5,7 +5,7 @@ import { useTheme } from "./theme";
 import { Link } from "./link";
 import { Logo } from "./logo";
 
-export function Header() {
+export function Header({ variant = "web" }: { variant?: "web" | "desktop" }) {
   const { isAuthenticated, isLoading, user, login, logout } = useAuth();
   const { theme, toggle } = useTheme();
   const [menuOpen, setMenuOpen] = useState(false);
@@ -22,15 +22,27 @@ export function Header() {
     return () => document.removeEventListener("mousedown", handleClick);
   }, [menuOpen]);
 
+  const isDesktop = variant === "desktop";
+
   return (
-    <header className="header">
+    <header className={`header${isDesktop ? " header--desktop" : ""}`}>
       <div className="header-left">
-        <Link to="/" className="header-logo">
-          <Logo />
-          StaffX
-        </Link>
+        {!isDesktop && (
+          <Link to="/" className="header-logo">
+            <Logo />
+            StaffX
+          </Link>
+        )}
       </div>
-      <div className="header-right">
+      {isDesktop && (
+        <div className="header-center">
+          <Link to="/" className="header-logo header-no-drag">
+            <Logo />
+            StaffX
+          </Link>
+        </div>
+      )}
+      <div className="header-right header-no-drag">
         <button className="btn-icon btn-icon-theme" onClick={toggle} aria-label="Toggle theme">
           {theme === "light" ? <Moon size={16} /> : <Sun size={16} />}
         </button>

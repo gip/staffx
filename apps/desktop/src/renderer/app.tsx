@@ -992,7 +992,7 @@ export function App() {
       }}
     >
       <NavigateSync />
-      <Header />
+      <Header variant="desktop" />
       <Routes>
         <Route path="/" element={<HomeRoute projects={projects} setProjects={setProjects} />} />
         <Route path="/:handle/:project" element={<ProjectRoute isAuthenticated={isAuthenticated} />} />
