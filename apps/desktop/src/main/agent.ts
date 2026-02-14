@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { appendFile } from "node:fs/promises";
+import { appendFile, mkdir } from "node:fs/promises";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { query, type Query, type SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import { app, type BrowserWindow } from "electron";
@@ -36,16 +37,33 @@ async function appendAgentLog(payload: AgentLogPayload) {
 
 interface StartAgentParams {
   prompt: string;
+  handle?: string;
+  projectName?: string;
+  threadId?: string;
   cwd?: string;
   allowedTools?: string[];
   systemPrompt?: string;
   model?: string;
 }
 
+function getWorkspacePath(handle: string, projectName: string, threadId: string): string {
+  return join(homedir(), ".staffx", "projects", handle, projectName, threadId);
+}
+
 export function startAgent(win: BrowserWindow, params: StartAgentParams): string {
   const threadId = randomUUID();
   const abortController = new AbortController();
   const messageSummaries: string[] = [];
+
+  const workspaceCwd =
+    params.handle && params.projectName && params.threadId
+      ? getWorkspacePath(params.handle, params.projectName, params.threadId)
+      : params.cwd ?? process.cwd();
+
+  const initPromise =
+    params.handle && params.projectName && params.threadId
+      ? mkdir(workspaceCwd, { recursive: true })
+      : Promise.resolve();
 
   const q = query({
     prompt: params.prompt,
@@ -54,7 +72,7 @@ export function startAgent(win: BrowserWindow, params: StartAgentParams): string
       allowDangerouslySkipPermissions: true,
       abortController,
       allowedTools: params.allowedTools ?? ["Read", "Grep", "Glob", "Bash", "Edit", "Write"],
-      cwd: params.cwd ?? process.cwd(),
+      cwd: workspaceCwd,
       ...(params.systemPrompt ? { systemPrompt: params.systemPrompt } : {}),
       ...(params.model ? { model: params.model } : {}),
     },
@@ -75,7 +93,7 @@ export function startAgent(win: BrowserWindow, params: StartAgentParams): string
     event: "start",
     data: {
       prompt: params.prompt,
-      cwd: params.cwd ?? process.cwd(),
+      cwd: workspaceCwd,
       allowedTools: params.allowedTools ?? ["Read", "Grep", "Glob", "Bash", "Edit", "Write"],
       systemPrompt: params.systemPrompt ?? null,
       model: params.model ?? null,
@@ -85,7 +103,7 @@ export function startAgent(win: BrowserWindow, params: StartAgentParams): string
   console.info("[agent] start", {
     threadId,
     prompt: params.prompt,
-    cwd: params.cwd ?? process.cwd(),
+    cwd: workspaceCwd,
     allowedTools: params.allowedTools ?? ["Read", "Grep", "Glob", "Bash", "Edit", "Write"],
     model: params.model,
     systemPrompt: params.systemPrompt,
@@ -93,6 +111,7 @@ export function startAgent(win: BrowserWindow, params: StartAgentParams): string
 
   (async () => {
     try {
+      await initPromise;
       for await (const message of q) {
         if (typeof message === "object" && message !== null) {
           const safeMessage = message as SDKMessage & { content?: unknown; text?: unknown };

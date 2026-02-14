@@ -10,6 +10,7 @@
     "migrate": "tsx --env-file=.env.local src/migrate.ts"
   },
   "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.2.41",
     "@fastify/cors": "^11.0.0",
     "fastify": "^5.2.1",
     "jose": "^6.1.3",

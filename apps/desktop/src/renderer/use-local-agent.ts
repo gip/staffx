@@ -9,6 +9,9 @@ interface AgentMessage {
 
 interface StartParams {
   prompt: string;
+  handle?: string;
+  projectName?: string;
+  threadId?: string;
   cwd?: string;
   allowedTools?: string[];
   systemPrompt?: string;

@@ -40,7 +40,7 @@ interface ElectronAuthAPI {
 }
 
 interface ElectronAgentAPI {
-  start: (params: { prompt: string; cwd?: string; allowedTools?: string[]; systemPrompt?: string; model?: string }) => Promise<{ threadId: string }>;
+  start: (params: { prompt: string; handle?: string; projectName?: string; threadId?: string; cwd?: string; allowedTools?: string[]; systemPrompt?: string; model?: string }) => Promise<{ threadId: string }>;
   stop: (threadId: string) => void;
   getStatus: (threadId: string) => Promise<{ status: string; sessionId: string | null } | null>;
   onMessage: (callback: (data: { threadId: string; message: unknown }) => void) => () => void;
@@ -1174,6 +1174,9 @@ function ThreadRoute({ isAuthenticated }: { isAuthenticated: boolean }) {
         const contextSuffix = suffixes.length > 0 ? ` (${suffixes.join(", ")})` : "";
         void localAgent.start({
           prompt: `Project: ${handle}/${projectName}, Thread: ${threadId}. Action: ${actionLabel}${contextSuffix}`,
+          handle: handle!,
+          projectName: projectName!,
+          threadId: threadId!,
           systemPrompt: detail.systemPrompt ?? undefined,
           allowedTools: ["Read", "Grep", "Glob", "Bash", "Edit", "Write"],
         }).catch(() => {

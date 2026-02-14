@@ -5,6 +5,7 @@ import pool, { query } from "../db.js";
 import { verifyOptionalAuth, type AuthUser } from "../auth.js";
 import { decryptToken, encryptToken } from "../integrations/crypto.js";
 import { getProviderClient, sourceTypeToProvider, type DocSourceType } from "../integrations/index.js";
+import { runAgent } from "../agent.js";
 
 const EDIT_ROLES = new Set(["Owner", "Editor"]);
 const PLACEHOLDER_ASSISTANT_MESSAGE = "Received. I captured your request in this thread.";
@@ -3107,6 +3108,65 @@ export async function threadRoutes(app: FastifyInstance) {
         messages: mapAssistantRunMessages(messagesResult.rows),
         systemId,
       };
+    },
+  );
+
+  app.post<{ Params: { handle: string; projectName: string; threadId: string } }>(
+    "/projects/:handle/:projectName/thread/:threadId/agent/run",
+    async (req, reply) => {
+      const { handle, projectName, threadId } = req.params;
+
+      const context = await requireContext(reply, getViewerUserId(req), handle, projectName, threadId);
+      if (!context) return;
+
+      if (!canEdit(context.accessRole)) {
+        return reply.code(403).send({ error: "Forbidden" });
+      }
+
+      const systemId = await getThreadSystemId(context.threadId);
+      if (!systemId) {
+        return reply.code(500).send({ error: "Unable to resolve thread system" });
+      }
+
+      const promptMetadata = await getSystemPromptWithMetadataForSystem(systemId);
+
+      reply.raw.writeHead(200, {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+        Connection: "keep-alive",
+      });
+
+      const abortController = new AbortController();
+      req.raw.on("close", () => abortController.abort());
+
+      const body =
+        typeof req.body === "object" && req.body !== null ? (req.body as Record<string, unknown>) : {};
+      const prompt = typeof body.prompt === "string" ? body.prompt : "";
+
+      void runAgent(
+        {
+          prompt,
+          handle,
+          projectName,
+          threadId,
+          systemPrompt: promptMetadata.text ?? undefined,
+          allowedTools: ["Read", "Grep", "Glob", "Bash", "Edit", "Write"],
+        },
+        {
+          onMessage(msg) {
+            if (!reply.raw.destroyed) {
+              reply.raw.write(`data: ${JSON.stringify(msg)}\n\n`);
+            }
+          },
+          onDone(status) {
+            if (!reply.raw.destroyed) {
+              reply.raw.write(`event: done\ndata: ${JSON.stringify({ status })}\n\n`);
+              reply.raw.end();
+            }
+          },
+        },
+        abortController.signal,
+      );
     },
   );
 }
