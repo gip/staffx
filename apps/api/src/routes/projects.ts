@@ -1,7 +1,7 @@
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { createHash, randomUUID } from "node:crypto";
 import type { PoolClient } from "pg";
-import { verifyAuth } from "../auth.js";
+import { verifyAuth, verifyOptionalAuth, type AuthUser } from "../auth.js";
 import pool, { query } from "../db.js";
 import {
   BLANK_TEMPLATE_ID,
@@ -17,6 +17,7 @@ interface ProjectRow {
   name: string;
   description: string | null;
   access_role: string;
+  visibility: ProjectVisibility;
   created_at: Date;
 }
 
@@ -30,6 +31,9 @@ interface ThreadRow {
   created_at: Date;
   updated_at: Date;
 }
+
+type AccessRole = "Owner" | "Editor" | "Viewer";
+type ProjectVisibility = "public" | "private";
 
 function computeDocumentHash(document: Pick<TemplateDocument, "kind" | "title" | "language" | "text">) {
   const payload = [document.kind, document.title, document.language, document.text].join("\n");
@@ -144,25 +148,75 @@ async function seedSystemTemplate(
 
 interface ResolvedProject {
   projectId: string;
-  accessRole: string;
+  accessRole: AccessRole;
   ownerId: string;
+  visibility: ProjectVisibility;
+}
+
+interface ProjectAccessRow {
+  id: string;
+  owner_id: string;
+  visibility: ProjectVisibility;
+  collaborator_role: AccessRole | null;
+}
+
+function getAuthUser(req: FastifyRequest): AuthUser | null {
+  return (req as FastifyRequest & { auth?: AuthUser }).auth ?? null;
+}
+
+async function requireAuthUser(req: FastifyRequest, reply: FastifyReply): Promise<AuthUser | null> {
+  await verifyAuth(req, reply);
+  if (reply.sent) return null;
+  return getAuthUser(req);
+}
+
+async function getOptionalViewerUserId(
+  req: FastifyRequest,
+  reply: FastifyReply,
+): Promise<string | null | undefined> {
+  await verifyOptionalAuth(req, reply);
+  if (reply.sent) return undefined;
+  return getAuthUser(req)?.id ?? null;
+}
+
+function resolveAccessRole(
+  ownerId: string,
+  viewerUserId: string | null,
+  visibility: ProjectVisibility,
+  collaboratorRole: AccessRole | null,
+): AccessRole | null {
+  if (viewerUserId && ownerId === viewerUserId) return "Owner";
+  if (collaboratorRole === "Editor" || collaboratorRole === "Viewer") return collaboratorRole;
+  if (visibility === "public") return "Viewer";
+  return null;
 }
 
 async function resolveProject(
   handle: string,
   projectName: string,
-  viewerUserId: string,
+  viewerUserId: string | null,
 ): Promise<ResolvedProject | null> {
-  const result = await query<{ id: string; access_role: string; owner_id: string }>(
-    `SELECT p.id, p.access_role, p.owner_id
-     FROM user_projects p
-     JOIN users u ON u.id = p.owner_id
-     WHERE u.handle = $1 AND p.name = $2 AND p.user_id = $3`,
+  const result = await query<ProjectAccessRow>(
+    `SELECT
+       p.id,
+       p.owner_id,
+       p.visibility::text AS visibility,
+       pc.role::text AS collaborator_role
+     FROM projects p
+     JOIN users owner ON owner.id = p.owner_id
+     LEFT JOIN project_collaborators pc
+       ON pc.project_id = p.id
+      AND pc.user_id = CAST($3 AS uuid)
+     WHERE owner.handle = $1
+       AND p.name = $2
+     LIMIT 1`,
     [handle, projectName, viewerUserId],
   );
   if (result.rowCount === 0) return null;
   const row = result.rows[0];
-  return { projectId: row.id, accessRole: row.access_role, ownerId: row.owner_id };
+  const accessRole = resolveAccessRole(row.owner_id, viewerUserId, row.visibility, row.collaborator_role);
+  if (!accessRole) return null;
+  return { projectId: row.id, accessRole, ownerId: row.owner_id, visibility: row.visibility };
 }
 
 async function resolveProjectSystemId(projectId: string): Promise<string | null> {
@@ -178,54 +232,97 @@ async function resolveProjectSystemId(projectId: string): Promise<string | null>
 }
 
 export async function projectRoutes(app: FastifyInstance) {
-  app.addHook("preHandler", verifyAuth);
-
   app.get<{ Querystring: { name: string } }>(
     "/projects/check-name",
     async (req, reply) => {
+      const authUser = await requireAuthUser(req, reply);
+      if (!authUser) return;
+
       const { name } = req.query;
       if (!name) return reply.code(400).send({ error: "name is required" });
 
       const result = await query(
         "SELECT 1 FROM projects WHERE owner_id = $1 AND name = $2",
-        [req.auth.id, name],
+        [authUser.id, name],
       );
       return { available: result.rowCount === 0 };
     },
   );
 
-  app.get("/projects", async (req) => {
-    const result = await query<ProjectRow & { owner_handle: string; threads: ThreadRow[] }>(
-      `SELECT
-         p.id,
-         p.name,
-         p.description,
-         p.access_role,
-         p.created_at,
-         u.handle AS owner_handle,
-         COALESCE(
-            (SELECT jsonb_agg(t)
-            FROM (
-              SELECT t.id, t.title, t.description, t.project_thread_id, t.status, t.updated_at
-              FROM threads t
-              WHERE t.project_id = p.id
-              ORDER BY t.updated_at DESC
-              LIMIT 2
-            ) t),
-           '[]'::jsonb
-         ) AS threads
-       FROM user_projects p
-       JOIN users u ON u.id = p.owner_id
-       WHERE p.user_id = $1
-       ORDER BY p.created_at DESC`,
-      [req.auth.id],
-    );
+  app.get("/projects", async (req, reply) => {
+    const viewerUserId = await getOptionalViewerUserId(req, reply);
+    if (typeof viewerUserId === "undefined") return;
 
-    return result.rows.map((row) => ({
+    const rows = viewerUserId
+      ? (
+        await query<ProjectRow & { owner_handle: string; threads: ThreadRow[] }>(
+          `SELECT
+             p.id,
+             p.name,
+             p.description,
+             p.visibility::text AS visibility,
+             CASE
+               WHEN p.owner_id = $1 THEN 'Owner'
+               WHEN pc.role IS NOT NULL THEN pc.role::text
+               ELSE 'Viewer'
+             END AS access_role,
+             p.created_at,
+             owner.handle AS owner_handle,
+             COALESCE(
+                (SELECT jsonb_agg(t)
+                FROM (
+                  SELECT t.id, t.title, t.description, t.project_thread_id, t.status, t.updated_at
+                  FROM threads t
+                  WHERE t.project_id = p.id
+                  ORDER BY t.updated_at DESC
+                  LIMIT 2
+                ) t),
+               '[]'::jsonb
+             ) AS threads
+           FROM projects p
+           JOIN users owner ON owner.id = p.owner_id
+           LEFT JOIN project_collaborators pc ON pc.project_id = p.id AND pc.user_id = $1
+           WHERE p.visibility = 'public'
+              OR p.owner_id = $1
+              OR pc.user_id IS NOT NULL
+           ORDER BY p.created_at DESC`,
+          [viewerUserId],
+        )
+      ).rows
+      : (
+        await query<ProjectRow & { owner_handle: string; threads: ThreadRow[] }>(
+          `SELECT
+             p.id,
+             p.name,
+             p.description,
+             p.visibility::text AS visibility,
+             'Viewer' AS access_role,
+             p.created_at,
+             owner.handle AS owner_handle,
+             COALESCE(
+                (SELECT jsonb_agg(t)
+                FROM (
+                  SELECT t.id, t.title, t.description, t.project_thread_id, t.status, t.updated_at
+                  FROM threads t
+                  WHERE t.project_id = p.id
+                  ORDER BY t.updated_at DESC
+                  LIMIT 2
+                ) t),
+               '[]'::jsonb
+             ) AS threads
+           FROM projects p
+           JOIN users owner ON owner.id = p.owner_id
+           WHERE p.visibility = 'public'
+           ORDER BY p.created_at DESC`,
+        )
+      ).rows;
+
+    return rows.map((row) => ({
       id: row.id,
       name: row.name,
       description: row.description,
       accessRole: row.access_role,
+      visibility: row.visibility,
       ownerHandle: row.owner_handle,
       createdAt: row.created_at,
       threads: (row.threads as unknown as ThreadRow[]).map((t) => ({
@@ -242,14 +339,19 @@ export async function projectRoutes(app: FastifyInstance) {
   app.get<{ Params: { handle: string; projectName: string } }>(
     "/projects/:handle/:projectName",
     async (req, reply) => {
-      const { handle, projectName } = req.params;
+      const viewerUserId = await getOptionalViewerUserId(req, reply);
+      if (typeof viewerUserId === "undefined") return;
 
-      const result = await query<ProjectRow & { owner_handle: string; threads: ThreadRow[] }>(
+      const { handle, projectName } = req.params;
+      const project = await resolveProject(handle, projectName, viewerUserId);
+      if (!project) return reply.code(404).send({ error: "Project not found" });
+
+      const result = await query<Omit<ProjectRow, "access_role"> & { owner_handle: string; threads: ThreadRow[] }>(
         `SELECT
            p.id,
            p.name,
            p.description,
-           p.access_role,
+           p.visibility::text AS visibility,
            p.created_at,
            u.handle AS owner_handle,
            COALESCE(
@@ -262,10 +364,10 @@ export async function projectRoutes(app: FastifyInstance) {
               ) t),
              '[]'::jsonb
            ) AS threads
-         FROM user_projects p
+         FROM projects p
          JOIN users u ON u.id = p.owner_id
-         WHERE u.handle = $1 AND p.name = $2 AND p.user_id = $3`,
-        [handle, projectName, req.auth.id],
+         WHERE p.id = $1`,
+        [project.projectId],
       );
 
       if (result.rowCount === 0) {
@@ -277,7 +379,8 @@ export async function projectRoutes(app: FastifyInstance) {
         id: row.id,
         name: row.name,
         description: row.description,
-        accessRole: row.access_role,
+        accessRole: project.accessRole,
+        visibility: row.visibility,
         ownerHandle: row.owner_handle,
         createdAt: row.created_at,
         threads: (row.threads as unknown as ThreadRow[]).map((t) => ({
@@ -294,13 +397,19 @@ export async function projectRoutes(app: FastifyInstance) {
     },
   );
 
-  app.post<{ Body: { name: string; description?: string; template?: string } }>(
+  app.post<{ Body: { name: string; description?: string; template?: string; visibility?: ProjectVisibility } }>(
     "/projects",
     async (req, reply) => {
-      const { name, description, template } = req.body;
+      const authUser = await requireAuthUser(req, reply);
+      if (!authUser) return;
+
+      const { name, description, template, visibility } = req.body;
 
       if (!name || typeof name !== "string" || !name.trim()) {
         return reply.code(400).send({ error: "name is required" });
+      }
+      if (visibility !== "public" && visibility !== "private") {
+        return reply.code(400).send({ error: "visibility must be public or private" });
       }
 
       const trimmed = name.trim();
@@ -325,10 +434,10 @@ export async function projectRoutes(app: FastifyInstance) {
         inTransaction = true;
 
         const result = await client.query<ProjectRow>(
-          `INSERT INTO projects (id, name, description, owner_id)
-           VALUES ($1, $2, $3, $4)
-           RETURNING id, name, description, created_at`,
-          [id, trimmed, description?.trim() || null, req.auth.id],
+          `INSERT INTO projects (id, name, description, visibility, owner_id)
+           VALUES ($1, $2, $3, $4, $5)
+           RETURNING id, name, description, visibility::text AS visibility, created_at`,
+          [id, trimmed, description?.trim() || null, visibility, authUser.id],
         );
 
         const systemId = randomUUID();
@@ -360,7 +469,7 @@ export async function projectRoutes(app: FastifyInstance) {
         const threadId = randomUUID();
         await client.query(
           "SELECT create_thread($1, $2, $3, $4, $5, $6)",
-          [threadId, id, req.auth.id, systemId, "Project Creation", null],
+          [threadId, id, authUser.id, systemId, "Project Creation", null],
         );
 
         const threadResult = await client.query<ThreadRow>(
@@ -383,13 +492,13 @@ export async function projectRoutes(app: FastifyInstance) {
         await client.query(
           `INSERT INTO project_member_roles (project_id, user_id, role_name)
            VALUES ($1, $2, 'All')`,
-          [id, req.auth.id],
+          [id, authUser.id],
         );
 
         const row = result.rows[0];
         const handleResult = await client.query<{ handle: string }>(
           "SELECT handle FROM users WHERE id = $1",
-          [req.auth.id],
+          [authUser.id],
         );
 
         await client.query("COMMIT");
@@ -400,6 +509,7 @@ export async function projectRoutes(app: FastifyInstance) {
           name: row.name,
           description: row.description,
           accessRole: "Owner",
+          visibility: row.visibility,
           ownerHandle: handleResult.rows[0].handle,
           createdAt: row.created_at,
           threads: createdThreads.map((t) => ({
@@ -435,12 +545,50 @@ export async function projectRoutes(app: FastifyInstance) {
     },
   );
 
+  app.patch<{
+    Params: { handle: string; projectName: string };
+    Body: { visibility?: ProjectVisibility };
+  }>(
+    "/projects/:handle/:projectName/visibility",
+    async (req, reply) => {
+      const viewerUserId = await getOptionalViewerUserId(req, reply);
+      if (typeof viewerUserId === "undefined") return;
+
+      const project = await resolveProject(req.params.handle, req.params.projectName, viewerUserId);
+      if (!project) return reply.code(404).send({ error: "Project not found" });
+      if (project.accessRole !== "Owner") {
+        return reply.code(403).send({ error: "Only the owner can update visibility" });
+      }
+
+      const nextVisibility = req.body?.visibility;
+      if (nextVisibility !== "public" && nextVisibility !== "private") {
+        return reply.code(400).send({ error: "visibility must be public or private" });
+      }
+
+      const result = await query<{ visibility: ProjectVisibility }>(
+        `UPDATE projects
+         SET visibility = $1::project_visibility
+         WHERE id = $2
+         RETURNING visibility::text AS visibility`,
+        [nextVisibility, project.projectId],
+      );
+      if (result.rowCount === 0) return reply.code(404).send({ error: "Project not found" });
+
+      return {
+        visibility: result.rows[0].visibility,
+      };
+    },
+  );
+
   // ── Collaborators ────────────────────────────────────────────
 
   app.get<{ Params: { handle: string; projectName: string } }>(
     "/projects/:handle/:projectName/collaborators",
     async (req, reply) => {
-      const project = await resolveProject(req.params.handle, req.params.projectName, req.auth.id);
+      const viewerUserId = await getOptionalViewerUserId(req, reply);
+      if (typeof viewerUserId === "undefined") return;
+
+      const project = await resolveProject(req.params.handle, req.params.projectName, viewerUserId);
       if (!project) return reply.code(404).send({ error: "Project not found" });
 
       const [collabResult, rolesResult] = await Promise.all([
@@ -488,6 +636,7 @@ export async function projectRoutes(app: FastifyInstance) {
 
       return {
         accessRole: project.accessRole,
+        visibility: project.visibility,
         projectRoles: rolesResult.rows.map((r) => r.name),
         concerns: concernsResult.rows.map((r) => ({
           name: r.name,
@@ -512,7 +661,10 @@ export async function projectRoutes(app: FastifyInstance) {
   }>(
     "/projects/:handle/:projectName/concerns",
     async (req, reply) => {
-      const project = await resolveProject(req.params.handle, req.params.projectName, req.auth.id);
+      const viewerUserId = await getOptionalViewerUserId(req, reply);
+      if (typeof viewerUserId === "undefined") return;
+
+      const project = await resolveProject(req.params.handle, req.params.projectName, viewerUserId);
       if (!project) return reply.code(404).send({ error: "Project not found" });
       if (project.accessRole !== "Owner") return reply.code(403).send({ error: "Only the owner can manage concerns" });
 
@@ -557,7 +709,10 @@ export async function projectRoutes(app: FastifyInstance) {
   app.delete<{ Params: { handle: string; projectName: string; concernName: string } }>(
     "/projects/:handle/:projectName/concerns/:concernName",
     async (req, reply) => {
-      const project = await resolveProject(req.params.handle, req.params.projectName, req.auth.id);
+      const viewerUserId = await getOptionalViewerUserId(req, reply);
+      if (typeof viewerUserId === "undefined") return;
+
+      const project = await resolveProject(req.params.handle, req.params.projectName, viewerUserId);
       if (!project) return reply.code(404).send({ error: "Project not found" });
       if (project.accessRole !== "Owner") return reply.code(403).send({ error: "Only the owner can manage concerns" });
 
@@ -602,7 +757,10 @@ export async function projectRoutes(app: FastifyInstance) {
   }>(
     "/projects/:handle/:projectName/collaborators",
     async (req, reply) => {
-      const project = await resolveProject(req.params.handle, req.params.projectName, req.auth.id);
+      const viewerUserId = await getOptionalViewerUserId(req, reply);
+      if (typeof viewerUserId === "undefined") return;
+
+      const project = await resolveProject(req.params.handle, req.params.projectName, viewerUserId);
       if (!project) return reply.code(404).send({ error: "Project not found" });
       if (project.accessRole !== "Owner") return reply.code(403).send({ error: "Only the owner can add collaborators" });
 
@@ -669,7 +827,10 @@ export async function projectRoutes(app: FastifyInstance) {
   app.delete<{ Params: { handle: string; projectName: string; collaboratorHandle: string } }>(
     "/projects/:handle/:projectName/collaborators/:collaboratorHandle",
     async (req, reply) => {
-      const project = await resolveProject(req.params.handle, req.params.projectName, req.auth.id);
+      const viewerUserId = await getOptionalViewerUserId(req, reply);
+      if (typeof viewerUserId === "undefined") return;
+
+      const project = await resolveProject(req.params.handle, req.params.projectName, viewerUserId);
       if (!project) return reply.code(404).send({ error: "Project not found" });
       if (project.accessRole !== "Owner") return reply.code(403).send({ error: "Only the owner can remove collaborators" });
 
@@ -702,7 +863,10 @@ export async function projectRoutes(app: FastifyInstance) {
   }>(
     "/projects/:handle/:projectName/roles",
     async (req, reply) => {
-      const project = await resolveProject(req.params.handle, req.params.projectName, req.auth.id);
+      const viewerUserId = await getOptionalViewerUserId(req, reply);
+      if (typeof viewerUserId === "undefined") return;
+
+      const project = await resolveProject(req.params.handle, req.params.projectName, viewerUserId);
       if (!project) return reply.code(404).send({ error: "Project not found" });
       if (project.accessRole !== "Owner") return reply.code(403).send({ error: "Only the owner can manage roles" });
 
@@ -736,7 +900,10 @@ export async function projectRoutes(app: FastifyInstance) {
   app.delete<{ Params: { handle: string; projectName: string; roleName: string } }>(
     "/projects/:handle/:projectName/roles/:roleName",
     async (req, reply) => {
-      const project = await resolveProject(req.params.handle, req.params.projectName, req.auth.id);
+      const viewerUserId = await getOptionalViewerUserId(req, reply);
+      if (typeof viewerUserId === "undefined") return;
+
+      const project = await resolveProject(req.params.handle, req.params.projectName, viewerUserId);
       if (!project) return reply.code(404).send({ error: "Project not found" });
       if (project.accessRole !== "Owner") return reply.code(403).send({ error: "Only the owner can manage roles" });
 
@@ -764,7 +931,10 @@ export async function projectRoutes(app: FastifyInstance) {
   }>(
     "/projects/:handle/:projectName/collaborators/:collaboratorHandle/roles",
     async (req, reply) => {
-      const project = await resolveProject(req.params.handle, req.params.projectName, req.auth.id);
+      const viewerUserId = await getOptionalViewerUserId(req, reply);
+      if (typeof viewerUserId === "undefined") return;
+
+      const project = await resolveProject(req.params.handle, req.params.projectName, viewerUserId);
       if (!project) return reply.code(404).send({ error: "Project not found" });
       if (project.accessRole !== "Owner") return reply.code(403).send({ error: "Only the owner can manage roles" });
 

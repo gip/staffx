@@ -19,6 +19,7 @@ export interface UserProfile {
 export interface UserProfileProject {
   name: string;
   description: string | null;
+  visibility: "public" | "private";
   ownerHandle: string;
   role: string;
   createdAt: string;
@@ -186,7 +187,7 @@ export function UserProfilePage({
                 {project.description && (
                   <div className="project-card-role">{project.description}</div>
                 )}
-                <div className="project-card-role">{project.role}</div>
+                <div className="project-card-role">{project.role} · {project.visibility}</div>
               </Link>
             ))}
           </div>

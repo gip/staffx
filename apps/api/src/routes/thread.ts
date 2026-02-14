@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
-import type { FastifyInstance, FastifyReply } from "fastify";
+import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import pool, { query } from "../db.js";
-import { verifyAuth } from "../auth.js";
+import { verifyOptionalAuth, type AuthUser } from "../auth.js";
 import { decryptToken, encryptToken } from "../integrations/crypto.js";
 import { getProviderClient, sourceTypeToProvider, type DocSourceType } from "../integrations/index.js";
 
@@ -21,7 +21,7 @@ interface ThreadContextRow {
   created_by_handle: string;
   project_name: string;
   owner_handle: string;
-  access_role: string;
+  access_role: string | null;
 }
 
 interface SystemRow {
@@ -223,6 +223,14 @@ interface ThreadContext {
   accessRole: string;
 }
 
+function getAuthUser(req: FastifyRequest): AuthUser | null {
+  return (req as FastifyRequest & { auth?: AuthUser }).auth ?? null;
+}
+
+function getViewerUserId(req: FastifyRequest): string | null {
+  return getAuthUser(req)?.id ?? null;
+}
+
 interface CloneThreadBody {
   title?: string;
   description?: string;
@@ -234,6 +242,11 @@ interface MatrixDoc {
   kind: "Document" | "Skill";
   language: string;
   refType: "Document" | "Skill";
+  sourceType?: DocSourceType;
+  sourceUrl?: string | null;
+  sourceExternalId?: string | null;
+  sourceMetadata?: Record<string, unknown> | null;
+  sourceConnectedUserId?: string | null;
 }
 
 interface ArtifactRef {
@@ -275,30 +288,34 @@ interface IntegrationMissingError extends Error {
 
 type DocKind = "Document" | "Skill";
 
-interface MatrixDocumentCreateBody {
+interface MatrixDocumentAttach {
+  nodeId: string;
+  concern: string;
+  concerns: string[];
+  refType: DocKind;
+}
+
+interface MatrixDocumentCreateBodyBase {
   kind: DocKind;
   sourceType: DocSourceType;
   language: string;
   title?: string;
-  attach?: {
-    nodeId: string;
-    concerns?: string[];
-    concern?: string;
-    refType: DocKind;
-  };
+  attach?: MatrixDocumentAttach;
 }
 
-interface MatrixDocumentCreateBodyLocal extends MatrixDocumentCreateBody {
+interface MatrixDocumentCreateBodyLocal extends MatrixDocumentCreateBodyBase {
   sourceType: "local";
   name: string;
   description: string;
   body: string;
 }
 
-interface MatrixDocumentCreateBodyRemote extends MatrixDocumentCreateBody {
+interface MatrixDocumentCreateBodyRemote extends MatrixDocumentCreateBodyBase {
   sourceType: Exclude<DocSourceType, "local">;
   sourceUrl: string;
 }
+
+type MatrixDocumentCreateBody = MatrixDocumentCreateBodyLocal | MatrixDocumentCreateBodyRemote;
 
 interface MatrixDocumentReplaceBody {
   title?: string;
@@ -681,19 +698,24 @@ function normalizeMatrixDocumentCreateBody(body: unknown): MatrixDocumentCreateB
     return null;
   }
 
-  const language = parsed.language.trim() || "en";
+  const language = typeof parsed.language === "string" ? (parsed.language.trim() || "en") : "en";
   if (!language) return null;
 
   if (sourceType === "local") {
-    if (typeof parsed.title !== "string" || typeof parsed.name !== "string" || typeof parsed.description !== "string") {
+    const parsedLocal = parsed as Partial<MatrixDocumentCreateBodyLocal>;
+    if (
+      typeof parsed.title !== "string" ||
+      typeof parsedLocal.name !== "string" ||
+      typeof parsedLocal.description !== "string"
+    ) {
       return null;
     }
 
     const title = parsed.title.trim();
-    const name = parsed.name.trim();
-    const description = parsed.description.trim();
+    const name = parsedLocal.name.trim();
+    const description = parsedLocal.description.trim();
 
-    if (!title || !isValidDocumentName(name) || typeof parsed.body !== "string") {
+    if (!title || !isValidDocumentName(name) || typeof parsedLocal.body !== "string") {
       return null;
     }
 
@@ -704,13 +726,14 @@ function normalizeMatrixDocumentCreateBody(body: unknown): MatrixDocumentCreateB
       title,
       name,
       description,
-      body: parsed.body,
+      body: parsedLocal.body,
       attach: parseDocumentAttach(parsed.attach),
     };
   }
 
-  if (typeof parsed.sourceUrl !== "string") return null;
-  const sourceUrl = parsed.sourceUrl.trim();
+  const parsedRemote = parsed as Partial<MatrixDocumentCreateBodyRemote>;
+  if (typeof parsedRemote.sourceUrl !== "string") return null;
+  const sourceUrl = parsedRemote.sourceUrl.trim();
   if (!sourceUrl) return null;
 
   const title = typeof parsed.title === "string" ? parsed.title.trim() : undefined;
@@ -746,7 +769,7 @@ function isDocumentKind(value: string): value is DocKind {
 }
 
 function parseDocumentAttach(
-  attach: Partial<MatrixDocumentCreateBody["attach"]> | undefined,
+  attach: Partial<MatrixDocumentAttach> | undefined,
 ): { nodeId: string; concern: string; concerns: string[]; refType: DocKind } | undefined {
   if (!attach) return undefined;
   if (typeof attach !== "object") return undefined;
@@ -817,7 +840,7 @@ function normalizeMatrixDocumentReplaceBody(body: unknown): MatrixDocumentReplac
 }
 
 async function resolveThreadContext(
-  userId: string,
+  userId: string | null,
   handle: string,
   projectName: string,
   projectThreadId: number,
@@ -834,14 +857,20 @@ async function resolveThreadContext(
      creator.handle AS created_by_handle,
      p.name AS project_name,
      owner.handle AS owner_handle,
-     up.access_role
-   FROM user_projects up
-   JOIN projects p ON p.id = up.id
+     CASE
+       WHEN CAST($1 AS uuid) IS NOT NULL AND p.owner_id = CAST($1 AS uuid) THEN 'Owner'
+       WHEN pc.role IS NOT NULL THEN pc.role::text
+       WHEN p.visibility = 'public' THEN 'Viewer'
+       ELSE NULL
+     END AS access_role
+   FROM projects p
    JOIN users owner ON owner.id = p.owner_id
    JOIN threads t ON t.project_id = p.id
    JOIN users creator ON creator.id = t.created_by
-   WHERE up.user_id = $1
-     AND owner.handle = $2
+   LEFT JOIN project_collaborators pc
+     ON pc.project_id = p.id
+    AND pc.user_id = CAST($1 AS uuid)
+   WHERE owner.handle = $2
      AND p.name = $3
      AND t.project_thread_id = $4
    LIMIT 1`,
@@ -851,6 +880,7 @@ async function resolveThreadContext(
   if (result.rowCount === 0) return null;
 
   const row = result.rows[0];
+  if (!row.access_role) return null;
   return {
     threadId: row.thread_id,
     projectThreadId: row.project_thread_id,
@@ -1033,7 +1063,7 @@ async function getMatrixCells(systemId: string, nodeId: string, concerns: string
 
 async function requireContext(
   reply: FastifyReply,
-  userId: string,
+  userId: string | null,
   handle: string,
   projectName: string,
   threadId: string,
@@ -1054,13 +1084,13 @@ async function requireContext(
 }
 
 export async function threadRoutes(app: FastifyInstance) {
-  app.addHook("preHandler", verifyAuth);
+  app.addHook("preHandler", verifyOptionalAuth);
 
   app.get<{ Params: { handle: string; projectName: string; threadId: string } }>(
     "/projects/:handle/:projectName/thread/:threadId",
     async (req, reply) => {
       const { handle, projectName, threadId } = req.params;
-      const context = await requireContext(reply, req.auth.id, handle, projectName, threadId);
+      const context = await requireContext(reply, getViewerUserId(req), handle, projectName, threadId);
       if (!context) return;
 
       const systemId = await getThreadSystemId(context.threadId);
@@ -1261,7 +1291,7 @@ export async function threadRoutes(app: FastifyInstance) {
     "/projects/:handle/:projectName/thread/:threadId",
     async (req, reply) => {
       const { handle, projectName, threadId } = req.params;
-      const context = await requireContext(reply, req.auth.id, handle, projectName, threadId);
+      const context = await requireContext(reply, getViewerUserId(req), handle, projectName, threadId);
       if (!context) return;
 
       if (!canEdit(context.accessRole)) {
@@ -1329,7 +1359,7 @@ export async function threadRoutes(app: FastifyInstance) {
     "/projects/:handle/:projectName/thread/:threadId/close",
     async (req, reply) => {
       const { handle, projectName, threadId } = req.params;
-      const context = await requireContext(reply, req.auth.id, handle, projectName, threadId);
+      const context = await requireContext(reply, getViewerUserId(req), handle, projectName, threadId);
       if (!context) return;
 
       if (!canEdit(context.accessRole)) {
@@ -1370,7 +1400,7 @@ export async function threadRoutes(app: FastifyInstance) {
     "/projects/:handle/:projectName/thread/:threadId/commit",
     async (req, reply) => {
       const { handle, projectName, threadId } = req.params;
-      const context = await requireContext(reply, req.auth.id, handle, projectName, threadId);
+      const context = await requireContext(reply, getViewerUserId(req), handle, projectName, threadId);
       if (!context) return;
 
       if (!canEdit(context.accessRole)) {
@@ -1414,7 +1444,7 @@ export async function threadRoutes(app: FastifyInstance) {
     "/projects/:handle/:projectName/thread/:threadId/clone",
     async (req, reply) => {
       const { handle, projectName, threadId } = req.params;
-      const context = await requireContext(reply, req.auth.id, handle, projectName, threadId);
+      const context = await requireContext(reply, getViewerUserId(req), handle, projectName, threadId);
       if (!context) return;
 
       if (!canEdit(context.accessRole)) {
@@ -1424,10 +1454,14 @@ export async function threadRoutes(app: FastifyInstance) {
       if (!isFinalizedThreadStatus(context.status)) {
         return reply.code(409).send({ error: "Thread is not finalized" });
       }
+      const actorUserId = getViewerUserId(req);
+      if (!actorUserId) {
+        return reply.code(403).send({ error: "Forbidden" });
+      }
 
       const hasRequestedDescription = typeof req.body?.description === "string";
       const requestedTitle = typeof req.body?.title === "string" ? req.body.title.trim() : "";
-      const requestedDescription = hasRequestedDescription ? req.body.description.trim() : "";
+      const requestedDescription = hasRequestedDescription ? (req.body.description as string).trim() : "";
       const clonedTitle = requestedTitle || `${context.title ?? "Untitled"} (Clone)`;
       const clonedDescription = hasRequestedDescription ? (requestedDescription || null) : (context.description || null);
       const clonedThreadId = randomUUID();
@@ -1436,7 +1470,7 @@ export async function threadRoutes(app: FastifyInstance) {
         clonedThreadId,
         context.threadId,
         context.projectId,
-        req.auth.id,
+        actorUserId,
         clonedTitle,
         clonedDescription,
       ]);
@@ -1486,7 +1520,7 @@ export async function threadRoutes(app: FastifyInstance) {
     "/projects/:handle/:projectName/thread/:threadId/topology/layout",
     async (req, reply) => {
       const { handle, projectName, threadId } = req.params;
-      const context = await requireContext(reply, req.auth.id, handle, projectName, threadId);
+      const context = await requireContext(reply, getViewerUserId(req), handle, projectName, threadId);
       if (!context) return;
 
       if (!canEdit(context.accessRole)) {
@@ -1586,7 +1620,7 @@ export async function threadRoutes(app: FastifyInstance) {
     "/projects/:handle/:projectName/thread/:threadId/matrix/refs",
     async (req, reply) => {
       const { handle, projectName, threadId } = req.params;
-      const context = await requireContext(reply, req.auth.id, handle, projectName, threadId);
+      const context = await requireContext(reply, getViewerUserId(req), handle, projectName, threadId);
       if (!context) return;
 
       if (!canEdit(context.accessRole)) {
@@ -1674,10 +1708,14 @@ export async function threadRoutes(app: FastifyInstance) {
     "/projects/:handle/:projectName/thread/:threadId/matrix/documents",
     async (req, reply) => {
       const { handle, projectName, threadId } = req.params;
-      const context = await requireContext(reply, req.auth.id, handle, projectName, threadId);
+      const context = await requireContext(reply, getViewerUserId(req), handle, projectName, threadId);
       if (!context) return;
 
       if (!canEdit(context.accessRole)) {
+        return reply.code(403).send({ error: "Forbidden" });
+      }
+      const actorUserId = getViewerUserId(req);
+      if (!actorUserId) {
         return reply.code(403).send({ error: "Forbidden" });
       }
 
@@ -1686,7 +1724,6 @@ export async function threadRoutes(app: FastifyInstance) {
         return reply.code(400).send({ error: "Invalid matrix document payload" });
       }
 
-      const isRemoteSource = payload.sourceType !== "local";
       let sourceUrl: string | null = null;
       let sourceExternalId: string | null = null;
       let sourceMetadata: Record<string, unknown> | null = null;
@@ -1694,15 +1731,15 @@ export async function threadRoutes(app: FastifyInstance) {
       let text: string;
       let sourceConnectedUserId: string | null = null;
 
-      if (isRemoteSource) {
+      if (payload.sourceType !== "local") {
         try {
-          const remote = await fetchRemoteDocument(req.auth.id, payload.sourceType, payload.sourceUrl);
+          const remote = await fetchRemoteDocument(actorUserId, payload.sourceType, payload.sourceUrl);
           sourceUrl = remote.sourceUrl;
           sourceExternalId = remote.sourceExternalId;
           sourceMetadata = remote.sourceMetadata;
           sourceTitle = remote.title;
           text = remote.text;
-          sourceConnectedUserId = req.auth.id;
+          sourceConnectedUserId = actorUserId;
         } catch (error) {
           if (isIntegrationMissingError(error)) {
             return reply.code(409).send({
@@ -1738,8 +1775,8 @@ export async function threadRoutes(app: FastifyInstance) {
         inTransaction = true;
 
         const actionId = randomUUID();
-        const actionLabel = isRemoteSource ? "Matrix doc import" : "Matrix doc create";
-        const actionType = isRemoteSource ? "Import" : "Edit";
+        const actionLabel = payload.sourceType !== "local" ? "Matrix doc import" : "Matrix doc create";
+        const actionType = payload.sourceType !== "local" ? "Import" : "Edit";
         const beginResult = await client.query<BeginActionRow>(
           `SELECT begin_action($1, $2, $3::action_type, $4) AS output_system_id`,
           [context.threadId, actionId, actionType, actionLabel],
@@ -1872,7 +1909,7 @@ export async function threadRoutes(app: FastifyInstance) {
     "/projects/:handle/:projectName/thread/:threadId/matrix/documents/:documentHash",
     async (req, reply) => {
       const { handle, projectName, threadId, documentHash } = req.params;
-      const context = await requireContext(reply, req.auth.id, handle, projectName, threadId);
+      const context = await requireContext(reply, getViewerUserId(req), handle, projectName, threadId);
       if (!context) return;
 
       if (!canEdit(context.accessRole)) {
@@ -2042,7 +2079,7 @@ export async function threadRoutes(app: FastifyInstance) {
     "/projects/:handle/:projectName/thread/:threadId/matrix/refs",
     async (req, reply) => {
       const { handle, projectName, threadId } = req.params;
-      const context = await requireContext(reply, req.auth.id, handle, projectName, threadId);
+      const context = await requireContext(reply, getViewerUserId(req), handle, projectName, threadId);
       if (!context) return;
 
       if (!canEdit(context.accessRole)) {
@@ -2124,7 +2161,7 @@ export async function threadRoutes(app: FastifyInstance) {
     "/projects/:handle/:projectName/thread/:threadId/chat/messages",
     async (req, reply) => {
       const { handle, projectName, threadId } = req.params;
-      const context = await requireContext(reply, req.auth.id, handle, projectName, threadId);
+      const context = await requireContext(reply, getViewerUserId(req), handle, projectName, threadId);
       if (!context) return;
 
       if (!canEdit(context.accessRole)) {
@@ -2216,7 +2253,7 @@ export async function threadRoutes(app: FastifyInstance) {
         return reply.code(400).send({ error: "Invalid request body" });
       }
 
-      const context = await requireContext(reply, req.auth.id, handle, projectName, threadId);
+      const context = await requireContext(reply, getViewerUserId(req), handle, projectName, threadId);
       if (!context) return;
 
       if (!canEdit(context.accessRole)) {

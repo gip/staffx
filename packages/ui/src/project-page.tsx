@@ -93,6 +93,7 @@ export function ProjectPage({ project, onCloseThread, onCommitThread, onCloneThr
                           event.preventDefault();
                           event.stopPropagation();
                           if (typeof t.projectThreadId !== "number") return;
+                          const threadProjectId = t.projectThreadId;
                           const threadId = t.id;
                           setThreadTransitionThreadId(threadId);
                           setThreadTransitionAction("close");
@@ -103,7 +104,7 @@ export function ProjectPage({ project, onCloseThread, onCommitThread, onCloneThr
                           });
                           (async () => {
                             try {
-                              const result = await onCloseThread(t.projectThreadId);
+                              const result = await onCloseThread(threadProjectId);
                               const error = getErrorMessage(result);
                               if (error) {
                                 setThreadTransitionErrors((prev) => ({ ...prev, [threadId]: error }));
@@ -129,6 +130,7 @@ export function ProjectPage({ project, onCloseThread, onCommitThread, onCloneThr
                           event.preventDefault();
                           event.stopPropagation();
                           if (typeof t.projectThreadId !== "number") return;
+                          const threadProjectId = t.projectThreadId;
                           const threadId = t.id;
                           setThreadTransitionThreadId(threadId);
                           setThreadTransitionAction("commit");
@@ -139,7 +141,7 @@ export function ProjectPage({ project, onCloseThread, onCommitThread, onCloneThr
                           });
                           (async () => {
                             try {
-                              const result = await onCommitThread(t.projectThreadId);
+                              const result = await onCommitThread(threadProjectId);
                               const error = getErrorMessage(result);
                               if (error) {
                                 setThreadTransitionErrors((prev) => ({ ...prev, [threadId]: error }));

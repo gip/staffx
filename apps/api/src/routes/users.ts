@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { verifyAuth } from "../auth.js";
+import { verifyAuth, verifyOptionalAuth, type AuthUser } from "../auth.js";
 import { query } from "../db.js";
 
 interface UserRow {
@@ -14,17 +14,23 @@ interface UserRow {
 interface SharedProjectRow {
   name: string;
   description: string | null;
+  visibility: "public" | "private";
   owner_handle: string;
   role: string;
   created_at: Date;
 }
 
-export async function userRoutes(app: FastifyInstance) {
-  app.addHook("preHandler", verifyAuth);
+function getAuthUser(req: { auth?: AuthUser }): AuthUser | null {
+  return req.auth ?? null;
+}
 
+export async function userRoutes(app: FastifyInstance) {
   app.get<{ Querystring: { q: string } }>(
     "/users/search",
     async (req, reply) => {
+      await verifyAuth(req, reply);
+      if (reply.sent) return;
+
       const { q } = req.query;
       if (!q || typeof q !== "string" || !q.trim()) {
         return reply.code(400).send({ error: "q is required" });
@@ -45,6 +51,10 @@ export async function userRoutes(app: FastifyInstance) {
   app.get<{ Params: { handle: string } }>(
     "/users/:handle",
     async (req, reply) => {
+      await verifyOptionalAuth(req, reply);
+      if (reply.sent) return;
+
+      const viewerUserId = getAuthUser(req)?.id ?? null;
       const { handle } = req.params;
 
       const userResult = await query<UserRow>(
@@ -63,16 +73,24 @@ export async function userRoutes(app: FastifyInstance) {
         `SELECT
            p.name,
            p.description,
+           p.visibility::text AS visibility,
            owner_u.handle AS owner_handle,
            target_up.access_role AS role,
            p.created_at
          FROM user_projects target_up
          JOIN projects p ON p.id = target_up.id
          JOIN users owner_u ON owner_u.id = p.owner_id
-         JOIN user_projects viewer_up ON viewer_up.id = p.id AND viewer_up.user_id = $2
+         LEFT JOIN project_collaborators viewer_pc
+           ON viewer_pc.project_id = p.id
+          AND viewer_pc.user_id = CAST($2 AS uuid)
          WHERE target_up.user_id = $1
+           AND (
+             p.visibility = 'public'
+             OR p.owner_id = CAST($2 AS uuid)
+             OR viewer_pc.user_id IS NOT NULL
+           )
          ORDER BY p.created_at DESC`,
-        [target.id, req.auth.id],
+        [target.id, viewerUserId],
       );
 
       return {
@@ -84,6 +102,7 @@ export async function userRoutes(app: FastifyInstance) {
         projects: projectResult.rows.map((row) => ({
           name: row.name,
           description: row.description,
+          visibility: row.visibility,
           ownerHandle: row.owner_handle,
           role: row.role,
           createdAt: row.created_at,

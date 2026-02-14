@@ -62,6 +62,7 @@ async function migrate() {
     drop type if exists ref_type cascade;
     drop type if exists artifact_type cascade;
     drop type if exists collaborator_role cascade;
+    drop type if exists project_visibility cascade;
     drop type if exists action_type cascade;
     drop type if exists message_role cascade;
     drop type if exists change_operation cascade;

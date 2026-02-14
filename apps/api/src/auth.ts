@@ -121,10 +121,21 @@ const audience: string = AUTH0_AUDIENCE;
 const issuer = `https://${domain}/`;
 const jwks = createRemoteJWKSet(new URL(`${issuer}.well-known/jwks.json`));
 
-export async function verifyAuth(req: FastifyRequest, reply: FastifyReply) {
+async function authenticateRequest(
+  req: FastifyRequest,
+  reply: FastifyReply,
+  options: { required: boolean },
+): Promise<AuthUser | null> {
   const header = req.headers.authorization;
-  if (!header?.startsWith("Bearer ")) {
-    return reply.code(401).send({ error: "Missing or invalid Authorization header" });
+  if (!header) {
+    if (options.required) {
+      await reply.code(401).send({ error: "Missing or invalid Authorization header" });
+    }
+    return null;
+  }
+  if (!header.startsWith("Bearer ")) {
+    await reply.code(401).send({ error: "Missing or invalid Authorization header" });
+    return null;
   }
 
   const token = header.slice(7);
@@ -135,13 +146,24 @@ export async function verifyAuth(req: FastifyRequest, reply: FastifyReply) {
     auth0Payload = payload as Auth0Payload;
   } catch (err) {
     req.log.warn({ err }, "JWT verification failed");
-    return reply.code(401).send({ error: "Invalid token" });
+    await reply.code(401).send({ error: "Invalid token" });
+    return null;
   }
 
   try {
     req.auth = await findOrCreateUser(domain, auth0Payload, token);
+    return req.auth;
   } catch (err) {
     req.log.error({ err }, "User lookup/creation failed");
-    return reply.code(500).send({ error: "Internal server error" });
+    await reply.code(500).send({ error: "Internal server error" });
+    return null;
   }
+}
+
+export async function verifyAuth(req: FastifyRequest, reply: FastifyReply) {
+  await authenticateRequest(req, reply, { required: true });
+}
+
+export async function verifyOptionalAuth(req: FastifyRequest, reply: FastifyReply) {
+  await authenticateRequest(req, reply, { required: false });
 }
