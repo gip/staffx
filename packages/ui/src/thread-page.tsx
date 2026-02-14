@@ -2691,65 +2691,66 @@ export function ThreadPage({
         );
 
         const renderChatBody = () => (
-          <div className={effectiveCanEdit ? "" : "thread-chat-disabled"}>
-            <div className="thread-chat-form">
-              {onRunAssistant ? (
-                <div className="thread-chat-run-actions">
-                  <button
-                    className="btn btn-secondary thread-chat-run-action"
-                    type="button"
-                    onClick={() => handleRunAssistant("direct")}
-                    disabled={isRunningAssistant || !effectiveCanEdit}
-                  >
-                    Run
-                  </button>
-                  <button
-                    className="btn btn-secondary thread-chat-run-action"
-                    type="button"
-                    onClick={() => handleRunAssistant("plan")}
-                    disabled={isRunningAssistant || !effectiveCanEdit}
-                  >
-                    Plan first
-                  </button>
-                  {pendingPlanActionId && (
+          <div>
+            {effectiveCanEdit ? (
+              <div className="thread-chat-form">
+                {onRunAssistant ? (
+                  <div className="thread-chat-run-actions">
                     <button
                       className="btn btn-secondary thread-chat-run-action"
                       type="button"
-                      onClick={() => handleRunAssistant("direct", pendingPlanActionId)}
-                      disabled={isRunningAssistant || !effectiveCanEdit}
+                      onClick={() => handleRunAssistant("direct")}
+                      disabled={isRunningAssistant}
                     >
-                      Apply plan
+                      Run
                     </button>
-                  )}
+                    <button
+                      className="btn btn-secondary thread-chat-run-action"
+                      type="button"
+                      onClick={() => handleRunAssistant("plan")}
+                      disabled={isRunningAssistant}
+                    >
+                      Plan first
+                    </button>
+                    {pendingPlanActionId && (
+                      <button
+                        className="btn btn-secondary thread-chat-run-action"
+                        type="button"
+                        onClick={() => handleRunAssistant("direct", pendingPlanActionId)}
+                        disabled={isRunningAssistant}
+                      >
+                        Apply plan
+                      </button>
+                    )}
+                  </div>
+                ) : null}
+                {assistantSummary && <p className="thread-chat-run-summary">{assistantSummary}</p>}
+                <div className="thread-chat-input-row">
+                  <textarea
+                    className="field-input thread-chat-input"
+                    rows={4}
+                    placeholder="Ask Ideating anything"
+                    value={chatInput}
+                    onChange={(event) => setChatInput(event.target.value)}
+                    disabled={isSendingChat}
+                  />
+                  <button
+                    className="thread-chat-send"
+                    type="button"
+                    onClick={handleSendChat}
+                    disabled={isSendingChat || !chatInput.trim()}
+                    aria-label="Send message"
+                  >
+                    <Send size={14} />
+                  </button>
                 </div>
-              ) : null}
-              {assistantSummary && <p className="thread-chat-run-summary">{assistantSummary}</p>}
-              <div className="thread-chat-input-row">
-                <textarea
-                  className="field-input thread-chat-input"
-                  rows={4}
-                  placeholder="Ask Ideating anything"
-                  value={chatInput}
-                  onChange={(event) => setChatInput(event.target.value)}
-                  disabled={!effectiveCanEdit || isSendingChat}
-                />
-                <button
-                  className="thread-chat-send"
-                  type="button"
-                  onClick={handleSendChat}
-                  disabled={!effectiveCanEdit || isSendingChat || !chatInput.trim()}
-                  aria-label="Send message"
-                >
-                  <Send size={14} />
-                </button>
-              </div>
-                {!effectiveCanEdit && (
-                  <p className="thread-chat-disabled-copy">Only owners and editors can send messages.</p>
-                )}
                 {chatError && <p className="field-error">{chatError}</p>}
                 {assistantError && <p className="field-error">{assistantError}</p>}
                 {isRunningAssistant && <p>Agent running…</p>}
               </div>
+            ) : (
+              <p className="thread-chat-disabled-copy">Only owners and editors can send messages.</p>
+            )}
 
             <h4 className="thread-chat-history-title">Chat History</h4>
             <div className="thread-chat-history">

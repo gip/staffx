@@ -26,6 +26,7 @@ interface ProjectSettingsPageProps {
   projectOwnerHandle: string;
   projectName: string;
   accessRole: string;
+  visibility: "public" | "private";
   collaborators: Collaborator[];
   projectRoles: string[];
   concerns: Concern[];
@@ -37,12 +38,14 @@ interface ProjectSettingsPageProps {
   onAddConcern: (name: string) => Promise<{ error?: string } | void>;
   onDeleteConcern: (name: string) => Promise<{ error?: string } | void>;
   onUpdateMemberRoles: (handle: string, projectRoles: string[]) => Promise<{ error?: string } | void>;
+  onUpdateVisibility: (visibility: "public" | "private") => Promise<{ error?: string } | void>;
 }
 
 export function ProjectSettingsPage({
   projectOwnerHandle,
   projectName,
   accessRole,
+  visibility,
   collaborators: initial,
   projectRoles: initialRoles,
   concerns: initialConcerns,
@@ -54,6 +57,7 @@ export function ProjectSettingsPage({
   onAddConcern,
   onDeleteConcern,
   onUpdateMemberRoles,
+  onUpdateVisibility,
 }: ProjectSettingsPageProps) {
   const [collaborators, setCollaborators] = useState(initial);
   const [projectRoles, setProjectRoles] = useState(initialRoles);
@@ -67,7 +71,16 @@ export function ProjectSettingsPage({
   const [newConcernName, setNewConcernName] = useState("");
   const [concernError, setConcernError] = useState<string | null>(null);
   const [addingConcern, setAddingConcern] = useState(false);
+  const [currentVisibility, setCurrentVisibility] = useState<"public" | "private">(visibility);
+  const [visibilityDraft, setVisibilityDraft] = useState<"public" | "private">(visibility);
+  const [visibilityError, setVisibilityError] = useState<string | null>(null);
+  const [isSavingVisibility, setIsSavingVisibility] = useState(false);
   const isOwner = accessRole === "Owner";
+
+  useEffect(() => {
+    setCurrentVisibility(visibility);
+    setVisibilityDraft(visibility);
+  }, [visibility]);
 
   const handleRemove = useCallback(
     async (handle: string) => {
@@ -158,6 +171,19 @@ export function ProjectSettingsPage({
     [onUpdateMemberRoles],
   );
 
+  const handleSaveVisibility = useCallback(async () => {
+    if (visibilityDraft === currentVisibility) return;
+    setVisibilityError(null);
+    setIsSavingVisibility(true);
+    const result = await onUpdateVisibility(visibilityDraft);
+    if (result?.error) {
+      setVisibilityError(result.error);
+    } else {
+      setCurrentVisibility(visibilityDraft);
+    }
+    setIsSavingVisibility(false);
+  }, [currentVisibility, onUpdateVisibility, visibilityDraft]);
+
   return (
     <main className="page">
       <div className="page-header">
@@ -169,6 +195,33 @@ export function ProjectSettingsPage({
           Settings
         </h2>
       </div>
+
+      <section className="thread-section">
+        <h3 className="thread-section-title">Visibility</h3>
+        {isOwner ? (
+          <div className="roles-add-form">
+            <select
+              className="field-input roles-add-input"
+              value={visibilityDraft}
+              onChange={(event) => setVisibilityDraft(event.target.value as "public" | "private")}
+            >
+              <option value="private">private</option>
+              <option value="public">public</option>
+            </select>
+            <button
+              className="btn btn-secondary"
+              type="button"
+              disabled={isSavingVisibility || visibilityDraft === currentVisibility}
+              onClick={handleSaveVisibility}
+            >
+              {isSavingVisibility ? "Saving..." : "Save"}
+            </button>
+          </div>
+        ) : (
+          <p className="status-text">{currentVisibility}</p>
+        )}
+        {visibilityError && <p className="field-error">{visibilityError}</p>}
+      </section>
 
       {/* Roles section */}
       <section className="thread-section">

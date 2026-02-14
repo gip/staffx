@@ -4,6 +4,7 @@ import { useAuth } from "./auth-context";
 import { Link } from "./link";
 
 export type ThreadStatus = "open" | "closed" | "committed";
+export type ProjectVisibility = "public" | "private";
 
 export const isFinalizedThreadStatus = (status: ThreadStatus): boolean =>
   status === "closed" || status === "committed";
@@ -24,6 +25,7 @@ export interface Project {
   name: string;
   description: string | null;
   accessRole: string;
+  visibility: ProjectVisibility;
   ownerHandle: string;
   createdAt: string;
   threads: Thread[];
@@ -40,7 +42,12 @@ const TEMPLATES = [
 
 interface CreateModalProps {
   onClose: () => void;
-  onCreate: (data: { name: string; description: string; template: string }) => Promise<{ error?: string } | void>;
+  onCreate: (data: {
+    name: string;
+    description: string;
+    template: string;
+    visibility: ProjectVisibility;
+  }) => Promise<{ error?: string } | void>;
   onCheckName?: (name: string) => Promise<boolean>;
 }
 
@@ -48,6 +55,7 @@ function CreateProjectModal({ onClose, onCreate, onCheckName }: CreateModalProps
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [template, setTemplate] = useState("blank");
+  const [visibility, setVisibility] = useState<ProjectVisibility | "">("");
   const [submitting, setSubmitting] = useState(false);
   const [duplicateError, setDuplicateError] = useState("");
   const [submitError, setSubmitError] = useState("");
@@ -61,7 +69,7 @@ function CreateProjectModal({ onClose, onCreate, onCheckName }: CreateModalProps
       ? "No spaces at the beginning or end"
       : "";
   const nameError = formatError || duplicateError;
-  const canSubmit = nameTrimmed.length > 0 && nameValid && name === nameTrimmed && !submitting && !duplicateError;
+  const canSubmit = nameTrimmed.length > 0 && nameValid && name === nameTrimmed && !submitting && !duplicateError && !!visibility;
 
   useEffect(() => {
     setDuplicateError("");
@@ -80,7 +88,8 @@ function CreateProjectModal({ onClose, onCreate, onCheckName }: CreateModalProps
     if (!canSubmit) return;
     setSubmitting(true);
     setSubmitError("");
-    const result = await onCreate({ name: name.trim(), description: description.trim(), template });
+    if (!visibility) return;
+    const result = await onCreate({ name: name.trim(), description: description.trim(), template, visibility });
     if (result?.error) {
       setSubmitError(result.error);
       setSubmitting(false);
@@ -138,6 +147,34 @@ function CreateProjectModal({ onClose, onCreate, onCheckName }: CreateModalProps
           />
         </label>
 
+        <fieldset className="field">
+          <span className="field-label">Visibility</span>
+          <div className="template-list">
+            <label className={`template-option${visibility === "private" ? " template-option--selected" : ""}`}>
+              <input
+                type="radio"
+                name="visibility"
+                value="private"
+                checked={visibility === "private"}
+                onChange={() => setVisibility("private")}
+              />
+              <span className="template-option-label">Private</span>
+              <span className="template-option-desc">Only owner and contributors can view.</span>
+            </label>
+            <label className={`template-option${visibility === "public" ? " template-option--selected" : ""}`}>
+              <input
+                type="radio"
+                name="visibility"
+                value="public"
+                checked={visibility === "public"}
+                onChange={() => setVisibility("public")}
+              />
+              <span className="template-option-label">Public</span>
+              <span className="template-option-desc">Anyone can view, only owner/editors can modify.</span>
+            </label>
+          </div>
+        </fieldset>
+
         {submitError && <p className="field-error">{submitError}</p>}
         <div className="modal-actions">
           <button type="button" className="btn btn-secondary" onClick={onClose}>Cancel</button>
@@ -152,12 +189,17 @@ function CreateProjectModal({ onClose, onCreate, onCheckName }: CreateModalProps
 
 interface HomeProps {
   projects: Project[];
-  onCreateProject?: (data: { name: string; description: string; template: string }) => Promise<{ error?: string } | void>;
+  onCreateProject?: (data: {
+    name: string;
+    description: string;
+    template: string;
+    visibility: ProjectVisibility;
+  }) => Promise<{ error?: string } | void>;
   onCheckProjectName?: (name: string) => Promise<boolean>;
 }
 
 export function Home({ projects, onCreateProject, onCheckProjectName }: HomeProps) {
-  const { isAuthenticated, isLoading, login, user } = useAuth();
+  const { isAuthenticated, isLoading, login } = useAuth();
   const [showCreate, setShowCreate] = useState(false);
 
   if (isLoading) {
@@ -198,7 +240,7 @@ export function Home({ projects, onCreateProject, onCheckProjectName }: HomeProp
               <div className="project-card-name">
                 {p.ownerHandle} / {p.name}
               </div>
-              <span className="project-card-role">{p.accessRole}</span>
+              <span className="project-card-role">{p.accessRole} · {p.visibility}</span>
               {p.threads.length > 0 && (
                 <ul className="project-card-threads">
                   {p.threads.map((t) => (

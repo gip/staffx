@@ -242,17 +242,20 @@ create index idx_artifact_files_hash on artifact_files (file_hash);
 -- ============================================================
 
 create type collaborator_role as enum ('Editor', 'Viewer');
+create type project_visibility as enum ('public', 'private');
 
 create table projects (
   id          text primary key,
   name        text not null,
   description text,
+  visibility  project_visibility not null default 'private',
   owner_id    uuid not null references users(id),
   created_at  timestamptz not null default now(),
   updated_at  timestamptz not null default now()
 );
 
 create index idx_projects_owner on projects (owner_id);
+create index idx_projects_visibility_created on projects (visibility, created_at desc);
 create unique index idx_projects_owner_name on projects (owner_id, name);
 
 create table project_collaborators (
@@ -790,6 +793,7 @@ select
   p.id,
   p.name,
   p.description,
+  p.visibility,
   p.owner_id,
   p.created_at,
   u.id as user_id,
@@ -832,6 +836,7 @@ select
   p.id,
   p.name,
   p.description,
+  p.visibility,
   p.owner_id,
   (select count(*) from threads t where t.project_id = p.id) as thread_count,
   (select count(*) from threads t where t.project_id = p.id and t.status = 'open') as open_threads,

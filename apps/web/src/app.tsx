@@ -217,17 +217,47 @@ async function readError(res: Response, fallback: string) {
 }
 
 function useApi() {
-  const { getAccessTokenSilently } = useAuth0();
+  const { getAccessTokenSilently, isAuthenticated, isLoading } = useAuth0();
+
+  const isRecoverableAuthError = useCallback((error: unknown) => {
+    if (!error || typeof error !== "object") return false;
+    const code = "error" in error && typeof (error as { error?: unknown }).error === "string"
+      ? (error as { error: string }).error
+      : null;
+    return code === "login_required" || code === "consent_required" || code === "missing_refresh_token";
+  }, []);
 
   const apiFetch = useCallback(
-    async (path: string, init?: RequestInit) => {
-      const token = await getAccessTokenSilently();
+    async (
+      path: string,
+      init?: RequestInit,
+      options?: { auth?: "required" | "optional" | "none" },
+    ) => {
+      const authMode = options?.auth ?? "required";
+      let token: string | null = null;
+      const shouldTryToken =
+        authMode !== "none" && (authMode === "required" || (isAuthenticated && !isLoading));
+      if (shouldTryToken) {
+        try {
+          token = await getAccessTokenSilently();
+        } catch (error) {
+          if (authMode === "required" || !isRecoverableAuthError(error)) {
+            throw error;
+          }
+        }
+      }
+
+      const headers = new Headers(init?.headers ?? {});
+      if (token) {
+        headers.set("Authorization", `Bearer ${token}`);
+      }
+
       return fetch(`${API_URL}${path}`, {
         ...init,
-        headers: { Authorization: `Bearer ${token}`, ...init?.headers },
+        headers,
       });
     },
-    [getAccessTokenSilently],
+    [getAccessTokenSilently, isAuthenticated, isLoading, isRecoverableAuthError],
   );
 
   return apiFetch;
@@ -328,12 +358,12 @@ function ProfileRoute() {
   }, [isAuthenticated, refreshIntegrationStatuses, searchParams, setSearchParams]);
 
   useEffect(() => {
-    if (!isAuthenticated || !handle) return;
+    if (!handle) return;
 
     setNotFound(false);
     setProfile(null);
 
-    apiFetch(`/users/${encodeURIComponent(handle)}`)
+    apiFetch(`/users/${encodeURIComponent(handle)}`, undefined, { auth: "optional" })
       .then(async (res) => {
         if (!res.ok) {
           setNotFound(true);
@@ -342,7 +372,7 @@ function ProfileRoute() {
         setProfile(await res.json());
       })
       .catch(() => setNotFound(true));
-  }, [isAuthenticated, handle, apiFetch]);
+  }, [handle, apiFetch]);
 
   if (notFound) {
     return (
@@ -407,16 +437,15 @@ function ProfileRoute() {
 
 function ProjectRoute() {
   const { handle, project: projectName } = useParams<{ handle: string; project: string }>();
-  const { isAuthenticated } = useAuth0();
   const navigate = useNavigate();
   const apiFetch = useApi();
   const [project, setProject] = useState<Project | null>(null);
   const [notFound, setNotFound] = useState(false);
 
   useEffect(() => {
-    if (!isAuthenticated || !handle || !projectName) return;
+    if (!handle || !projectName) return;
 
-    apiFetch(`/projects/${encodeURIComponent(handle)}/${encodeURIComponent(projectName)}`)
+    apiFetch(`/projects/${encodeURIComponent(handle)}/${encodeURIComponent(projectName)}`, undefined, { auth: "optional" })
       .then(async (res) => {
         if (!res.ok) {
           setNotFound(true);
@@ -425,7 +454,7 @@ function ProjectRoute() {
         setProject(await res.json());
       })
       .catch(() => setNotFound(true));
-  }, [isAuthenticated, handle, projectName, apiFetch]);
+  }, [handle, projectName, apiFetch]);
 
   if (notFound) {
     return (
@@ -536,10 +565,10 @@ function ProjectRoute() {
 
 function SettingsRoute() {
   const { handle, project: projectName } = useParams<{ handle: string; project: string }>();
-  const { isAuthenticated } = useAuth0();
   const apiFetch = useApi();
   const [data, setData] = useState<{
     accessRole: string;
+    visibility: "public" | "private";
     collaborators: Collaborator[];
     projectRoles: string[];
     concerns: Concern[];
@@ -547,9 +576,11 @@ function SettingsRoute() {
   const [notFound, setNotFound] = useState(false);
 
   useEffect(() => {
-    if (!isAuthenticated || !handle || !projectName) return;
+    if (!handle || !projectName) return;
 
-    apiFetch(`/projects/${encodeURIComponent(handle)}/${encodeURIComponent(projectName)}/collaborators`)
+    apiFetch(`/projects/${encodeURIComponent(handle)}/${encodeURIComponent(projectName)}/collaborators`, undefined, {
+      auth: "optional",
+    })
       .then(async (res) => {
         if (!res.ok) {
           setNotFound(true);
@@ -558,7 +589,7 @@ function SettingsRoute() {
         setData(await res.json());
       })
       .catch(() => setNotFound(true));
-  }, [isAuthenticated, handle, projectName, apiFetch]);
+  }, [handle, projectName, apiFetch]);
 
   if (notFound) {
     return (
@@ -581,6 +612,7 @@ function SettingsRoute() {
       projectOwnerHandle={handle!}
       projectName={projectName!}
       accessRole={data.accessRole}
+      visibility={data.visibility}
       collaborators={data.collaborators}
       projectRoles={data.projectRoles}
       concerns={data.concerns}
@@ -675,6 +707,20 @@ function SettingsRoute() {
           return { error: body.error ?? "Failed to update roles" };
         }
       }}
+      onUpdateVisibility={async (visibility) => {
+        const res = await apiFetch(
+          `/projects/${encodeURIComponent(handle!)}/${encodeURIComponent(projectName!)}/visibility`,
+          {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ visibility }),
+          },
+        );
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}));
+          return { error: body.error ?? "Failed to update visibility" };
+        }
+      }}
     />
   );
 }
@@ -736,11 +782,15 @@ function ThreadRoute() {
   }, [isAuthenticated, refreshIntegrationStatuses, searchParams, setSearchParams]);
 
   useEffect(() => {
-    if (!isAuthenticated || !handle || !projectName || !threadId) return;
+    if (!handle || !projectName || !threadId) return;
     setNotFound(false);
     setDetail(null);
 
-    apiFetch(`/projects/${encodeURIComponent(handle)}/${encodeURIComponent(projectName)}/thread/${encodeURIComponent(threadId)}`)
+    apiFetch(
+      `/projects/${encodeURIComponent(handle)}/${encodeURIComponent(projectName)}/thread/${encodeURIComponent(threadId)}`,
+      undefined,
+      { auth: "optional" },
+    )
       .then(async (res) => {
         if (res.status === 404) {
           setNotFound(true);
@@ -752,7 +802,7 @@ function ThreadRoute() {
         setDetail(await res.json());
       })
       .catch(() => setNotFound(true));
-  }, [isAuthenticated, handle, projectName, threadId, apiFetch]);
+  }, [handle, projectName, threadId, apiFetch]);
 
   if (notFound) {
     return (
@@ -1078,35 +1128,38 @@ function ThreadRoute() {
 }
 
 export function App() {
-  const { isAuthenticated, isLoading, loginWithRedirect, logout, getAccessTokenSilently } = useAuth0();
+  const { isAuthenticated, isLoading, loginWithRedirect, logout } = useAuth0();
+  const apiFetch = useApi();
   const [user, setUser] = useState<AuthUser | null>(null);
   const [projects, setProjects] = useState<Project[]>([]);
 
   useEffect(() => {
-    if (!isAuthenticated) return;
+    apiFetch("/projects", undefined, { auth: "optional" })
+      .then(async (response) => {
+        if (!response.ok) return;
+        setProjects(await response.json());
+      })
+      .catch((error) => {
+        console.error("Project fetch failed:", error);
+      });
+  }, [apiFetch, isAuthenticated]);
 
-    getAccessTokenSilently().then(async (token) => {
-      const headers = { Authorization: `Bearer ${token}` };
+  useEffect(() => {
+    if (!isAuthenticated) {
+      setUser(null);
+      return;
+    }
 
-      try {
-        const [meRes, projRes] = await Promise.all([
-          fetch(`${API_URL}/me`, { headers }),
-          fetch(`${API_URL}/projects`, { headers }),
-        ]);
-
-        if (meRes.ok) {
-          const me = await meRes.json();
-          setUser({ handle: me.handle, email: me.email ?? null, githubHandle: me.githubHandle ?? "", name: me.name, picture: me.picture });
-        }
-
-        if (projRes.ok) {
-          setProjects(await projRes.json());
-        }
-      } catch (err) {
-        console.error("API fetch failed:", err);
-      }
-    });
-  }, [isAuthenticated, getAccessTokenSilently]);
+    apiFetch("/me")
+      .then(async (response) => {
+        if (!response.ok) return;
+        const me = await response.json();
+        setUser({ handle: me.handle, email: me.email ?? null, githubHandle: me.githubHandle ?? "", name: me.name, picture: me.picture });
+      })
+      .catch((error) => {
+        console.error("Profile fetch failed:", error);
+      });
+  }, [apiFetch, isAuthenticated]);
 
   return (
     <AuthContext.Provider

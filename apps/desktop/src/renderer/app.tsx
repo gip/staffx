@@ -501,6 +501,7 @@ function SettingsRoute({ isAuthenticated }: { isAuthenticated: boolean }) {
   const apiFetch = useApi();
   const [data, setData] = useState<{
     accessRole: string;
+    visibility: "public" | "private";
     collaborators: Collaborator[];
     projectRoles: string[];
     concerns: Concern[];
@@ -542,6 +543,7 @@ function SettingsRoute({ isAuthenticated }: { isAuthenticated: boolean }) {
       projectOwnerHandle={handle!}
       projectName={projectName!}
       accessRole={data.accessRole}
+      visibility={data.visibility}
       collaborators={data.collaborators}
       projectRoles={data.projectRoles}
       concerns={data.concerns}
@@ -634,6 +636,20 @@ function SettingsRoute({ isAuthenticated }: { isAuthenticated: boolean }) {
         if (!res.ok) {
           const body = await res.json().catch(() => ({}));
           return { error: body.error ?? "Failed to update roles" };
+        }
+      }}
+      onUpdateVisibility={async (visibility) => {
+        const res = await apiFetch(
+          `/projects/${encodeURIComponent(handle!)}/${encodeURIComponent(projectName!)}/visibility`,
+          {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ visibility }),
+          },
+        );
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}));
+          return { error: body.error ?? "Failed to update visibility" };
         }
       }}
     />

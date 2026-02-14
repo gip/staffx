@@ -285,7 +285,7 @@ export async function integrationsRoutes(app: FastifyInstance) {
         [req.auth.id, rawProvider],
       );
 
-      if (tokenResult.rowCount > 0) {
+      if ((tokenResult.rowCount ?? 0) > 0) {
         const client = getProviderClient(rawProvider);
         try {
           const accessRow = tokenResult.rows[0];
