@@ -8,6 +8,7 @@ import { getProviderClient, sourceTypeToProvider, type DocSourceType } from "../
 
 const EDIT_ROLES = new Set(["Owner", "Editor"]);
 const PLACEHOLDER_ASSISTANT_MESSAGE = "Received. I captured your request in this thread.";
+const SYSTEM_PROMPT_CONCERN = "__system_prompt__";
 
 type ThreadStatus = "open" | "closed" | "committed";
 
@@ -27,6 +28,16 @@ interface ThreadContextRow {
 
 interface SystemRow {
   system_id: string;
+}
+
+interface SystemRootNodeRow {
+  root_node_id: string;
+}
+
+interface SystemPromptRow {
+  hash: string;
+  text: string;
+  title: string;
 }
 
 interface TopologyNodeRow {
@@ -55,9 +66,9 @@ interface MatrixRefRow {
   node_id: string;
   concern: string;
   doc_hash: string;
-  ref_type: "Document" | "Skill";
+  ref_type: "Document" | "Skill" | "Prompt";
   doc_title: string;
-  doc_kind: "Document" | "Skill";
+  doc_kind: "Document" | "Skill" | "Prompt";
   doc_language: string;
   doc_source_type: DocSourceType;
   doc_source_url: string | null;
@@ -68,7 +79,7 @@ interface MatrixRefRow {
 
 interface MatrixDocumentRow {
   hash: string;
-  kind: "Document" | "Skill";
+  kind: "Document" | "Skill" | "Prompt";
   title: string;
   language: string;
   text: string;
@@ -242,9 +253,9 @@ interface CloneThreadBody {
 interface MatrixDoc {
   hash: string;
   title: string;
-  kind: "Document" | "Skill";
+  kind: "Document" | "Skill" | "Prompt";
   language: string;
-  refType: "Document" | "Skill";
+  refType: "Document" | "Skill" | "Prompt";
   sourceType?: DocSourceType;
   sourceUrl?: string | null;
   sourceExternalId?: string | null;
@@ -271,7 +282,7 @@ interface MatrixRefBody {
   concern?: string;
   concerns?: string[];
   docHash: string;
-  refType: "Document" | "Skill";
+  refType: "Document" | "Skill" | "Prompt";
 }
 
 interface UserIntegrationRow {
@@ -299,7 +310,7 @@ interface NotionApiError extends Error {
   requestUrl?: string;
 }
 
-type DocKind = "Document" | "Skill";
+type DocKind = "Document" | "Skill" | "Prompt";
 
 interface MatrixDocumentAttach {
   nodeId: string;
@@ -931,7 +942,7 @@ function parseConcernList(raw: unknown): string[] | null {
 }
 
 function isDocumentKind(value: string): value is DocKind {
-  return value === "Document" || value === "Skill";
+  return value === "Document" || value === "Skill" || value === "Prompt";
 }
 
 function parseDocumentAttach(
@@ -1145,6 +1156,142 @@ function normalizeTopologyLayoutBody(
   return { positions };
 }
 
+async function getSystemRootNodeId(
+  systemId: string,
+  client?: PoolClient,
+): Promise<string | null> {
+  const result = await (client
+    ? client.query<SystemRootNodeRow>(`SELECT root_node_id FROM systems WHERE id = $1`, [systemId])
+    : query<SystemRootNodeRow>(`SELECT root_node_id FROM systems WHERE id = $1`, [systemId]));
+  return result.rows[0]?.root_node_id ?? null;
+}
+
+async function ensureSystemPromptConcern(systemId: string, client: PoolClient): Promise<void> {
+  await client.query(
+    `INSERT INTO concerns (system_id, name, position, is_baseline, scope)
+     VALUES (
+      $1,
+      $2,
+      COALESCE((SELECT MAX(position) FROM concerns WHERE system_id = $1), -1) + 1,
+      false,
+      'system'
+     )
+     ON CONFLICT DO NOTHING`,
+    [systemId, SYSTEM_PROMPT_CONCERN],
+  );
+}
+
+interface SystemPromptAttachmentPayload {
+  nodeId: string;
+  concern: string;
+  concerns: string[];
+  refType: "Prompt";
+}
+
+interface SystemPromptValidationFailure {
+  valid: false;
+  error: string;
+}
+
+interface SystemPromptValidationSuccess {
+  valid: true;
+  payload: SystemPromptAttachmentPayload;
+}
+
+type SystemPromptValidationResult = SystemPromptValidationSuccess | SystemPromptValidationFailure;
+
+async function validateSystemPromptAttachment(
+  client: PoolClient,
+  systemId: string,
+  attachment: SystemPromptAttachmentPayload,
+): Promise<SystemPromptValidationResult> {
+  const rootNodeId = await getSystemRootNodeId(systemId, client);
+  if (!rootNodeId) {
+    return { valid: false, error: "Unable to resolve system root node" };
+  }
+
+  if (attachment.concerns.length !== 1) {
+    return { valid: false, error: "System prompts require exactly one concern" };
+  }
+
+  const concern = attachment.concerns[0];
+  if (concern !== SYSTEM_PROMPT_CONCERN) {
+    return { valid: false, error: `System prompts require concern "${SYSTEM_PROMPT_CONCERN}"` };
+  }
+
+  if (attachment.nodeId !== rootNodeId) {
+    return { valid: false, error: "System prompts can only be attached to the system root node" };
+  }
+
+  await ensureSystemPromptConcern(systemId, client);
+
+  return {
+    valid: true,
+    payload: {
+      nodeId: rootNodeId,
+      concern: SYSTEM_PROMPT_CONCERN,
+      concerns: [SYSTEM_PROMPT_CONCERN],
+      refType: "Prompt",
+    },
+  };
+}
+
+async function getSystemPromptsForSystem(
+  systemId: string,
+  client?: PoolClient,
+): Promise<SystemPromptRow[]> {
+  const result = await (client
+    ? client.query<SystemPromptRow>(
+      `SELECT d.hash, d.text, d.title
+       FROM systems s
+       JOIN matrix_refs mr
+         ON mr.system_id = s.id
+        AND mr.node_id = s.root_node_id
+         AND mr.ref_type = 'Prompt'::ref_type
+         AND mr.concern = $2
+       JOIN documents d
+          ON d.system_id = mr.system_id
+         AND d.hash = mr.doc_hash
+       WHERE s.id = $1
+       ORDER BY d.created_at DESC`,
+      [systemId, SYSTEM_PROMPT_CONCERN],
+    )
+    : query<SystemPromptRow>(
+      `SELECT d.hash, d.text, d.title
+       FROM systems s
+       JOIN matrix_refs mr
+         ON mr.system_id = s.id
+        AND mr.node_id = s.root_node_id
+         AND mr.ref_type = 'Prompt'::ref_type
+         AND mr.concern = $2
+       JOIN documents d
+          ON d.system_id = mr.system_id
+         AND d.hash = mr.doc_hash
+       WHERE s.id = $1
+        ORDER BY d.created_at DESC`,
+      [systemId, SYSTEM_PROMPT_CONCERN],
+    ));
+  const deduped = new Map<string, SystemPromptRow>();
+  for (const row of result.rows) {
+    if (deduped.has(row.hash)) continue;
+    deduped.set(row.hash, row);
+  }
+  return Array.from(deduped.values());
+}
+
+async function getSystemPromptWithMetadataForSystem(
+  systemId: string,
+  client?: PoolClient,
+): Promise<{ text: string | null; title: string | null; systemPrompts: SystemPromptRow[] }> {
+  const prompts = await getSystemPromptsForSystem(systemId, client);
+  const latest = prompts[0];
+  return {
+    text: latest?.text ?? null,
+    title: latest?.title ?? null,
+    systemPrompts: prompts,
+  };
+}
+
 async function getThreadSystemId(threadId: string): Promise<string | null> {
   const result = await query<SystemRow>(
     "SELECT thread_current_system($1) AS system_id",
@@ -1175,6 +1322,7 @@ async function getMatrixCell(systemId: string, nodeId: string, concern: string):
          AND mr.node_id = $2
          AND mr.concern_hash = md5($3)
          AND mr.concern = $3
+         AND mr.ref_type IN ('Document'::ref_type, 'Skill'::ref_type)
        ORDER BY mr.ref_type, d.title`,
       [systemId, nodeId, concern],
     ),
@@ -1264,7 +1412,7 @@ export async function threadRoutes(app: FastifyInstance) {
         return reply.code(500).send({ error: "Unable to resolve thread system" });
       }
 
-      const [nodesResult, edgesResult, concernsResult, matrixRefsResult, documentsResult, artifactsResult, messagesResult] =
+      const [nodesResult, edgesResult, concernsResult, matrixRefsResult, documentsResult, artifactsResult, messagesResult, systemPromptMetadataResult] =
         await Promise.all([
           query<TopologyNodeRow>(
             `SELECT
@@ -1290,8 +1438,10 @@ export async function threadRoutes(app: FastifyInstance) {
             `SELECT name, position
              FROM concerns
              WHERE system_id = $1
+               AND scope IS DISTINCT FROM 'system'
+               AND name <> $2
              ORDER BY position, name`,
-            [systemId],
+            [systemId, SYSTEM_PROMPT_CONCERN],
           ),
           query<MatrixRefRow>(
             `SELECT
@@ -1310,6 +1460,7 @@ export async function threadRoutes(app: FastifyInstance) {
              FROM matrix_refs mr
              JOIN documents d ON d.system_id = mr.system_id AND d.hash = mr.doc_hash
              WHERE mr.system_id = $1
+               AND mr.ref_type IN ('Document'::ref_type, 'Skill'::ref_type)
              ORDER BY mr.node_id, mr.concern, mr.ref_type, d.title`,
             [systemId],
           ),
@@ -1317,6 +1468,7 @@ export async function threadRoutes(app: FastifyInstance) {
             `SELECT hash, kind, title, language, text, source_type, source_url, source_external_id, source_metadata, source_connected_user_id
              FROM documents
              WHERE system_id = $1
+               AND kind IN ('Document'::doc_kind, 'Skill'::doc_kind)
              ORDER BY kind, title, hash`,
             [systemId],
           ),
@@ -1335,6 +1487,7 @@ export async function threadRoutes(app: FastifyInstance) {
              ORDER BY a.position, m.position`,
             [context.threadId],
           ),
+          getSystemPromptWithMetadataForSystem(systemId),
         ]);
 
       const nodes = nodesResult.rows.map((row) => ({
@@ -1438,6 +1591,9 @@ export async function threadRoutes(app: FastifyInstance) {
             sourceConnectedUserId: row.source_connected_user_id,
           })),
         },
+        systemPrompt: systemPromptMetadataResult.text,
+        systemPromptTitle: systemPromptMetadataResult.title,
+        systemPrompts: systemPromptMetadataResult.systemPrompts,
         chat: {
           messages: mapChatMessages(messagesResult.rows),
         },
@@ -1785,7 +1941,7 @@ export async function threadRoutes(app: FastifyInstance) {
         return reply.code(403).send({ error: "Forbidden" });
       }
 
-      const payload = normalizeMatrixMutationBody(req.body);
+      let payload = normalizeMatrixMutationBody(req.body);
       if (!payload) {
         return reply.code(400).send({ error: "Invalid matrix reference payload" });
       }
@@ -1793,7 +1949,7 @@ export async function threadRoutes(app: FastifyInstance) {
       const client = await pool.connect();
       let inTransaction = false;
       let actionMessages: ThreadChatMessage[] = [];
-      const concerns = payload.concerns;
+      let concerns = payload.concerns;
 
       try {
         await client.query("BEGIN");
@@ -1808,6 +1964,26 @@ export async function threadRoutes(app: FastifyInstance) {
         const outputSystemId = beginResult.rows[0]?.output_system_id;
         if (!outputSystemId) {
           throw new Error("Failed to create action output system");
+        }
+
+        if (payload.refType === "Prompt") {
+          const validation = await validateSystemPromptAttachment(
+            client,
+            outputSystemId,
+            {
+              nodeId: payload.nodeId,
+              concern: payload.concern,
+              concerns: payload.concerns,
+              refType: "Prompt",
+            },
+          );
+          if (!validation.valid) {
+            await client.query("ROLLBACK");
+            inTransaction = false;
+            return reply.code(400).send({ error: validation.error });
+          }
+          payload = validation.payload;
+          concerns = validation.payload.concerns;
         }
 
         let changed = 0;
@@ -1864,12 +2040,34 @@ export async function threadRoutes(app: FastifyInstance) {
       if (!systemId) {
         return reply.code(500).send({ error: "Unable to resolve thread system" });
       }
-      const cells = await getMatrixCells(systemId, payload.nodeId, payload.concerns);
+      const cells = await getMatrixCells(systemId, payload.nodeId, concerns);
+      const systemPrompt = payload.refType === "Prompt"
+        ? await getSystemPromptWithMetadataForSystem(systemId)
+        : undefined;
 
       if (cells.length === 1) {
-        return { systemId, cell: cells[0], cells, messages: actionMessages };
+        return systemPrompt === undefined
+          ? { systemId, cell: cells[0], cells, messages: actionMessages }
+          : {
+            systemId,
+            cell: cells[0],
+            cells,
+            systemPrompt: systemPrompt.text,
+            systemPromptTitle: systemPrompt.title,
+            systemPrompts: systemPrompt.systemPrompts,
+            messages: actionMessages,
+          };
       }
-      return { systemId, cells, messages: actionMessages };
+      return systemPrompt === undefined
+        ? { systemId, cells, messages: actionMessages }
+        : {
+          systemId,
+          cells,
+          systemPrompt: systemPrompt.text,
+          systemPromptTitle: systemPrompt.title,
+          systemPrompts: systemPrompt.systemPrompts,
+          messages: actionMessages,
+        };
     },
   );
 
@@ -1888,13 +2086,19 @@ export async function threadRoutes(app: FastifyInstance) {
         return reply.code(403).send({ error: "Forbidden" });
       }
 
-      const payload = normalizeMatrixDocumentCreateBody(req.body);
+      let payload = normalizeMatrixDocumentCreateBody(req.body);
       if (!payload) {
         req.log.warn({
           threadId: context.threadId,
           body: req.body,
         }, "Invalid matrix document payload");
         return reply.code(400).send({ error: "Invalid matrix document payload" });
+      }
+      if (payload.kind === "Prompt" && !payload.attach) {
+        return reply.code(400).send({ error: "System prompts require an attach payload." });
+      }
+      if (payload.kind === "Prompt" && payload.sourceType !== "local") {
+        return reply.code(400).send({ error: "System prompts must be local documents." });
       }
 
       let sourceUrl: string | null = null;
@@ -1993,6 +2197,38 @@ export async function threadRoutes(app: FastifyInstance) {
           throw new Error("Failed to create action output system");
         }
 
+        if (payload.kind === "Prompt") {
+          if (payload.sourceType !== "local") {
+            await client.query("ROLLBACK");
+            inTransaction = false;
+            return reply.code(400).send({ error: "System prompts must be local documents." });
+          }
+          if (!payload.attach) {
+            await client.query("ROLLBACK");
+            inTransaction = false;
+            return reply.code(400).send({ error: "System prompts require an attach payload." });
+          }
+          const validation = await validateSystemPromptAttachment(
+            client,
+            outputSystemId,
+            {
+              nodeId: payload.attach.nodeId,
+              concern: payload.attach.concern,
+              concerns: payload.attach.concerns,
+              refType: "Prompt",
+            },
+          );
+          if (!validation.valid) {
+            await client.query("ROLLBACK");
+            inTransaction = false;
+            return reply.code(400).send({ error: validation.error });
+          }
+          payload = {
+            ...payload,
+            attach: validation.payload,
+          };
+        }
+
         const insertResult = await client.query<MatrixDocumentRow>(
           `INSERT INTO documents (
              hash,
@@ -2083,12 +2319,21 @@ export async function threadRoutes(app: FastifyInstance) {
           document: MatrixDocumentRow;
           cell?: MatrixCell;
           cells?: MatrixCell[];
+          systemPrompts?: SystemPromptRow[];
+          systemPromptTitle?: string | null;
           messages?: ThreadChatMessage[];
+          systemPrompt?: string | null;
         } = {
           systemId,
           document: nextDocument,
           messages: actionMessages,
         };
+        if (payload.kind === "Prompt") {
+          const promptMetadata = await getSystemPromptWithMetadataForSystem(systemId);
+          response.systemPrompt = promptMetadata.text;
+          response.systemPromptTitle = promptMetadata.title;
+          response.systemPrompts = promptMetadata.systemPrompts;
+        }
         if (shouldAttach && payload.attach) {
           const nextCells = await getMatrixCells(systemId, payload.attach.nodeId, payload.attach.concerns);
           if (nextCells.length > 0) {
@@ -2182,6 +2427,39 @@ export async function threadRoutes(app: FastifyInstance) {
         }
 
         const existing = existingResult.rows[0];
+        const isPromptDocument = existing.kind === "Prompt";
+        if (isPromptDocument && existing.source_type !== "local") {
+          await client.query("ROLLBACK");
+          inTransaction = false;
+          return reply.code(400).send({ error: "Prompt documents must be local." });
+        }
+
+        if (isPromptDocument) {
+          const rootNodeId = await getSystemRootNodeId(outputSystemId, client);
+          if (!rootNodeId) {
+            await client.query("ROLLBACK");
+            inTransaction = false;
+            return reply.code(500).send({ error: "Unable to resolve system root node" });
+          }
+        const invalidPromptRefsResult = await client.query<ChangedRow>(
+          `SELECT 1 AS changed
+           FROM matrix_refs
+           WHERE system_id = $1
+             AND doc_hash = $2
+             AND ref_type = 'Prompt'::ref_type
+             AND node_id <> $3
+             LIMIT 1`,
+            [outputSystemId, trimmedHash, rootNodeId],
+        );
+        if (invalidPromptRefsResult.rowCount && invalidPromptRefsResult.rowCount > 0) {
+          await client.query("ROLLBACK");
+          inTransaction = false;
+          return reply.code(400).send({
+            error: "Prompt documents must remain attached to the system root node.",
+          });
+        }
+        }
+
         const isRemoteDocument = existing.source_type !== "local";
         if (isRemoteDocument && (typeof payload.body === "string" || typeof payload.name === "string" ||
           typeof payload.description === "string")) {
@@ -2289,12 +2567,21 @@ export async function threadRoutes(app: FastifyInstance) {
           return reply.code(500).send({ error: "Unable to resolve thread system" });
         }
 
+        const systemPrompt = isPromptDocument
+          ? await getSystemPromptWithMetadataForSystem(systemId)
+          : undefined;
+
         return {
           systemId,
           oldHash: existing.hash,
           document: nextDocument,
           replacedRefs: updateRefsResult.rowCount ?? 0,
           messages: actionMessages,
+          ...(systemPrompt === undefined ? {} : {
+            systemPrompt: systemPrompt.text,
+            systemPromptTitle: systemPrompt.title,
+            systemPrompts: systemPrompt.systemPrompts,
+          }),
         };
       } catch (error) {
         if (inTransaction) {
@@ -2322,7 +2609,7 @@ export async function threadRoutes(app: FastifyInstance) {
         return reply.code(403).send({ error: "Forbidden" });
       }
 
-      const payload = normalizeMatrixMutationBody(req.body);
+      let payload = normalizeMatrixMutationBody(req.body);
       if (!payload) {
         return reply.code(400).send({ error: "Invalid matrix reference payload" });
       }
@@ -2344,6 +2631,25 @@ export async function threadRoutes(app: FastifyInstance) {
         const outputSystemId = beginResult.rows[0]?.output_system_id;
         if (!outputSystemId) {
           throw new Error("Failed to create action output system");
+        }
+
+        if (payload.refType === "Prompt") {
+          const validation = await validateSystemPromptAttachment(
+            client,
+            outputSystemId,
+            {
+              nodeId: payload.nodeId,
+              concern: payload.concern,
+              concerns: payload.concerns,
+              refType: "Prompt",
+            },
+          );
+          if (!validation.valid) {
+            await client.query("ROLLBACK");
+            inTransaction = false;
+            return reply.code(400).send({ error: validation.error });
+          }
+          payload = validation.payload;
         }
 
         let changed = 0;
@@ -2396,11 +2702,33 @@ export async function threadRoutes(app: FastifyInstance) {
         return reply.code(500).send({ error: "Unable to resolve thread system" });
       }
 
+      const systemPrompt = payload.refType === "Prompt"
+        ? await getSystemPromptWithMetadataForSystem(systemId)
+        : undefined;
       const cells = await getMatrixCells(systemId, payload.nodeId, payload.concerns);
       if (cells.length === 1) {
-        return { systemId, cell: cells[0], cells, messages: actionMessages };
+        return systemPrompt === undefined
+          ? { systemId, cell: cells[0], cells, messages: actionMessages }
+          : {
+            systemId,
+            cell: cells[0],
+            cells,
+            systemPrompt: systemPrompt.text,
+            systemPromptTitle: systemPrompt.title,
+            systemPrompts: systemPrompt.systemPrompts,
+            messages: actionMessages,
+          };
       }
-      return { systemId, cells, messages: actionMessages };
+      return systemPrompt === undefined
+        ? { systemId, cells, messages: actionMessages }
+        : {
+          systemId,
+          cells,
+          systemPrompt: systemPrompt.text,
+          systemPromptTitle: systemPrompt.title,
+          systemPrompts: systemPrompt.systemPrompts,
+          messages: actionMessages,
+        };
     },
   );
 

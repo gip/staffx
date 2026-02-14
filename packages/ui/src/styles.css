@@ -1328,6 +1328,22 @@ a.project-card {
   color: var(--fg);
 }
 
+.thread-doc-section-action {
+  border: 1px solid var(--border);
+  background: var(--bg-secondary);
+  color: var(--fg-muted);
+  border-radius: 999px;
+  padding: 3px 10px;
+  font-size: 11px;
+  line-height: 1.2;
+  cursor: pointer;
+}
+
+.thread-doc-section-action:hover {
+  border-color: var(--fg-muted);
+  color: var(--fg);
+}
+
 .thread-topology-nested-list {
   display: flex;
   flex-direction: column;
@@ -1604,6 +1620,11 @@ a.project-card {
 .matrix-doc-chip--skill {
   background: rgba(180, 115, 0, 0.14);
   border-color: rgba(180, 115, 0, 0.4);
+}
+
+.matrix-doc-chip--prompt {
+  background: rgba(30, 112, 132, 0.14);
+  border-color: rgba(30, 112, 132, 0.4);
 }
 
 .matrix-doc-chip--spec {

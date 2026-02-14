@@ -32,6 +32,7 @@ import { isFinalizedThreadStatus, type ThreadStatus } from "./home";
 
 type DocKind = "Document" | "Skill";
 type MessageRole = "User" | "Assistant" | "System";
+type DocumentMutationKind = DocKind | "Prompt";
 type DocSourceType = "local" | "notion" | "google_doc";
 export type IntegrationProvider = "notion" | "google";
 export type IntegrationConnectionStatus = "connected" | "disconnected" | "expired" | "needs_reauth";
@@ -84,6 +85,12 @@ export interface MatrixCell {
   concern: string;
   docs: MatrixCellDoc[];
   artifacts: ArtifactRef[];
+}
+
+interface SystemPromptMeta {
+  hash: string;
+  title: string;
+  text: string;
 }
 
 export interface MatrixDocument {
@@ -149,6 +156,9 @@ export interface ThreadDetailPayload {
   systemId: string;
   thread: ThreadDetail;
   permissions: ThreadPermissions;
+  systemPrompt: string | null;
+  systemPromptTitle: string | null;
+  systemPrompts: SystemPromptMeta[];
   topology: {
     nodes: TopologyNode[];
     edges: TopologyEdge[];
@@ -175,12 +185,12 @@ interface MatrixRefInput {
   concern: string;
   concerns?: string[];
   docHash: string;
-  refType: DocKind;
+  refType: DocumentMutationKind;
 }
 
 interface MatrixDocumentCreateInput {
   title: string;
-  kind: DocKind;
+  kind: DocumentMutationKind;
   language: string;
   sourceType: DocSourceType;
   sourceUrl?: string;
@@ -191,7 +201,7 @@ interface MatrixDocumentCreateInput {
     nodeId: string;
     concern?: string;
     concerns?: string[];
-    refType: DocKind;
+    refType: DocumentMutationKind;
   };
 }
 
@@ -243,7 +253,7 @@ type MatrixDocumentModalMode = "browse" | "create" | "edit";
 interface MatrixDocumentModal {
   source: MatrixDocumentModalSource;
   nodeId: string;
-  refType: DocKind;
+  refType: DocumentMutationKind;
   concern: string;
   concerns: string[];
   kindFilter: "All" | DocKind;
@@ -271,6 +281,7 @@ interface ThreadPageProps {
 }
 
 const AGENT_OPTIONS = ["Opus 4.6"] as const;
+const SYSTEM_PROMPT_CONCERN = "__system_prompt__";
 const DOC_TYPES: DocKind[] = ["Document", "Skill"];
 const SOURCE_TYPE_TO_PROVIDER: Record<Exclude<DocSourceType, "local">, IntegrationProvider> = {
   notion: "notion",
@@ -295,6 +306,9 @@ function chunkIntoPairs<T>(items: T[]): T[][] {
 const MATRIX_DOC_NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const normalizeConcernName = (value: string) => value.trim().toLowerCase();
 const DEFAULT_DOCUMENT_LANGUAGE = "en";
+const isHiddenMatrixConcern = (name: string) => name === SYSTEM_PROMPT_CONCERN;
+const normalizeMatrixConcerns = (concerns: { name: string; position: number }[]) =>
+  concerns.filter((concern) => !isHiddenMatrixConcern(concern.name));
 
 function parseDocumentText(rawText: string): MatrixDocumentParsedText {
   const text = (rawText ?? "").replace(/\r\n/g, "\n");
@@ -666,10 +680,17 @@ interface RootGroupNodeData {
   canEdit: boolean;
   onOpenDocPicker: (nodeId: string, refType: DocKind) => void;
   onEditDoc: (doc: MatrixCellDoc, nodeId: string, concern: string) => void;
+  onOpenSystemPrompt: (nodeId: string, prompt?: SystemPromptMeta | null) => void;
+  systemPrompt: string | null;
+  systemPromptTitle: string | null;
+  systemPrompts: SystemPromptMeta[];
 }
 
 function RootGroupNode({ data }: NodeProps<RootGroupNodeData>) {
-  const hasContent = data.documents.document.length > 0 || data.documents.skill.length > 0 || data.artifacts.length > 0;
+  const hasPrompt = data.systemPrompts.length > 0;
+  const hasContent = data.canEdit || hasPrompt || data.documents.document.length > 0 || data.documents.skill.length > 0 || data.artifacts.length > 0;
+  const openSystemPrompt = () => data.onOpenSystemPrompt(data.nodeId);
+  const openSystemPromptEditor = (prompt: SystemPromptMeta) => data.onOpenSystemPrompt(data.nodeId, prompt);
 
   const renderChips = (docs: MatrixCellDoc[], kind: "document" | "skill") =>
     docs.map((doc) => (
@@ -761,6 +782,41 @@ function RootGroupNode({ data }: NodeProps<RootGroupNodeData>) {
                 ))}
               </div>
             </div>
+            <div className="thread-topology-doc-section">
+              <div className="thread-topology-doc-section-header">
+                <span className="matrix-doc-group-label">Prompts</span>
+                {data.canEdit && (
+                  <button
+                    className="btn-icon thread-topology-doc-add"
+                    type="button"
+                    aria-label={`Set system prompts for ${data.name}`}
+                    onClick={openSystemPrompt}
+                    title="Set system prompts"
+                  >
+                    <Plus size={12} />
+                  </button>
+                )}
+              </div>
+              <div className="thread-topology-doc-list">
+                {hasPrompt ? (
+                  chunkIntoPairs(data.systemPrompts).map((row, rowIndex) => (
+                    <div key={`root-prompt-row-${rowIndex}`} className="matrix-doc-row">
+                      {row.map((prompt) => (
+                        <button
+                          type="button"
+                          className="matrix-doc-chip matrix-doc-chip--prompt"
+                          key={`root-prompt-${prompt.hash}`}
+                          disabled={!data.canEdit}
+                          onClick={() => data.canEdit && openSystemPromptEditor(prompt)}
+                        >
+                          {prompt.title}
+                        </button>
+                      ))}
+                    </div>
+                  ))
+                ) : null}
+              </div>
+            </div>
             {data.artifacts.length > 0 && (
               <div className="thread-topology-doc-section">
                 <div className="thread-topology-doc-section-header">
@@ -846,8 +902,12 @@ function buildFlowNodes(
   nodeDocuments: Map<string, MatrixDocGroup>,
   nodeArtifacts: Map<string, ArtifactRef[]>,
   onOpenDocPicker: (nodeId: string, refType: DocKind) => void,
+  onOpenSystemPrompt: (nodeId: string, prompt?: SystemPromptMeta | null) => void,
   onEditDoc: (doc: MatrixCellDoc, nodeId: string, concern: string) => void,
   canEdit: boolean,
+  systemPrompt: string | null,
+  systemPromptTitle: string | null,
+  systemPrompts: SystemPromptMeta[],
 ): Node[] {
   if (model.visibleNodes.length === 0) return [];
 
@@ -957,7 +1017,11 @@ function buildFlowNodes(
       nodeArtifacts.get(model.rootNode.id) ?? [],
       canEdit,
       onOpenDocPicker,
+      onOpenSystemPrompt,
       onEditDoc,
+      systemPrompt,
+      systemPromptTitle,
+      systemPrompts,
     );
     if (rootGroupNode) {
       return [rootGroupNode, ...childFlowNodes];
@@ -980,7 +1044,11 @@ function buildRootGroupNode(
   artifacts: ArtifactRef[],
   canEdit: boolean,
   onOpenDocPicker: (nodeId: string, refType: DocKind) => void,
+  onOpenSystemPrompt: (nodeId: string, prompt?: SystemPromptMeta | null) => void,
   onEditDoc: (doc: MatrixCellDoc, nodeId: string, concern: string) => void,
+  systemPrompt: string | null,
+  systemPromptTitle: string | null,
+  systemPrompts: SystemPromptMeta[],
 ): Node | null {
   if (childNodes.length === 0) return null;
 
@@ -1005,7 +1073,19 @@ function buildRootGroupNode(
     id: ROOT_GROUP_ID,
     type: "rootGroup",
     position: { x: minX - ROOT_GROUP_PADDING, y: minY - ROOT_GROUP_TOP_PADDING },
-    data: { name: rootNode.name, nodeId: rootNode.id, documents, artifacts, canEdit, onOpenDocPicker, onEditDoc },
+    data: {
+      name: rootNode.name,
+      nodeId: rootNode.id,
+      documents,
+      artifacts,
+      canEdit,
+      onOpenDocPicker,
+      onOpenSystemPrompt,
+      onEditDoc,
+      systemPrompt,
+      systemPromptTitle,
+      systemPrompts,
+    },
     draggable: false,
     selectable: false,
     connectable: false,
@@ -1103,7 +1183,7 @@ export function ThreadPage({
   const [descriptionError, setDescriptionError] = useState("");
   const [isSavingDescription, setIsSavingDescription] = useState(false);
   const [visibleConcerns, setVisibleConcerns] = useState<Set<string>>(
-    () => new Set(detail.matrix.concerns.map((c) => c.name)),
+    () => new Set(normalizeMatrixConcerns(detail.matrix.concerns).map((c) => c.name)),
   );
   const [matrixError, setMatrixError] = useState("");
   const [activeMatrixMutation, setActiveMatrixMutation] = useState("");
@@ -1181,7 +1261,7 @@ export function ThreadPage({
   }, [isTitleEditing]);
 
   useEffect(() => {
-    const names = detail.matrix.concerns.map((c) => c.name);
+    const names = normalizeMatrixConcerns(detail.matrix.concerns).map((c) => c.name);
     setVisibleConcerns((prev) => {
       const nextSet = new Set<string>();
       for (const name of names) {
@@ -1324,11 +1404,14 @@ export function ThreadPage({
     (next: MatrixDocumentModal, mode: MatrixDocumentModalMode, editHash: string | null = null) => {
       const initialConcern = next.concern ?? "";
       const initialConcerns = next.concerns.length > 0 ? next.concerns : initialConcern ? [initialConcern] : [];
+      const resolvedMode: MatrixDocumentModalMode = next.refType === "Prompt" && Boolean(editHash)
+        ? "edit"
+        : mode;
       setDocumentModal({
         ...next,
         selectedConcern: initialConcern,
         selectedConcerns: initialConcerns,
-        mode,
+        mode: resolvedMode,
       });
       setDocPickerSearch("");
       setDocPickerKindFilter(next.kindFilter);
@@ -1337,7 +1420,7 @@ export function ThreadPage({
       setDocModalValidationError("");
       setDocModalEditHash(editHash);
 
-      if (mode === "create") {
+      if (resolvedMode === "create") {
         setDocModalName("");
         setDocModalTitle("");
         setDocModalDescription("");
@@ -1345,17 +1428,59 @@ export function ThreadPage({
         setDocModalBody("");
         setDocModalSourceType("local");
         setDocModalSourceUrl("");
-      } else if (mode === "edit") {
+      } else if (resolvedMode === "edit") {
         const existingDocument = detail.matrix.documents.find((doc) => doc.hash === editHash);
-        const parsed = existingDocument ? parseDocumentText(existingDocument.text) : { name: "", description: "", body: "" };
-        const existingName = parsed.name && isValidDocumentName(parsed.name) ? parsed.name : "";
-        setDocModalName(existingName || deriveDocumentName(existingDocument?.title ?? ""));
-        setDocModalTitle(existingDocument?.title ?? "");
-        setDocModalDescription(parsed.description);
-        setDocModalLanguage(existingDocument?.language ?? "en");
-        setDocModalBody(parsed.body);
-        setDocModalSourceType(existingDocument?.sourceType ?? "local");
-        setDocModalSourceUrl(existingDocument?.sourceUrl ?? "");
+        if (existingDocument) {
+          const parsed = parseDocumentText(existingDocument.text);
+          const existingName = parsed.name && isValidDocumentName(parsed.name) ? parsed.name : "";
+          setDocModalName(existingName || deriveDocumentName(existingDocument.title));
+          setDocModalTitle(existingDocument.title);
+          setDocModalDescription(parsed.description);
+          setDocModalLanguage(existingDocument.language);
+          setDocModalBody(parsed.body);
+          setDocModalSourceType(existingDocument.sourceType ?? "local");
+          setDocModalSourceUrl(existingDocument.sourceUrl ?? "");
+          return;
+        }
+
+        if (next.refType === "Prompt" && editHash) {
+          const existingPrompt = detail.systemPrompts.find((prompt) => prompt.hash === editHash);
+          if (existingPrompt) {
+            const parsed = parseDocumentText(existingPrompt.text);
+            const existingName = parsed.name && isValidDocumentName(parsed.name) ? parsed.name : "";
+            setDocModalName(existingName || deriveDocumentName(existingPrompt.title));
+            setDocModalTitle(existingPrompt.title);
+            setDocModalDescription(parsed.description);
+            setDocModalLanguage("en");
+            setDocModalBody(parsed.body);
+            setDocModalSourceType("local");
+            setDocModalSourceUrl("");
+            return;
+          }
+
+          if (typeof detail.systemPrompt === "string") {
+            const parsed = parseDocumentText(detail.systemPrompt);
+            const fallbackName = detail.systemPromptTitle && isValidDocumentName(detail.systemPromptTitle)
+              ? deriveDocumentName(detail.systemPromptTitle)
+              : "";
+            setDocModalName(fallbackName || "System prompt");
+            setDocModalTitle(detail.systemPromptTitle || "");
+            setDocModalDescription(parsed.description);
+            setDocModalLanguage("en");
+            setDocModalBody(parsed.body);
+            setDocModalSourceType("local");
+            setDocModalSourceUrl("");
+            return;
+          }
+        }
+
+        setDocModalName("");
+        setDocModalTitle("");
+        setDocModalDescription("");
+        setDocModalLanguage(DEFAULT_DOCUMENT_LANGUAGE);
+        setDocModalBody("");
+        setDocModalSourceType("local");
+        setDocModalSourceUrl("");
       } else {
         setDocModalName("");
         setDocModalTitle("");
@@ -1365,8 +1490,8 @@ export function ThreadPage({
         setDocModalSourceType("local");
         setDocModalSourceUrl("");
       }
-    },
-    [detail.matrix.documents],
+      },
+    [detail.matrix.documents, detail.systemPrompt, detail.systemPromptTitle, detail.systemPrompts],
   );
 
   const openMatrixCellDocumentPicker = useCallback(
@@ -1389,7 +1514,7 @@ export function ThreadPage({
   // Topology add/edit actions are handled by the same picker modal as matrix-cell.
   const openTopologyDocumentPicker = useCallback(
     (nodeId: string, refType: DocKind) => {
-      const concerns = detail.matrix.concerns.map((entry) => entry.name);
+      const concerns = normalizeMatrixConcerns(detail.matrix.concerns).map((entry) => entry.name);
       const matchingConcern = concerns.find((concern) =>
         normalizeConcernName(concern) === normalizeConcernName(refType),
       ) ?? concerns[0]
@@ -1407,6 +1532,24 @@ export function ThreadPage({
       );
     },
     [detail.matrix.concerns, openDocumentPicker],
+  );
+
+  const openRootPromptCreator = useCallback(
+    (nodeId: string, prompt?: SystemPromptMeta | null) => {
+      openDocumentPicker(
+        {
+          source: "topology-node",
+          nodeId,
+          refType: "Prompt",
+          concern: SYSTEM_PROMPT_CONCERN,
+          concerns: [SYSTEM_PROMPT_CONCERN],
+          kindFilter: "All",
+        },
+        prompt ? "edit" : "create",
+        prompt?.hash ?? null,
+      );
+    },
+    [openDocumentPicker],
   );
 
   const openEditDocumentModal = useCallback(
@@ -1436,10 +1579,14 @@ export function ThreadPage({
         nodeDocumentGroups,
         nodeArtifacts,
         openTopologyDocumentPicker,
+        openRootPromptCreator,
         openEditDocumentModal,
         effectiveCanEdit,
+        detail.systemPrompt,
+        detail.systemPromptTitle,
+        detail.systemPrompts,
       ),
-    [flowLayoutModel, nodeDocumentGroups, nodeArtifacts, openTopologyDocumentPicker, openEditDocumentModal, effectiveCanEdit],
+      [flowLayoutModel, nodeDocumentGroups, nodeArtifacts, openTopologyDocumentPicker, openRootPromptCreator, openEditDocumentModal, effectiveCanEdit, detail.systemPrompt, detail.systemPromptTitle, detail.systemPrompts],
   );
   const [flowNodes, setFlowNodes, onFlowNodesChange] = useNodesState(initialFlowNodes);
   const flowEdges = useMemo(() => buildFlowEdges(detail.topology.edges, flowLayoutModel), [detail.topology.edges, flowLayoutModel]);
@@ -1461,13 +1608,17 @@ export function ThreadPage({
           nodeArtifacts.get(flowLayoutModel.rootNode!.id) ?? [],
           effectiveCanEdit,
           openTopologyDocumentPicker,
+          openRootPromptCreator,
           openEditDocumentModal,
+          detail.systemPrompt,
+          detail.systemPromptTitle,
+          detail.systemPrompts,
         );
         if (!updated) return currentNodes;
         return currentNodes.map((n) => (n.id === ROOT_GROUP_ID ? updated : n));
       });
     },
-    [onFlowNodesChange, flowLayoutModel.rootNode, setFlowNodes, nodeDocumentGroups, nodeArtifacts, effectiveCanEdit, openTopologyDocumentPicker, openEditDocumentModal],
+    [onFlowNodesChange, flowLayoutModel.rootNode, setFlowNodes, nodeDocumentGroups, nodeArtifacts, effectiveCanEdit, openTopologyDocumentPicker, openRootPromptCreator, openEditDocumentModal, detail.systemPrompt, detail.systemPromptTitle, detail.systemPrompts],
   );
 
   useEffect(() => {
@@ -1483,7 +1634,10 @@ export function ThreadPage({
   }, [detail.matrix.cells]);
 
   const filteredConcerns = useMemo(
-    () => detail.matrix.concerns.filter((c) => visibleConcerns.has(c.name)),
+    () => {
+      const visibleMatrixConcerns = normalizeMatrixConcerns(detail.matrix.concerns);
+      return visibleMatrixConcerns.filter((c) => visibleConcerns.has(c.name));
+    },
     [detail.matrix.concerns, visibleConcerns],
   );
 
@@ -1565,12 +1719,28 @@ export function ThreadPage({
   }, [documentModal, detail.matrix.cells]);
 
   const editingDocumentForModal = useMemo(() => {
-    if (!documentModal || documentModal.mode !== "edit" || !docModalEditHash) return null;
-    return detail.matrix.documents.find((doc) => doc.hash === docModalEditHash) ?? null;
-  }, [documentModal, docModalEditHash, detail.matrix.documents]);
+    const isPromptEditMode = documentModal?.refType === "Prompt" && Boolean(docModalEditHash);
+    if (!documentModal || (documentModal.mode !== "edit" && !isPromptEditMode) || !docModalEditHash) return null;
+
+    if (documentModal.refType === "Prompt") {
+      const existingPrompt = detail.systemPrompts.find((prompt) => prompt.hash === docModalEditHash);
+      if (!existingPrompt) return null;
+      return {
+        hash: existingPrompt.hash,
+        title: existingPrompt.title,
+        kind: "Prompt" as const,
+        language: "en",
+        text: existingPrompt.text,
+        sourceType: "local",
+      };
+    }
+
+    return detail.matrix.documents.find((doc) => doc.hash === docModalEditHash && doc.kind === documentModal.refType) ?? null;
+  }, [documentModal, docModalEditHash, detail.matrix.documents, detail.systemPrompts]);
 
   const isEditDocumentModalPristine = useMemo(() => {
-    if (!documentModal || documentModal.mode !== "edit" || !editingDocumentForModal) return false;
+    const isPromptEditMode = documentModal?.refType === "Prompt" && Boolean(docModalEditHash);
+    if (!documentModal || (documentModal.mode !== "edit" && !isPromptEditMode) || !editingDocumentForModal) return false;
     const existing = editingDocumentForModal;
     const existingParsed = parseDocumentText(existing.text);
     const existingSourceType = existing.sourceType ?? "local";
@@ -1732,6 +1902,10 @@ export function ThreadPage({
 
   function switchToDocumentCreateMode() {
     if (!documentModal || !effectiveCanEdit) return;
+    if (documentModal.refType === "Prompt") {
+      setDocModalValidationError("Prompt is managed with a dedicated create flow.");
+      return;
+    }
     if (documentModal.selectedConcerns.length === 0) {
       setDocModalValidationError("Choose one or more concerns before creating.");
       return;
@@ -1747,7 +1921,7 @@ export function ThreadPage({
         refType: documentModal.refType,
         concern: effectiveConcern,
         concerns,
-        kindFilter: documentModal.refType,
+        kindFilter: "All",
       },
       "create",
     );
@@ -1825,6 +1999,14 @@ export function ThreadPage({
       documentModal.selectedConcern,
       documentModal.selectedConcerns,
     );
+    const isPrompt = documentModal.refType === "Prompt";
+
+    if (isPrompt) {
+      if (concerns.length !== 1 || effectiveConcern !== SYSTEM_PROMPT_CONCERN) {
+        setDocModalValidationError("Prompt must be attached to the system prompt concern.");
+        return;
+      }
+    }
 
     if (concerns.length === 0) {
       setDocModalValidationError("Choose one or more concerns before creating.");
@@ -1840,7 +2022,7 @@ export function ThreadPage({
     const description = docModalDescription.trim();
     const language = DEFAULT_DOCUMENT_LANGUAGE;
     const body = docModalBody;
-    const sourceType = docModalSourceType;
+    const sourceType: DocSourceType = isPrompt ? "local" : docModalSourceType;
     const sourceUrl = docModalSourceUrl.trim();
     const sourceStatus = getIntegrationStatus(integrationStatuses, sourceType);
 
@@ -1911,7 +2093,10 @@ export function ThreadPage({
   async function handleReplaceDocument() {
     if (!documentModal || !docModalEditHash || !onReplaceMatrixDocument) return;
 
-    const existing = detail.matrix.documents.find((entry) => entry.hash === docModalEditHash);
+    const isPromptEdit = documentModal.refType === "Prompt";
+    const existing = isPromptEdit
+      ? detail.systemPrompts.find((prompt) => prompt.hash === docModalEditHash) ?? null
+      : detail.matrix.documents.find((entry) => entry.hash === docModalEditHash);
     if (!existing) {
       setDocumentModalError("Source document not found.");
       return;
@@ -1922,7 +2107,7 @@ export function ThreadPage({
     const description = docModalDescription.trim();
     const language = docModalLanguage.trim() || "en";
     const body = docModalBody;
-    const sourceType = existing.sourceType ?? "local";
+    const sourceType = isPromptEdit ? "local" : (existing.sourceType ?? "local");
     const sourceStatus = getIntegrationStatus(integrationStatuses, sourceType);
     const isRemoteDocument = sourceType !== "local";
 
@@ -1943,11 +2128,13 @@ export function ThreadPage({
     }
 
     const parsed = parseDocumentText(existing.text);
+    const existingTitle = existing.title;
+    const existingLanguage = isPromptEdit ? "en" : existing.language;
     const next: MatrixDocumentReplaceInput = {};
-    if (title !== existing.title) next.title = title;
-    if (language !== existing.language) next.language = language;
+    if (title !== existingTitle) next.title = title;
+    if (language !== existingLanguage) next.language = language;
     if (!isRemoteDocument) {
-      const nextName = name === (parsed.name || deriveDocumentName(existing.title)) ? undefined : name;
+      const nextName = name === (parsed.name || deriveDocumentName(existingTitle)) ? undefined : name;
       if (typeof nextName === "string") next.name = nextName;
       const nextDescription = description === (parsed.description || "") ? undefined : description;
       if (typeof nextDescription === "string") next.description = nextDescription;
@@ -2110,11 +2297,11 @@ export function ThreadPage({
     if (!documentModal) return null;
 
     const fullscreenContainer = isFullscreen ? fullscreenRef.current : null;
-    const isCreateMode = documentModal.mode === "create";
-    const isEditMode = documentModal.mode === "edit";
-    const editingDocument = isEditMode
-      ? detail.matrix.documents.find((doc) => doc.hash === docModalEditHash)
-      : null;
+    const isPromptModal = documentModal.refType === "Prompt";
+    const hasPromptEditMode = isPromptModal && Boolean(docModalEditHash);
+    const isCreateMode = documentModal.mode === "create" && !hasPromptEditMode;
+    const isEditMode = documentModal.mode === "edit" || hasPromptEditMode;
+    const editingDocument = isEditMode ? editingDocumentForModal : null;
     const activeSourceType = isEditMode ? (editingDocument?.sourceType ?? "local") : docModalSourceType;
     const activeSourceStatus = getIntegrationStatus(integrationStatuses, activeSourceType);
     const isRemoteSource = activeSourceType !== "local";
@@ -2126,14 +2313,16 @@ export function ThreadPage({
     const showMarkdownFields = activeSourceType === "local";
     const isSaveDisabled =
       isDocumentModalBusy ||
-      (isRemoteSource && !sourceConnected && (documentModal.mode === "create" || documentModal.mode === "edit"));
+      (isRemoteSource && !sourceConnected && (isCreateMode || isEditMode));
     const renderConcernPicker = () => {
-      if (detail.matrix.concerns.length === 0) return null;
+      if (isPromptModal) return null;
+      const visibleMatrixConcerns = normalizeMatrixConcerns(detail.matrix.concerns);
+      if (visibleMatrixConcerns.length === 0) return null;
       return (
         <div className="thread-doc-concern thread-doc-concern--multi">
           <span className="field-label">Concerns</span>
           <div className="thread-doc-concern-list">
-            {detail.matrix.concerns.map((concern) => {
+            {visibleMatrixConcerns.map((concern) => {
               const checked = documentModal.selectedConcerns.includes(concern.name);
               return (
                 <label key={concern.name} className="thread-doc-concern-option">
@@ -2173,11 +2362,15 @@ export function ThreadPage({
         <div className="modal thread-doc-picker">
           <div className="thread-doc-picker-header">
             <h3 className="modal-title">
-              {documentModal.mode === "create"
-                ? "Create Document"
-                : documentModal.mode === "edit"
-                  ? "Edit Document"
-                  : "Add Document"}
+                {isCreateMode
+                  ? isPromptModal
+                    ? "Create Prompt"
+                    : "Create Document"
+                  : isEditMode
+                    ? isPromptModal
+                      ? "Edit Prompt"
+                      : "Edit Document"
+                    : "Add Document"}
             </h3>
             <button
               className="btn-icon thread-card-action"
@@ -2289,12 +2482,13 @@ export function ThreadPage({
                     value={activeSourceType}
                     onChange={(event) => {
                       if (!isEditMode) {
+                        if (isPromptModal) return;
                         const nextSourceType = event.target.value as DocSourceType;
                         setDocModalSourceType(nextSourceType);
                         setDocModalSourceUrl("");
                       }
                     }}
-                    disabled={isEditMode}
+                    disabled={isEditMode || isPromptModal}
                   >
                     {availableSourceTypes.map((sourceType) => {
                       const isRemote = sourceType !== "local";
@@ -2498,7 +2692,7 @@ export function ThreadPage({
                       ? "Create"
                       : "Save changes"}
                 </button>
-                {documentModal.mode === "edit" && (
+                {documentModal.mode === "edit" && !isPromptModal && (
                   <button
                     className="btn btn-secondary"
                     type="button"
@@ -2701,7 +2895,7 @@ export function ThreadPage({
           <>
             <div className="matrix-concern-filter">
               <span className="matrix-concern-filter-label">Concerns</span>
-              {detail.matrix.concerns.map((c) => (
+              {normalizeMatrixConcerns(detail.matrix.concerns).map((c) => (
                 <label
                   key={c.name}
                   className={`matrix-concern-chip ${visibleConcerns.has(c.name) ? "matrix-concern-chip--active" : ""}`}

@@ -127,6 +127,13 @@ type MatrixRefMutationResponse = {
   cell?: MatrixCell;
   cells?: MatrixCell[];
   messages?: ChatMessage[];
+  systemPrompt?: string | null;
+  systemPromptTitle?: string | null;
+  systemPrompts?: Array<{
+    hash: string;
+    title: string;
+    text: string;
+  }>;
 };
 
 interface MatrixDocumentCreateResponse {
@@ -135,6 +142,13 @@ interface MatrixDocumentCreateResponse {
   cell?: MatrixCell;
   cells?: MatrixCell[];
   messages?: ChatMessage[];
+  systemPrompt?: string | null;
+  systemPromptTitle?: string | null;
+  systemPrompts?: Array<{
+    hash: string;
+    title: string;
+    text: string;
+  }>;
 }
 
 interface MatrixDocumentReplaceResponse {
@@ -143,6 +157,13 @@ interface MatrixDocumentReplaceResponse {
   document: MatrixDocument;
   replacedRefs: number;
   messages?: ChatMessage[];
+  systemPrompt?: string | null;
+  systemPromptTitle?: string | null;
+  systemPrompts?: Array<{
+    hash: string;
+    title: string;
+    text: string;
+  }>;
 }
 
 function normalizeMutationCells(response: MatrixRefMutationResponse): MatrixCell[] {
@@ -930,13 +951,18 @@ function ThreadRoute({ isAuthenticated }: { isAuthenticated: boolean }) {
           return { error: await readError(res, "Failed to add matrix document") };
         }
         const data = (await res.json()) as MatrixRefMutationResponse;
+        const hasSystemPromptUpdate =
+          typeof data.systemPrompt !== "undefined" || typeof data.systemPromptTitle !== "undefined" || typeof data.systemPrompts !== "undefined";
         const nextCells = normalizeMutationCells(data);
         setDetail((prev) => (
           prev
             ? {
                 ...prev,
                 systemId: data.systemId,
-                matrix: { ...prev.matrix, cells: applyMutationCells(prev.matrix.cells, nextCells) },
+                ...(hasSystemPromptUpdate ? {} : { matrix: { ...prev.matrix, cells: applyMutationCells(prev.matrix.cells, nextCells) } }),
+                ...(typeof data.systemPrompt === "undefined" ? {} : { systemPrompt: data.systemPrompt }),
+                ...(typeof data.systemPromptTitle === "undefined" ? {} : { systemPromptTitle: data.systemPromptTitle }),
+                ...(typeof data.systemPrompts === "undefined" ? {} : { systemPrompts: data.systemPrompts }),
                 chat: {
                   ...prev.chat,
                   messages: mergeChatMessages(prev.chat.messages, data.messages ?? []),
@@ -959,13 +985,18 @@ function ThreadRoute({ isAuthenticated }: { isAuthenticated: boolean }) {
           return { error: await readError(res, "Failed to remove matrix document") };
         }
         const data = (await res.json()) as MatrixRefMutationResponse;
+        const hasSystemPromptUpdate =
+          typeof data.systemPrompt !== "undefined" || typeof data.systemPromptTitle !== "undefined" || typeof data.systemPrompts !== "undefined";
         const nextCells = normalizeMutationCells(data);
         setDetail((prev) => (
           prev
             ? {
                 ...prev,
                 systemId: data.systemId,
-                matrix: { ...prev.matrix, cells: applyMutationCells(prev.matrix.cells, nextCells) },
+                ...(hasSystemPromptUpdate ? {} : { matrix: { ...prev.matrix, cells: applyMutationCells(prev.matrix.cells, nextCells) } }),
+                ...(typeof data.systemPrompt === "undefined" ? {} : { systemPrompt: data.systemPrompt }),
+                ...(typeof data.systemPromptTitle === "undefined" ? {} : { systemPromptTitle: data.systemPromptTitle }),
+                ...(typeof data.systemPrompts === "undefined" ? {} : { systemPrompts: data.systemPrompts }),
                 chat: {
                   ...prev.chat,
                   messages: mergeChatMessages(prev.chat.messages, data.messages ?? []),
@@ -988,14 +1019,18 @@ function ThreadRoute({ isAuthenticated }: { isAuthenticated: boolean }) {
           return { error: await readError(res, "Failed to create matrix document") };
         }
         const data = (await res.json()) as MatrixDocumentCreateResponse;
+        const hasSystemPromptUpdate =
+          typeof data.systemPrompt !== "undefined" || typeof data.systemPromptTitle !== "undefined" || typeof data.systemPrompts !== "undefined";
         setDetail((prev) => {
           if (!prev) return prev;
+          const isPrompt = payload.kind === "Prompt";
+          const shouldUpdateDocumentCollections = !hasSystemPromptUpdate && !isPrompt;
           const nextCells = normalizeMutationCells(data);
           const attachConcerns = payload.attach ? getAttachConcerns(payload.attach) : [];
           const fallbackCells =
-            nextCells.length > 0
+            shouldUpdateDocumentCollections && nextCells.length > 0
               ? nextCells
-              : payload.attach && attachConcerns.length > 0
+              : shouldUpdateDocumentCollections && payload.attach && attachConcerns.length > 0
                 ? buildFallbackAttachedCells(
                     prev.matrix.cells,
                     payload.attach.nodeId,
@@ -1003,17 +1038,23 @@ function ThreadRoute({ isAuthenticated }: { isAuthenticated: boolean }) {
                     payload.attach.refType,
                     data.document,
                   )
-                : data.cell
-                  ? [data.cell]
-                  : [];
+                : nextCells;
+          const shouldUpdateMatrixCells = shouldUpdateDocumentCollections && !isPrompt;
 
           return {
             ...prev,
             systemId: data.systemId,
+            ...(typeof data.systemPrompt === "undefined" ? {} : { systemPrompt: data.systemPrompt }),
+            ...(typeof data.systemPromptTitle === "undefined" ? {} : { systemPromptTitle: data.systemPromptTitle }),
+            ...(typeof data.systemPrompts === "undefined" ? {} : { systemPrompts: data.systemPrompts }),
             matrix: {
               ...prev.matrix,
-              documents: upsertMatrixDocument(prev.matrix.documents, data.document),
-              cells: applyMutationCells(prev.matrix.cells, fallbackCells),
+              ...(shouldUpdateDocumentCollections
+                ? { documents: upsertMatrixDocument(prev.matrix.documents, data.document) }
+                : {}),
+              ...(shouldUpdateMatrixCells
+                ? { cells: applyMutationCells(prev.matrix.cells, fallbackCells) }
+                : {}),
             },
             chat: {
               ...prev.chat,
@@ -1036,23 +1077,33 @@ function ThreadRoute({ isAuthenticated }: { isAuthenticated: boolean }) {
           return { error: await readError(res, "Failed to replace matrix document") };
         }
         const data = (await res.json()) as MatrixDocumentReplaceResponse;
+        const hasSystemPromptUpdate =
+          typeof data.systemPrompt !== "undefined" || typeof data.systemPromptTitle !== "undefined" || typeof data.systemPrompts !== "undefined";
         setDetail((prev) => {
           if (!prev) return prev;
+          const shouldUpdateDocumentCollections = !hasSystemPromptUpdate;
           return {
             ...prev,
             systemId: data.systemId,
+            ...(typeof data.systemPrompt === "undefined" ? {} : { systemPrompt: data.systemPrompt }),
+            ...(typeof data.systemPromptTitle === "undefined" ? {} : { systemPromptTitle: data.systemPromptTitle }),
+            ...(typeof data.systemPrompts === "undefined" ? {} : { systemPrompts: data.systemPrompts }),
             matrix: {
               ...prev.matrix,
-              documents: replaceMatrixDocumentInGlobalList(
-                prev.matrix.documents,
-                data.oldHash,
-                data.document,
-              ),
-              cells: replaceMatrixDocumentReferences(
-                prev.matrix.cells,
-                data.oldHash,
-                data.document,
-              ),
+              ...(shouldUpdateDocumentCollections
+                ? {
+                    documents: replaceMatrixDocumentInGlobalList(
+                      prev.matrix.documents,
+                      data.oldHash,
+                      data.document,
+                    ),
+                    cells: replaceMatrixDocumentReferences(
+                      prev.matrix.cells,
+                      data.oldHash,
+                      data.document,
+                    ),
+                  }
+                : {}),
             },
             chat: {
               ...prev.chat,
@@ -1123,6 +1174,7 @@ function ThreadRoute({ isAuthenticated }: { isAuthenticated: boolean }) {
         const contextSuffix = suffixes.length > 0 ? ` (${suffixes.join(", ")})` : "";
         void localAgent.start({
           prompt: `Project: ${handle}/${projectName}, Thread: ${threadId}. Action: ${actionLabel}${contextSuffix}`,
+          systemPrompt: detail.systemPrompt ?? undefined,
           allowedTools: ["Read", "Grep", "Glob", "Bash", "Edit", "Write"],
         }).catch(() => {
           // Session failures are intentionally non-blocking for chat UX.

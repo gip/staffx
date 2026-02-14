@@ -51,12 +51,13 @@ A **cross-cutting dimension** of the system (e.g. "Authentication", "Logging", "
 
 ### Document
 
-A **content-addressed input document**, deduplicated by hash. Two kinds:
+A **content-addressed input document**, deduplicated by hash. Three kinds:
 
 | Kind | Purpose |
 |------|---------|
 | `Document` | General docs, requirements, and design notes |
 | `Skill` | Domain knowledge / capability |
+| `Prompt` | System-level instructions used as agent system prompt |
 
 - Table: `documents` — composite PK `(system_id, hash)`
 - `supersedes`: hash of the previous version (for doc evolution)
@@ -67,8 +68,10 @@ A **content-addressed input document**, deduplicated by hash. Two kinds:
 The **node x concern grid**. Each cell links to documents by ref type. For example, node "Auth Service" + concern "Security" might reference a Document doc and a Skill doc.
 
 - Table: `matrix_refs` — composite PK `(system_id, node_id, concern, ref_type, doc_hash)`
-- `ref_type` mirrors `doc_kind`: `Document`, `Skill`
+- `ref_type` mirrors `doc_kind`: `Document`, `Skill`, `Prompt`
 - Materialized view `matrix_view` pivots refs into `document_refs`, `skill_refs` jsonb arrays per cell
+
+System prompts use `ref_type = 'Prompt'`, must be attached to the system root node, and use the hidden concern `__system_prompt__`.
 
 ### Artifact
 
