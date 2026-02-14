@@ -1003,17 +1003,17 @@ export function ThreadPage({
   }, []);
 
   useEffect(() => {
-    const onFullscreenChange = () => {
-      const active = document.fullscreenElement === fullscreenRef.current;
-      setIsFullscreen(active);
-      if (active) {
-        setTimeout(() => reactFlowRef.current?.fitView({ duration: 200 }), 50);
-      }
+    if (!isFullscreen || documentModal) return;
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      setIsFullscreen(false);
     };
 
-    document.addEventListener("fullscreenchange", onFullscreenChange);
-    return () => document.removeEventListener("fullscreenchange", onFullscreenChange);
-  }, []);
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [isFullscreen, documentModal]);
 
   const nodeDocumentGroups = useMemo(() => {
     const groups = new Map<string, MatrixDocGroup>();
@@ -1422,31 +1422,18 @@ export function ThreadPage({
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [documentModal, canCloseDocumentModalWithEsc, resetDocumentModal]);
 
-  async function enterFullscreen(tab: FullscreenTab) {
+  function enterFullscreen(tab: FullscreenTab) {
     setFullscreenTab(tab);
-
-    if (isFullscreen) {
-      if (tab === "topology") {
-        setTimeout(() => reactFlowRef.current?.fitView({ duration: 200 }), 50);
-      }
-      return;
+    if (!isFullscreen) {
+      setIsFullscreen(true);
     }
-
-    try {
-      await fullscreenRef.current?.requestFullscreen();
-    } catch {
-      // Ignore fullscreen API failures silently.
+    if (tab === "topology") {
+      setTimeout(() => reactFlowRef.current?.fitView({ duration: 200 }), 50);
     }
   }
 
-  async function exitFullscreen() {
-    try {
-      if (document.fullscreenElement) {
-        await document.exitFullscreen();
-      }
-    } catch {
-      // Ignore fullscreen API failures silently.
-    }
+  function exitFullscreen() {
+    setIsFullscreen(false);
   }
 
   async function handleSaveTitle() {
