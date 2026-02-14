@@ -1220,7 +1220,6 @@ export function ThreadPage({
   const [docModalName, setDocModalName] = useState("");
   const [docModalTitle, setDocModalTitle] = useState("");
   const [docModalDescription, setDocModalDescription] = useState("");
-  const [docModalLanguage, setDocModalLanguage] = useState("en");
   const [docModalBody, setDocModalBody] = useState("");
   const [docModalSourceType, setDocModalSourceType] = useState<DocSourceType>("local");
   const [docModalSourceUrl, setDocModalSourceUrl] = useState("");
@@ -1378,7 +1377,7 @@ export function ThreadPage({
     setDocModalName("");
     setDocModalTitle("");
     setDocModalDescription("");
-    setDocModalLanguage(DEFAULT_DOCUMENT_LANGUAGE);
+
     setDocModalBody("");
     setDocModalSourceType("local");
     setDocModalSourceUrl("");
@@ -1424,7 +1423,7 @@ export function ThreadPage({
         setDocModalName("");
         setDocModalTitle("");
         setDocModalDescription("");
-        setDocModalLanguage(DEFAULT_DOCUMENT_LANGUAGE);
+    
         setDocModalBody("");
         setDocModalSourceType("local");
         setDocModalSourceUrl("");
@@ -1436,7 +1435,7 @@ export function ThreadPage({
           setDocModalName(existingName || deriveDocumentName(existingDocument.title));
           setDocModalTitle(existingDocument.title);
           setDocModalDescription(parsed.description);
-          setDocModalLanguage(existingDocument.language);
+
           setDocModalBody(parsed.body);
           setDocModalSourceType(existingDocument.sourceType ?? "local");
           setDocModalSourceUrl(existingDocument.sourceUrl ?? "");
@@ -1451,7 +1450,7 @@ export function ThreadPage({
             setDocModalName(existingName || deriveDocumentName(existingPrompt.title));
             setDocModalTitle(existingPrompt.title);
             setDocModalDescription(parsed.description);
-            setDocModalLanguage("en");
+
             setDocModalBody(parsed.body);
             setDocModalSourceType("local");
             setDocModalSourceUrl("");
@@ -1466,7 +1465,7 @@ export function ThreadPage({
             setDocModalName(fallbackName || "System prompt");
             setDocModalTitle(detail.systemPromptTitle || "");
             setDocModalDescription(parsed.description);
-            setDocModalLanguage("en");
+
             setDocModalBody(parsed.body);
             setDocModalSourceType("local");
             setDocModalSourceUrl("");
@@ -1477,7 +1476,7 @@ export function ThreadPage({
         setDocModalName("");
         setDocModalTitle("");
         setDocModalDescription("");
-        setDocModalLanguage(DEFAULT_DOCUMENT_LANGUAGE);
+    
         setDocModalBody("");
         setDocModalSourceType("local");
         setDocModalSourceUrl("");
@@ -1485,7 +1484,7 @@ export function ThreadPage({
         setDocModalName("");
         setDocModalTitle("");
         setDocModalDescription("");
-        setDocModalLanguage(DEFAULT_DOCUMENT_LANGUAGE);
+    
         setDocModalBody("");
         setDocModalSourceType("local");
         setDocModalSourceUrl("");
@@ -1731,7 +1730,8 @@ export function ThreadPage({
         kind: "Prompt" as const,
         language: "en",
         text: existingPrompt.text,
-        sourceType: "local",
+        sourceType: "local" as DocSourceType,
+        sourceUrl: null as string | null,
       };
     }
 
@@ -1756,7 +1756,6 @@ export function ThreadPage({
         docModalTitle === existing.title &&
         docModalName === existingName &&
         docModalDescription === existingDescription &&
-        docModalLanguage === existing.language &&
         docModalBody === existingBody &&
         docModalSourceType === existingSourceType &&
         (docModalSourceUrl ?? "") === baselineSourceUrl
@@ -1765,11 +1764,10 @@ export function ThreadPage({
 
     return (
       docModalTitle === existing.title &&
-      docModalLanguage === existing.language &&
       docModalSourceType === existingSourceType &&
       (docModalSourceUrl ?? "") === baselineSourceUrl
     );
-  }, [documentModal, docModalBody, docModalDescription, docModalLanguage, docModalName, docModalSourceType, docModalSourceUrl, docModalTitle, editingDocumentForModal]);
+  }, [documentModal, docModalBody, docModalDescription, docModalName, docModalSourceType, docModalSourceUrl, docModalTitle, editingDocumentForModal]);
 
   const availableDocs = useMemo(() => {
     if (!documentModal || documentModal.mode !== "browse") return [];
@@ -1797,7 +1795,6 @@ export function ThreadPage({
       return (
         doc.title.toLowerCase().includes(query) ||
         doc.hash.toLowerCase().includes(query) ||
-        doc.language.toLowerCase().includes(query) ||
         doc.text.toLowerCase().includes(query)
       );
     });
@@ -1929,7 +1926,7 @@ export function ThreadPage({
     setDocModalDescription("");
     setDocModalName("");
     setDocModalBody("");
-    setDocModalLanguage(DEFAULT_DOCUMENT_LANGUAGE);
+
   }
 
   async function handleAttachDocument(doc: MatrixDocument) {
@@ -2105,9 +2102,8 @@ export function ThreadPage({
     const title = docModalTitle.trim();
     const name = docModalName.trim();
     const description = docModalDescription.trim();
-    const language = docModalLanguage.trim() || "en";
     const body = docModalBody;
-    const sourceType = isPromptEdit ? "local" : (existing.sourceType ?? "local");
+    const sourceType: DocSourceType = isPromptEdit ? "local" : ((existing as MatrixDocument).sourceType ?? "local");
     const sourceStatus = getIntegrationStatus(integrationStatuses, sourceType);
     const isRemoteDocument = sourceType !== "local";
 
@@ -2129,10 +2125,8 @@ export function ThreadPage({
 
     const parsed = parseDocumentText(existing.text);
     const existingTitle = existing.title;
-    const existingLanguage = isPromptEdit ? "en" : existing.language;
     const next: MatrixDocumentReplaceInput = {};
     if (title !== existingTitle) next.title = title;
-    if (language !== existingLanguage) next.language = language;
     if (!isRemoteDocument) {
       const nextName = name === (parsed.name || deriveDocumentName(existingTitle)) ? undefined : name;
       if (typeof nextName === "string") next.name = nextName;
@@ -2453,7 +2447,7 @@ export function ThreadPage({
                       <div key={doc.hash} className="thread-doc-picker-row">
                         <div>
                           <strong>{doc.title}</strong>
-                          <p>{doc.kind} · {doc.language}</p>
+                          <p>{doc.kind}</p>
                         </div>
                         <button
                           className="btn"
@@ -2607,17 +2601,6 @@ export function ThreadPage({
                         value={docModalDescription}
                         onChange={(event) => {
                           setDocModalDescription(event.target.value);
-                          setDocModalValidationError("");
-                        }}
-                      />
-                    </div>
-                    <div className="field">
-                      <label className="field-label">Language</label>
-                      <input
-                        className="field-input"
-                        value={docModalLanguage}
-                        onChange={(event) => {
-                          setDocModalLanguage(event.target.value);
                           setDocModalValidationError("");
                         }}
                       />
