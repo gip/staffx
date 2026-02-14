@@ -263,12 +263,14 @@ interface ThreadPageProps {
   onReplaceMatrixDocument?: (documentHash: string, payload: MatrixDocumentReplaceInput) => Promise<MutationResult<MatrixDocumentReplaceResponse>>;
   onSendChatMessage?: (payload: { content: string }) => Promise<MutationResult<{ messages: ChatMessage[] }>>;
   onRunAssistant?: (payload: AssistantRunRequest) => Promise<MutationResult<AssistantRunResponse>>;
+  assistantRunDisabledMessage?: string | null;
   onCloseThread?: () => Promise<MutationResult<{ thread: ThreadDetail }>>;
   onCommitThread?: () => Promise<MutationResult<{ thread: ThreadDetail }>>;
   onCloneThread?: (payload: { title: string; description: string }) => Promise<MutationResult<{ thread: ThreadDetail }>>;
   integrationStatuses?: IntegrationStatusRecord;
 }
 
+const AGENT_OPTIONS = ["Opus 4.6"] as const;
 const DOC_TYPES: DocKind[] = ["Document", "Skill"];
 const SOURCE_TYPE_TO_PROVIDER: Record<Exclude<DocSourceType, "local">, IntegrationProvider> = {
   notion: "notion",
@@ -1086,6 +1088,7 @@ export function ThreadPage({
   onCommitThread,
   onCloneThread,
   integrationStatuses,
+  assistantRunDisabledMessage,
 }: ThreadPageProps) {
   const [isTopologyCollapsed, setIsTopologyCollapsed] = useState(false);
   const [isMatrixCollapsed, setIsMatrixCollapsed] = useState(true);
@@ -1109,7 +1112,9 @@ export function ThreadPage({
   const [isSendingChat, setIsSendingChat] = useState(false);
   const [assistantError, setAssistantError] = useState("");
   const [assistantSummary, setAssistantSummary] = useState("");
+  const [selectedAgentModel, setSelectedAgentModel] = useState<string>(AGENT_OPTIONS[0]);
   const [isRunningAssistant, setIsRunningAssistant] = useState(false);
+  const isAssistantRunEnabled = onRunAssistant && !assistantRunDisabledMessage;
   const [isClosingThread, setIsClosingThread] = useState(false);
   const [isCommittingThread, setIsCommittingThread] = useState(false);
   const [isCloningThread, setIsCloningThread] = useState(false);
@@ -2044,7 +2049,7 @@ export function ThreadPage({
   }
 
   async function handleRunAssistant(mode: AssistantRunMode, planActionId: string | null = null) {
-    if (!onRunAssistant || !effectiveCanEdit) return;
+    if (!onRunAssistant || !effectiveCanEdit || !isAssistantRunEnabled) return;
 
     setIsRunningAssistant(true);
     setAssistantError("");
@@ -2882,37 +2887,6 @@ export function ThreadPage({
 
             {effectiveCanEdit ? (
               <div className="thread-chat-form">
-                {onRunAssistant ? (
-                  <div className="thread-chat-run-actions">
-                    <button
-                      className="btn btn-secondary thread-chat-run-action"
-                      type="button"
-                      onClick={() => handleRunAssistant("direct")}
-                      disabled={isRunningAssistant}
-                    >
-                      Run
-                    </button>
-                    <button
-                      className="btn btn-secondary thread-chat-run-action"
-                      type="button"
-                      onClick={() => handleRunAssistant("plan")}
-                      disabled={isRunningAssistant}
-                    >
-                      Plan first
-                    </button>
-                    {pendingPlanActionId && (
-                      <button
-                        className="btn btn-secondary thread-chat-run-action"
-                        type="button"
-                        onClick={() => handleRunAssistant("direct", pendingPlanActionId)}
-                        disabled={isRunningAssistant}
-                      >
-                        Apply plan
-                      </button>
-                    )}
-                  </div>
-                ) : null}
-                {assistantSummary && <p className="thread-chat-run-summary">{assistantSummary}</p>}
                 <div className="thread-chat-input-row">
                   <textarea
                     className="field-input thread-chat-input"
@@ -2932,6 +2906,51 @@ export function ThreadPage({
                     <Send size={14} />
                   </button>
                 </div>
+                {assistantRunDisabledMessage ? <p className="thread-chat-platform-note">{assistantRunDisabledMessage}</p> : null}
+                {onRunAssistant ? (
+                  <div className="thread-chat-run-actions">
+                    <select
+                      className="field-input thread-chat-agent-select"
+                      value={selectedAgentModel}
+                      disabled={isRunningAssistant || !isAssistantRunEnabled}
+                      onChange={(event) => setSelectedAgentModel(event.target.value)}
+                      aria-label="Select agent model"
+                    >
+                      {AGENT_OPTIONS.map((model) => (
+                        <option key={model} value={model}>
+                          {model}
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      className="btn thread-chat-run-action"
+                      type="button"
+                      onClick={() => handleRunAssistant("direct")}
+                      disabled={isRunningAssistant || !isAssistantRunEnabled}
+                    >
+                      Run
+                    </button>
+                    <button
+                      className="btn thread-chat-run-action"
+                      type="button"
+                      onClick={() => handleRunAssistant("plan")}
+                      disabled={isRunningAssistant || !isAssistantRunEnabled}
+                    >
+                      Plan
+                    </button>
+                    {pendingPlanActionId && (
+                      <button
+                        className="btn thread-chat-run-action"
+                        type="button"
+                        onClick={() => handleRunAssistant("direct", pendingPlanActionId)}
+                        disabled={isRunningAssistant || !isAssistantRunEnabled}
+                      >
+                        Apply plan
+                      </button>
+                    )}
+                  </div>
+                ) : null}
+                {assistantSummary && <p className="thread-chat-run-summary">{assistantSummary}</p>}
                 {chatError && <p className="field-error">{chatError}</p>}
                 {assistantError && <p className="field-error">{assistantError}</p>}
                 {isRunningAssistant && <p>Agent running…</p>}
