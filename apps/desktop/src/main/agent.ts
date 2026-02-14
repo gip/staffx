@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
+import { appendFile } from "node:fs/promises";
+import { join } from "node:path";
 import { query, type Query, type SDKMessage } from "@anthropic-ai/claude-agent-sdk";
-import type { BrowserWindow } from "electron";
+import { app, type BrowserWindow } from "electron";
 
 interface ActiveAgent {
   id: string;
@@ -11,6 +13,26 @@ interface ActiveAgent {
 }
 
 const activeAgents = new Map<string, ActiveAgent>();
+const AGENT_LOG_PATH = join(app.getPath("userData"), "staffx_agent.log");
+
+type AgentLogPayload = {
+  threadId: string;
+  level: "info" | "error";
+  event: string;
+  data: Record<string, unknown>;
+};
+
+async function appendAgentLog(payload: AgentLogPayload) {
+  try {
+    const line = JSON.stringify({
+      ts: new Date().toISOString(),
+      ...payload,
+    });
+    await appendFile(AGENT_LOG_PATH, `${line}\n`, { encoding: "utf8" });
+  } catch (error) {
+    console.error("[agent-log] Failed to append", error);
+  }
+}
 
 interface StartAgentParams {
   prompt: string;
@@ -23,6 +45,7 @@ interface StartAgentParams {
 export function startAgent(win: BrowserWindow, params: StartAgentParams): string {
   const threadId = randomUUID();
   const abortController = new AbortController();
+  const messageSummaries: string[] = [];
 
   const q = query({
     prompt: params.prompt,
@@ -46,10 +69,47 @@ export function startAgent(win: BrowserWindow, params: StartAgentParams): string
   };
 
   activeAgents.set(threadId, agent);
+  void appendAgentLog({
+    threadId,
+    level: "info",
+    event: "start",
+    data: {
+      prompt: params.prompt,
+      cwd: params.cwd ?? process.cwd(),
+      allowedTools: params.allowedTools ?? ["Read", "Grep", "Glob", "Bash", "Edit", "Write"],
+      systemPrompt: params.systemPrompt ?? null,
+      model: params.model ?? null,
+    },
+  });
+
+  console.info("[agent] start", {
+    threadId,
+    prompt: params.prompt,
+    cwd: params.cwd ?? process.cwd(),
+    allowedTools: params.allowedTools ?? ["Read", "Grep", "Glob", "Bash", "Edit", "Write"],
+    model: params.model,
+    systemPrompt: params.systemPrompt,
+  });
 
   (async () => {
     try {
       for await (const message of q) {
+        if (typeof message === "object" && message !== null) {
+          const safeMessage = message as SDKMessage & { content?: unknown; text?: unknown };
+          if (typeof safeMessage.type === "string") {
+            const content = typeof safeMessage.content === "string"
+              ? safeMessage.content
+              : typeof safeMessage.text === "string"
+                ? safeMessage.text
+                : undefined;
+            messageSummaries.push(
+              content
+                ? `[${safeMessage.type}] ${content.slice(0, 400)}`
+                : `[${safeMessage.type}] ${JSON.stringify(safeMessage)}`,
+            );
+          }
+        }
+
         if (message.type === "system" && message.subtype === "init") {
           agent.sessionId = message.session_id;
         }
@@ -60,12 +120,60 @@ export function startAgent(win: BrowserWindow, params: StartAgentParams): string
       }
 
       agent.status = "completed";
+      void appendAgentLog({
+        threadId,
+        level: "info",
+        event: "done",
+        data: {
+          status: agent.status,
+          sessionId: agent.sessionId,
+          messageCount: messageSummaries.length,
+          messageSamples: messageSummaries.slice(-3),
+        },
+      });
+      console.info("[agent] done", {
+        threadId,
+        status: agent.status,
+        sessionId: agent.sessionId,
+        resultSamples: messageSummaries.slice(-3),
+        messageCount: messageSummaries.length,
+      });
     } catch (err: unknown) {
       if (abortController.signal.aborted) {
         agent.status = "cancelled";
+        void appendAgentLog({
+          threadId,
+          level: "info",
+          event: "cancelled",
+          data: {
+            status: agent.status,
+            sessionId: agent.sessionId,
+            messageCount: messageSummaries.length,
+          },
+        });
       } else {
         agent.status = "error";
         console.error(`Agent ${threadId} error:`, err);
+        void appendAgentLog({
+          threadId,
+          level: "error",
+          event: "error",
+          data: {
+            status: agent.status,
+            sessionId: agent.sessionId,
+            messageCount: messageSummaries.length,
+            messageSamples: messageSummaries.slice(-3),
+            error: err instanceof Error ? err.message : String(err),
+          },
+        });
+        console.error("[agent] done", {
+          threadId,
+          status: agent.status,
+          sessionId: agent.sessionId,
+          resultSamples: messageSummaries.slice(-3),
+          messageCount: messageSummaries.length,
+          error: String(err),
+        });
       }
     } finally {
       if (!win.isDestroyed()) {

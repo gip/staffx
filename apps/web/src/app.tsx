@@ -1101,6 +1101,7 @@ function ThreadRoute() {
         ));
         return data;
       }}
+      assistantRunDisabledMessage="Claude agent actions are currently available only on desktop."
       onCloseThread={async () => {
         try {
           const res = await apiFetch(

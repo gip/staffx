@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { Route, Routes, useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { useLocalAgent } from "./use-local-agent";
 import {
   AuthContext,
   useAuth,
@@ -781,6 +782,13 @@ function ThreadRoute({ isAuthenticated }: { isAuthenticated: boolean }) {
     notion: "disconnected",
     google: "disconnected",
   });
+  const localAgent = useLocalAgent();
+
+  useEffect(() => {
+    return () => {
+      localAgent.stop();
+    };
+  }, [localAgent.stop, handle, projectName, threadId]);
 
   const refreshIntegrationStatuses = useCallback(async () => {
     const nextStatuses: IntegrationStatusRecord = {
@@ -1078,6 +1086,7 @@ function ThreadRoute({ isAuthenticated }: { isAuthenticated: boolean }) {
               }
             : prev
         ));
+
         return data;
       }}
       onRunAssistant={async (payload) => {
@@ -1105,6 +1114,20 @@ function ThreadRoute({ isAuthenticated }: { isAuthenticated: boolean }) {
               }
             : prev
         ));
+
+        const actionLabel = payload.mode === "plan" ? "Plan" : "Run";
+        const suffixes = [
+          payload.chatMessageId ? `message: ${payload.chatMessageId}` : null,
+          payload.planActionId ? `plan action: ${payload.planActionId}` : null,
+        ].filter((item): item is string => Boolean(item));
+        const contextSuffix = suffixes.length > 0 ? ` (${suffixes.join(", ")})` : "";
+        void localAgent.start({
+          prompt: `Project: ${handle}/${projectName}, Thread: ${threadId}. Action: ${actionLabel}${contextSuffix}`,
+          allowedTools: ["Read", "Grep", "Glob", "Bash", "Edit", "Write"],
+        }).catch(() => {
+          // Session failures are intentionally non-blocking for chat UX.
+        });
+
         return data;
       }}
       onCloseThread={async () => {
