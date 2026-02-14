@@ -1,14 +1,48 @@
-import { app, BrowserWindow, ipcMain } from "electron";
+import { app, BrowserWindow, ipcMain, nativeImage } from "electron";
 import { join } from "node:path";
+import { existsSync } from "node:fs";
 import { startAgent, stopAgent, getAgentStatus } from "./agent.js";
 import { getAccessToken, getAuthState, login, logout, notifyRenderer } from "./auth.js";
 
 let mainWindow: BrowserWindow | null = null;
+let appIcon: Electron.NativeImage | null = null;
+
+function resolveIcon(): string | null {
+  const candidates = [
+    join(app.getAppPath(), "assets", "icon.png"),
+    join(process.resourcesPath, "assets", "icon.png"),
+    join(process.resourcesPath, "app.asar.unpacked", "assets", "icon.png"),
+    join(app.getAppPath(), "assets", "icon.icns"),
+    join(process.resourcesPath, "assets", "icon.icns"),
+  ];
+  return candidates.find((candidatePath) => existsSync(candidatePath)) ?? null;
+}
+
+function loadAppIcon() {
+  const iconPath = resolveIcon();
+  if (!iconPath) {
+    console.warn("StaffX icon not found, using Electron default icon.");
+    return;
+  }
+  const icon = nativeImage.createFromPath(iconPath);
+  if (icon.isEmpty()) {
+    console.warn(`Unable to load StaffX icon from ${iconPath}, using Electron default.`);
+    return;
+  }
+  appIcon = icon;
+}
 
 function createWindow() {
+  loadAppIcon();
+
+  if (process.platform === "darwin" && app.dock && appIcon) {
+    app.dock.setIcon(appIcon);
+  }
+
   mainWindow = new BrowserWindow({
     width: 1024,
     height: 768,
+    icon: appIcon ?? undefined,
     titleBarStyle: "hiddenInset",
     trafficLightPosition: { x: 16, y: 14 },
     webPreferences: {
