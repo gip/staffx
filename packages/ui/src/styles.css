@@ -1252,6 +1252,19 @@ a.project-card {
   color: var(--fg-muted);
 }
 
+.thread-topology-root-group-docs {
+  position: absolute;
+  top: 36px;
+  left: 12px;
+  right: 12px;
+  pointer-events: auto;
+}
+
+.thread-topology-root-group-docs .thread-topology-doc-section {
+  border-top: none;
+  padding-top: 0;
+}
+
 .thread-topology-node strong {
   font-size: 13px;
   font-weight: 600;

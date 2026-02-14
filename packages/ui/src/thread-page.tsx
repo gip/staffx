@@ -658,15 +658,126 @@ function TopologyFlowNode({ data }: NodeProps<TopologyFlowNodeData>) {
 
 interface RootGroupNodeData {
   name: string;
+  nodeId: string;
+  documents: MatrixDocGroup;
+  artifacts: ArtifactRef[];
+  canEdit: boolean;
+  onOpenDocPicker: (nodeId: string, refType: DocKind) => void;
+  onEditDoc: (doc: MatrixCellDoc, nodeId: string, concern: string) => void;
 }
 
 function RootGroupNode({ data }: NodeProps<RootGroupNodeData>) {
+  const hasContent = data.documents.document.length > 0 || data.documents.skill.length > 0 || data.artifacts.length > 0;
+
+  const renderChips = (docs: MatrixCellDoc[], kind: "document" | "skill") =>
+    docs.map((doc) => (
+      <div
+        className={`matrix-doc-chip matrix-doc-chip--${kind} ${doc.sourceType === "notion" || doc.sourceType === "google_doc" ? "matrix-doc-chip--external" : ""}`}
+        role={data.canEdit ? "button" : undefined}
+        tabIndex={data.canEdit ? 0 : -1}
+        key={`root-${doc.hash}-${doc.refType}`}
+        onClick={() => data.canEdit && data.onEditDoc(doc, data.nodeId, "")}
+        onKeyDown={(event) => {
+          if (!data.canEdit) return;
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            data.onEditDoc(doc, data.nodeId, "");
+          }
+        }}
+      >
+        <span>{doc.title}</span>
+        {doc.sourceType && doc.sourceType !== "local" && (
+          <span className={`matrix-doc-chip-source matrix-doc-chip-source--${doc.sourceType}`}>
+            {SOURCE_TYPE_LABELS[doc.sourceType]}
+          </span>
+        )}
+        {doc.sourceUrl ? (
+          <a
+            className="matrix-doc-open-source"
+            href={doc.sourceUrl}
+            target="_blank"
+            rel="noreferrer"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <ExternalLink size={12} />
+            Open source
+          </a>
+        ) : null}
+      </div>
+    ));
+
   return (
     <div className="thread-topology-root-group">
       <div className="thread-topology-root-group-label">
         <span className="thread-topology-root-group-badge">System</span>
         <span className="thread-topology-root-group-name">{data.name}</span>
       </div>
+      {(hasContent || data.canEdit) && (
+        <div className="thread-topology-root-group-docs">
+          <div className="thread-topology-doc-sections">
+            <div className="thread-topology-doc-section">
+              <div className="thread-topology-doc-section-header">
+                <span className="matrix-doc-group-label">Docs</span>
+                {data.canEdit && (
+                  <button
+                    className="btn-icon thread-topology-doc-add"
+                    type="button"
+                    aria-label={`Add Document to ${data.name}`}
+                    onClick={() => data.onOpenDocPicker(data.nodeId, "Document")}
+                    title="Add document"
+                  >
+                    <Plus size={12} />
+                  </button>
+                )}
+              </div>
+              <div className="thread-topology-doc-list">
+                {chunkIntoPairs(data.documents.document).map((row, rowIndex) => (
+                  <div key={`root-document-row-${rowIndex}`} className="matrix-doc-row">
+                    {renderChips(row, "document")}
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div className="thread-topology-doc-section">
+              <div className="thread-topology-doc-section-header">
+                <span className="matrix-doc-group-label">Skills</span>
+                {data.canEdit && (
+                  <button
+                    className="btn-icon thread-topology-doc-add"
+                    type="button"
+                    aria-label={`Add Skill to ${data.name}`}
+                    onClick={() => data.onOpenDocPicker(data.nodeId, "Skill")}
+                    title="Add skill"
+                  >
+                    <Plus size={12} />
+                  </button>
+                )}
+              </div>
+              <div className="thread-topology-doc-list">
+                {chunkIntoPairs(data.documents.skill).map((row, rowIndex) => (
+                  <div key={`root-skill-row-${rowIndex}`} className="matrix-doc-row">
+                    {renderChips(row, "skill")}
+                  </div>
+                ))}
+              </div>
+            </div>
+            {data.artifacts.length > 0 && (
+              <div className="thread-topology-doc-section">
+                <div className="thread-topology-doc-section-header">
+                  <span className="matrix-doc-group-label">Artifacts</span>
+                </div>
+                <div className="matrix-artifacts">
+                  {data.artifacts.map((artifact) => (
+                    <span key={artifact.id} className="matrix-artifact-badge">
+                      {artifact.type}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -839,7 +950,15 @@ function buildFlowNodes(
   });
 
   if (model.rootNode) {
-    const rootGroupNode = buildRootGroupNode(childFlowNodes, model.rootNode);
+    const rootGroupNode = buildRootGroupNode(
+      childFlowNodes,
+      model.rootNode,
+      nodeDocuments.get(model.rootNode.id) ?? { document: [], skill: [] },
+      nodeArtifacts.get(model.rootNode.id) ?? [],
+      canEdit,
+      onOpenDocPicker,
+      onEditDoc,
+    );
     if (rootGroupNode) {
       return [rootGroupNode, ...childFlowNodes];
     }
@@ -854,7 +973,15 @@ const ROOT_GROUP_TOP_PADDING = 112;
 const ESTIMATED_NODE_WIDTH = 240;
 const ESTIMATED_NODE_HEIGHT = 120;
 
-function buildRootGroupNode(childNodes: Node[], rootNode: TopologyNode): Node | null {
+function buildRootGroupNode(
+  childNodes: Node[],
+  rootNode: TopologyNode,
+  documents: MatrixDocGroup,
+  artifacts: ArtifactRef[],
+  canEdit: boolean,
+  onOpenDocPicker: (nodeId: string, refType: DocKind) => void,
+  onEditDoc: (doc: MatrixCellDoc, nodeId: string, concern: string) => void,
+): Node | null {
   if (childNodes.length === 0) return null;
 
   let minX = Infinity;
@@ -878,7 +1005,7 @@ function buildRootGroupNode(childNodes: Node[], rootNode: TopologyNode): Node | 
     id: ROOT_GROUP_ID,
     type: "rootGroup",
     position: { x: minX - ROOT_GROUP_PADDING, y: minY - ROOT_GROUP_TOP_PADDING },
-    data: { name: rootNode.name },
+    data: { name: rootNode.name, nodeId: rootNode.id, documents, artifacts, canEdit, onOpenDocPicker, onEditDoc },
     draggable: false,
     selectable: false,
     connectable: false,
@@ -1324,12 +1451,20 @@ export function ThreadPage({
       if (!needsRecalc) return;
       setFlowNodes((currentNodes) => {
         const childNodes = currentNodes.filter((n) => n.id !== ROOT_GROUP_ID);
-        const updated = buildRootGroupNode(childNodes, flowLayoutModel.rootNode!);
+        const updated = buildRootGroupNode(
+          childNodes,
+          flowLayoutModel.rootNode!,
+          nodeDocumentGroups.get(flowLayoutModel.rootNode!.id) ?? { document: [], skill: [] },
+          nodeArtifacts.get(flowLayoutModel.rootNode!.id) ?? [],
+          effectiveCanEdit,
+          openTopologyDocumentPicker,
+          openEditDocumentModal,
+        );
         if (!updated) return currentNodes;
         return currentNodes.map((n) => (n.id === ROOT_GROUP_ID ? updated : n));
       });
     },
-    [onFlowNodesChange, flowLayoutModel.rootNode, setFlowNodes],
+    [onFlowNodesChange, flowLayoutModel.rootNode, setFlowNodes, nodeDocumentGroups, nodeArtifacts, effectiveCanEdit, openTopologyDocumentPicker, openEditDocumentModal],
   );
 
   useEffect(() => {
