@@ -289,6 +289,16 @@ interface IntegrationMissingError extends Error {
   status: IntegrationReconnectStatus;
 }
 
+interface NotionApiError extends Error {
+  provider: "notion";
+  status: number;
+  code: "NOTION_API_ERROR";
+  reason: string;
+  statusText: string;
+  responseBody?: string;
+  requestUrl?: string;
+}
+
 type DocKind = "Document" | "Skill";
 
 interface MatrixDocumentAttach {
@@ -670,6 +680,14 @@ function isIntegrationMissingError(value: unknown): value is IntegrationMissingE
   );
 }
 
+function isNotionApiError(value: unknown): value is NotionApiError {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    (value as { code?: string }).code === "NOTION_API_ERROR"
+  );
+}
+
 async function getIntegrationAccessToken(userId: string, sourceType: Exclude<DocSourceType, "local">): Promise<string> {
   const provider = sourceTypeToProvider(sourceType);
   const result = await query<UserIntegrationRow>(
@@ -885,6 +903,15 @@ function normalizeMatrixDocumentCreateBody(body: unknown): MatrixDocumentCreateB
     sourceUrl,
     attach: parseDocumentAttach(parsed.attach),
   };
+}
+
+function summarizeSourceUrl(sourceUrl: string): string {
+  try {
+    const url = new URL(sourceUrl);
+    return `${url.origin}${url.pathname}`;
+  } catch {
+    return sourceUrl.slice(0, 160);
+  }
 }
 
 function parseConcernList(raw: unknown): string[] | null {
@@ -1863,6 +1890,10 @@ export async function threadRoutes(app: FastifyInstance) {
 
       const payload = normalizeMatrixDocumentCreateBody(req.body);
       if (!payload) {
+        req.log.warn({
+          threadId: context.threadId,
+          body: req.body,
+        }, "Invalid matrix document payload");
         return reply.code(400).send({ error: "Invalid matrix document payload" });
       }
 
@@ -1884,6 +1915,13 @@ export async function threadRoutes(app: FastifyInstance) {
           sourceConnectedUserId = actorUserId;
         } catch (error) {
           if (isIntegrationMissingError(error)) {
+            req.log.warn({
+              threadId: context.threadId,
+              provider: error.provider,
+              status: error.status,
+              sourceType: payload.sourceType,
+              sourceUrl: summarizeSourceUrl(payload.sourceUrl),
+            }, "Matrix document import blocked by integration state");
             return reply.code(409).send({
               error: "Integration required",
               provider: error.provider,
@@ -1891,6 +1929,32 @@ export async function threadRoutes(app: FastifyInstance) {
               code: error.code,
             });
           }
+          if (isNotionApiError(error)) {
+            req.log.warn({
+              threadId: context.threadId,
+              sourceType: payload.sourceType,
+              sourceUrl: summarizeSourceUrl(payload.sourceUrl),
+              status: error.status,
+              statusText: error.statusText,
+              reason: error.reason,
+              requestUrl: error.requestUrl,
+              responseBody: error.responseBody,
+            }, "Notion document import failed");
+            return reply.code(error.status >= 500 ? 502 : 400).send({
+              error: error.reason,
+              provider: error.provider,
+              status: error.status,
+              code: error.code,
+            });
+          }
+          req.log.error(
+            {
+              threadId: context.threadId,
+              sourceType: payload.sourceType,
+              err: error,
+            },
+            "Matrix document import failed",
+          );
           throw error;
         }
       } else {
