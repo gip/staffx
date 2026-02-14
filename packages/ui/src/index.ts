@@ -3,6 +3,7 @@ export { ThemeProvider, useTheme } from "./theme";
 export { Header } from "./header";
 export { Home, type Project, type Thread } from "./home";
 export { ProjectPage } from "./project-page";
+export { SettingsPage, type SettingsPageProps } from "./settings-page";
 export {
   ThreadPage,
   type ThreadDetail,

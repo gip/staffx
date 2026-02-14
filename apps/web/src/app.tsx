@@ -3,11 +3,13 @@ import { useAuth0 } from "@auth0/auth0-react";
 import { BrowserRouter, Routes, Route, useParams, useNavigate, useSearchParams } from "react-router-dom";
 import {
   AuthContext,
+  useAuth,
   Header,
   Home,
   ProjectPage,
   ProjectSettingsPage,
   ThreadPage,
+  SettingsPage,
   UserProfilePage,
   setNavigate,
   type AuthUser,
@@ -318,11 +320,52 @@ function HomePage({
 
 function ProfileRoute() {
   const { handle } = useParams<{ handle: string }>();
-  const { isAuthenticated } = useAuth0();
   const apiFetch = useApi();
-  const [searchParams, setSearchParams] = useSearchParams();
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [notFound, setNotFound] = useState(false);
+
+  useEffect(() => {
+    if (!handle) return;
+
+    setNotFound(false);
+    setProfile(null);
+
+    apiFetch(`/users/${encodeURIComponent(handle)}`, undefined, { auth: "optional" })
+      .then(async (res) => {
+        if (!res.ok) {
+          setNotFound(true);
+          return;
+        }
+        setProfile(await res.json());
+      })
+      .catch(() => setNotFound(true));
+  }, [handle, apiFetch]);
+
+  if (notFound) {
+    return (
+      <main className="main">
+        <p className="status-text">User not found</p>
+      </main>
+    );
+  }
+
+  if (!profile) {
+    return (
+      <main className="main">
+        <p className="status-text">Loading…</p>
+      </main>
+    );
+  }
+
+    return (
+    <UserProfilePage profile={profile} />
+  );
+}
+
+function AccountSettingsRoute() {
+  const { isAuthenticated, isLoading } = useAuth();
+  const apiFetch = useApi();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [integrationStatuses, setIntegrationStatuses] = useState<IntegrationStatusRecord>({
     notion: "disconnected",
     google: "disconnected",
@@ -367,32 +410,15 @@ function ProfileRoute() {
     }, { replace: true });
   }, [isAuthenticated, refreshIntegrationStatuses, searchParams, setSearchParams]);
 
-  useEffect(() => {
-    if (!handle) return;
-
-    setNotFound(false);
-    setProfile(null);
-
-    apiFetch(`/users/${encodeURIComponent(handle)}`, undefined, { auth: "optional" })
-      .then(async (res) => {
-        if (!res.ok) {
-          setNotFound(true);
-          return;
-        }
-        setProfile(await res.json());
-      })
-      .catch(() => setNotFound(true));
-  }, [handle, apiFetch]);
-
-  if (notFound) {
+  if (!isAuthenticated) {
     return (
       <main className="main">
-        <p className="status-text">User not found</p>
+        <p className="status-text">Sign in to access settings.</p>
       </main>
     );
   }
 
-  if (!profile) {
+  if (isLoading) {
     return (
       <main className="main">
         <p className="status-text">Loading…</p>
@@ -401,14 +427,13 @@ function ProfileRoute() {
   }
 
   return (
-    <UserProfilePage
-      profile={profile}
+    <SettingsPage
+      returnTo="/settings"
       integrationStatuses={integrationStatuses}
       onConnectIntegration={async (provider, returnTo) => {
-        const targetReturnTo = returnTo || `/${encodeURIComponent(profile.handle)}`;
         try {
           const res = await apiFetch(
-            `/integrations/${provider}/authorize-url?returnTo=${encodeURIComponent(targetReturnTo)}`,
+            `/integrations/${provider}/authorize-url?returnTo=${encodeURIComponent(returnTo)}`,
           );
           if (!res.ok) {
             const body = await res.json().catch(() => ({}));
@@ -430,9 +455,7 @@ function ProfileRoute() {
           if (!res.ok) {
             return { error: await readError(res, `Failed to disconnect ${provider}`) };
           }
-          const data = (await res
-            .json()
-            .catch(() => ({ status: "disconnected" as IntegrationConnectionStatus }))) as {
+          const data = (await res.json().catch(() => ({ status: "disconnected" as IntegrationConnectionStatus }))) as {
             status: IntegrationConnectionStatus;
           };
           await refreshIntegrationStatuses();
@@ -1198,6 +1221,7 @@ export function App() {
         <Routes>
           <Route path="/" element={<HomePage projects={projects} setProjects={setProjects} />} />
           <Route path="/:handle/:project" element={<ProjectRoute />} />
+          <Route path="/settings" element={<AccountSettingsRoute />} />
           <Route path="/:handle/:project/settings" element={<SettingsRoute />} />
           <Route path="/:handle" element={<ProfileRoute />} />
           <Route path="/:handle/:project/thread/:threadId" element={<ThreadRoute />} />

@@ -2,11 +2,13 @@ import { useCallback, useEffect, useState } from "react";
 import { Route, Routes, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
   AuthContext,
+  useAuth,
   Header,
   Home,
   ProjectPage,
   ProjectSettingsPage,
   ThreadPage,
+  SettingsPage,
   UserProfilePage,
   setNavigate,
   type AuthUser,
@@ -327,9 +329,51 @@ function HomeRoute({
 function ProfileRoute({ isAuthenticated }: { isAuthenticated: boolean }) {
   const { handle } = useParams<{ handle: string }>();
   const apiFetch = useApi();
-  const [searchParams, setSearchParams] = useSearchParams();
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [notFound, setNotFound] = useState(false);
+
+  useEffect(() => {
+    if (!isAuthenticated || !handle) return;
+
+    setNotFound(false);
+    setProfile(null);
+
+    apiFetch(`/users/${encodeURIComponent(handle)}`)
+      .then(async (res) => {
+        if (!res.ok) {
+          setNotFound(true);
+          return;
+        }
+        setProfile(await res.json());
+      })
+      .catch(() => setNotFound(true));
+  }, [isAuthenticated, handle, apiFetch]);
+
+  if (notFound) {
+    return (
+      <main className="main">
+        <p className="status-text">User not found</p>
+      </main>
+    );
+  }
+
+  if (!profile) {
+    return (
+      <main className="main">
+        <p className="status-text">Loading…</p>
+      </main>
+    );
+  }
+
+  return (
+    <UserProfilePage profile={profile} />
+  );
+}
+
+function AccountSettingsRoute({ isAuthenticated }: { isAuthenticated: boolean }) {
+  const { isLoading } = useAuth();
+  const apiFetch = useApi();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [integrationStatuses, setIntegrationStatuses] = useState<IntegrationStatusRecord>({
     notion: "disconnected",
     google: "disconnected",
@@ -374,32 +418,15 @@ function ProfileRoute({ isAuthenticated }: { isAuthenticated: boolean }) {
     }, { replace: true });
   }, [isAuthenticated, refreshIntegrationStatuses, searchParams, setSearchParams]);
 
-  useEffect(() => {
-    if (!isAuthenticated || !handle) return;
-
-    setNotFound(false);
-    setProfile(null);
-
-    apiFetch(`/users/${encodeURIComponent(handle)}`)
-      .then(async (res) => {
-        if (!res.ok) {
-          setNotFound(true);
-          return;
-        }
-        setProfile(await res.json());
-      })
-      .catch(() => setNotFound(true));
-  }, [isAuthenticated, handle, apiFetch]);
-
-  if (notFound) {
+  if (!isAuthenticated) {
     return (
       <main className="main">
-        <p className="status-text">User not found</p>
+        <p className="status-text">Sign in to access settings.</p>
       </main>
     );
   }
 
-  if (!profile) {
+  if (isLoading) {
     return (
       <main className="main">
         <p className="status-text">Loading…</p>
@@ -408,14 +435,13 @@ function ProfileRoute({ isAuthenticated }: { isAuthenticated: boolean }) {
   }
 
   return (
-    <UserProfilePage
-      profile={profile}
+    <SettingsPage
+      returnTo="/settings"
       integrationStatuses={integrationStatuses}
       onConnectIntegration={async (provider, returnTo) => {
-        const targetReturnTo = returnTo || `/${encodeURIComponent(profile.handle)}`;
         try {
           const res = await apiFetch(
-            `/integrations/${provider}/authorize-url?returnTo=${encodeURIComponent(targetReturnTo)}`,
+            `/integrations/${provider}/authorize-url?returnTo=${encodeURIComponent(returnTo)}`,
           );
           if (!res.ok) {
             const body = await res.json().catch(() => ({}));
@@ -1194,6 +1220,7 @@ export function App() {
       <Routes>
         <Route path="/" element={<HomeRoute projects={projects} setProjects={setProjects} />} />
         <Route path="/:handle/:project" element={<ProjectRoute isAuthenticated={isAuthenticated} />} />
+        <Route path="/settings" element={<AccountSettingsRoute isAuthenticated={isAuthenticated} />} />
         <Route path="/:handle/:project/settings" element={<SettingsRoute isAuthenticated={isAuthenticated} />} />
         <Route path="/:handle" element={<ProfileRoute isAuthenticated={isAuthenticated} />} />
         <Route

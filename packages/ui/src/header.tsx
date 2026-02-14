@@ -74,6 +74,9 @@ export function Header({ variant = "web" }: { variant?: "web" | "desktop" }) {
                     Profile
                   </Link>
                 )}
+                <Link to="/settings" className="dropdown-item" onClick={() => setMenuOpen(false)}>
+                  Settings
+                </Link>
                 <button className="dropdown-item" onClick={() => { setMenuOpen(false); logout(); }}>
                   Log Out
                 </button>

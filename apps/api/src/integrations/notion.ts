@@ -49,6 +49,16 @@ interface NotionBlockResponse {
   }>;
 }
 
+interface NotionApiError extends Error {
+  provider: "notion";
+  status: number;
+  code: "NOTION_API_ERROR";
+  reason: string;
+  statusText: string;
+  responseBody?: string;
+  requestUrl?: string;
+}
+
 function env(name: string): string {
   const value = process.env[name];
   if (!value) throw new Error(`${name} is required`);
@@ -73,22 +83,40 @@ function notionNotionAuthHeaders(): HeadersInit {
 
 function extractNotionPageId(rawUrl: string): string | null {
   try {
-    const url = new URL(rawUrl);
-    if (!url.hostname.includes("notion.so")) return null;
-    const segments = url.pathname.split("/").filter(Boolean);
-    if (segments.length === 0) return null;
+    const candidateSource = rawUrl.trim();
+    const url = new URL(candidateSource);
+    const host = url.hostname.toLowerCase();
+    if (!host.includes("notion.so") && !host.includes("notion.site") && !host.includes("notion.com")) return null;
 
-    const candidate = segments[segments.length - 1]
-      .split("?")[0]
-      .split("#")[0]
-      .replace(/\.html$/i, "");
-    const normalizedCandidate = candidate.replace(/[^0-9a-fA-F]/g, "");
-    if (!/^[0-9a-fA-F]{32}$/.test(normalizedCandidate)) return null;
+    const candidates = [
+      ...url.pathname.split("/").filter(Boolean),
+      ...Array.from(url.searchParams.values()),
+      candidateSource,
+    ];
 
-    return normalizedCandidate;
+    for (const candidate of candidates) {
+      const normalizedCandidate = extractNotionIdFromText(candidate);
+      if (normalizedCandidate) {
+        return normalizedCandidate;
+      }
+    }
+
+    return null;
   } catch {
     return null;
   }
+}
+
+function extractNotionIdFromText(value: string): string | null {
+  const uuidMatch = value.match(
+    /[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/,
+  );
+  if (uuidMatch) {
+    return uuidMatch[0].replace(/-/g, "").toLowerCase();
+  }
+
+  const plainMatch = value.match(/[0-9a-fA-F]{32}/);
+  return plainMatch ? plainMatch[0].toLowerCase() : null;
 }
 
 function normalizeNotionId(rawId: string): string {
@@ -136,10 +164,66 @@ async function notionApiRequest(url: string, accessToken: string, options: Reque
       ...(options.headers ?? {}),
     },
   });
+
   if (!response.ok) {
-    throw new Error(`Notion API request failed: ${response.status}`);
+    const responseBody = await parseNotionApiErrorBody(response);
+    const requestUrl = url;
+    const reason = await buildNotionApiErrorReason(response.status, requestUrl, responseBody);
+    const error = new Error(`Notion API request failed: ${response.status} ${reason}`) as NotionApiError;
+    error.provider = "notion";
+    error.status = response.status;
+    error.code = "NOTION_API_ERROR";
+    error.reason = reason;
+    error.statusText = response.statusText;
+    error.responseBody = responseBody;
+    error.requestUrl = requestUrl;
+    throw error;
   }
+
   return response.json();
+}
+
+async function parseNotionApiErrorBody(response: Response): Promise<string> {
+  try {
+    const text = await response.text();
+    const trimmed = text.trim();
+    if (!trimmed) return "";
+    const parsed = JSON.parse(trimmed) as Record<string, unknown>;
+    const message = parsed.message;
+    const reason = Array.isArray(message)
+      ? message.join(", ")
+      : typeof message === "string"
+        ? message
+        : typeof parsed.error === "string"
+          ? parsed.error
+          : "";
+    return reason || trimmed.slice(0, 500);
+  } catch {
+    return "";
+  }
+}
+
+async function buildNotionApiErrorReason(
+  status: number,
+  _requestUrl?: string,
+  responseBody?: string,
+): Promise<string> {
+  if (status === 401) {
+    return "Notion token is unauthorized. Reconnect your Notion integration.";
+  }
+  if (status === 403) {
+    return "Notion integration lacks permission to access this page. Share the page with your integration and try again.";
+  }
+  if (status === 404) {
+    if (responseBody) {
+      return `Notion page not found or inaccessible to the connected workspace. Verify the page exists and is shared with your Notion integration. Notion response: ${responseBody}`;
+    }
+    return "Notion page not found or inaccessible to the connected workspace. Verify the page exists and is shared with your Notion integration.";
+  }
+  if (status === 429) {
+    return "Notion API rate limit reached. Please retry shortly.";
+  }
+  return "Unable to fetch the Notion page due to an external API error.";
 }
 
 async function requestNotionToken(payload: Record<string, string>): Promise<NotionTokenResponse> {
@@ -153,7 +237,9 @@ async function requestNotionToken(payload: Record<string, string>): Promise<Noti
   });
   const result = await response.json().catch(() => ({}));
   if (!response.ok) {
-    throw new Error(`Notion token request failed: ${response.status}`);
+    const responseBody = await parseNotionApiErrorBody(response);
+    const reason = await buildNotionApiErrorReason(response.status, NOTION_TOKEN_URL, responseBody);
+    throw new Error(`Notion token request failed: ${response.status} ${reason}`);
   }
   return result as NotionTokenResponse;
 }

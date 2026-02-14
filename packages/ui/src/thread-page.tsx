@@ -2464,6 +2464,9 @@ export function ThreadPage({
                   </>
                 ) : null}
               </div>
+              {(documentModalError || docModalValidationError) && (
+                <p className="field-error">{documentModalError || docModalValidationError}</p>
+              )}
               <div className="thread-inline-actions">
                 <button
                   className="btn btn-secondary"
@@ -2487,7 +2490,7 @@ export function ThreadPage({
                   {isDocumentModalBusy
                     ? "Saving..."
                     : documentModal.mode === "create"
-                      ? "Create document"
+                      ? "Create"
                       : "Save changes"}
                 </button>
                 {documentModal.mode === "edit" && (
@@ -2502,10 +2505,6 @@ export function ThreadPage({
                 )}
               </div>
             </>
-          )}
-
-          {(documentModalError || docModalValidationError) && (
-            <p className="field-error">{documentModalError || docModalValidationError}</p>
           )}
         </div>
       </div>
