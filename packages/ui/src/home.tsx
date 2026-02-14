@@ -166,7 +166,7 @@ export function Home({ projects, onCreateProject, onCheckProjectName }: HomeProp
   if (!isAuthenticated) {
     return (
       <main className="hero">
-        <h1 className="hero-tagline">Staff-level thinking, on demand.</h1>
+        <h1 className="hero-tagline">Staff-level reasoning, on demand.</h1>
         <button className="btn hero-cta" onClick={login}>Log In</button>
       </main>
     );

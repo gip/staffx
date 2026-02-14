@@ -9,6 +9,8 @@ function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1024,
     height: 768,
+    titleBarStyle: "hiddenInset",
+    trafficLightPosition: { x: 16, y: 14 },
     webPreferences: {
       preload: join(__dirname, "../preload/index.js"),
       contextIsolation: true,
