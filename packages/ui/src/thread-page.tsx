@@ -708,10 +708,8 @@ function RootGroupNode({ data }: NodeProps<RootGroupNodeData>) {
 
   return (
     <div className="thread-topology-root-group">
-      <div className="thread-topology-root-group-label">
-        <span className="thread-topology-root-group-badge">System</span>
-        <span className="thread-topology-root-group-name">{data.name}</span>
-      </div>
+      <span className="thread-topology-node-badge thread-topology-node-badge--system">System</span>
+      <strong className="thread-topology-root-group-name">{data.name}</strong>
       {(hasContent || data.canEdit) && (
         <div className="thread-topology-root-group-docs">
           <div className="thread-topology-doc-sections">

@@ -1226,29 +1226,25 @@ a.project-card {
   background: var(--bg);
 }
 
-.thread-topology-root-group-label {
-  position: absolute;
-  top: 8px;
-  left: 12px;
-  display: flex;
-  align-items: center;
-  gap: 8px;
+.thread-topology-node-badge--system {
+  background: #7a7a7a;
+  border: 1px solid #515151;
+  color: #ffffff;
 }
 
-.thread-topology-root-group-badge {
-  font-size: 10px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  padding: 2px 7px;
-  border-radius: 4px;
-  background: var(--border);
-  color: var(--fg-muted);
+.thread-topology-root-group > .thread-topology-node-badge {
+  position: absolute;
+  top: -31px;
+  left: 10px;
+  z-index: 3;
 }
 
 .thread-topology-root-group-name {
+  position: absolute;
+  top: 8px;
+  left: 12px;
   font-size: 13px;
-  font-weight: 500;
+  font-weight: 600;
   color: var(--fg-muted);
 }
 
