@@ -543,11 +543,26 @@ select.field-input {
 .thread-row {
   display: flex;
   align-items: center;
-  gap: 12px;
   padding: 12px 16px;
   text-decoration: none;
   color: var(--fg);
   transition: background 0.15s;
+}
+
+.thread-row-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.thread-row-clone-action {
+  order: 1;
+}
+
+.thread-row-status {
+  order: 2;
 }
 
 .thread-row:not(:last-child) {
@@ -574,10 +589,28 @@ select.field-input {
   white-space: nowrap;
 }
 
+.thread-row-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.thread-row-action-button {
+  padding-top: 4px;
+  padding-bottom: 4px;
+  font-size: 12px;
+}
+
 .thread-row-date {
+  order: 3;
   font-size: 12px;
   color: var(--fg-muted);
   white-space: nowrap;
+}
+
+.thread-row-error {
+  margin-top: -4px;
 }
 
 /* Status badge */

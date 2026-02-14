@@ -408,6 +408,7 @@ function ProfileRoute() {
 function ProjectRoute() {
   const { handle, project: projectName } = useParams<{ handle: string; project: string }>();
   const { isAuthenticated } = useAuth0();
+  const navigate = useNavigate();
   const apiFetch = useApi();
   const [project, setProject] = useState<Project | null>(null);
   const [notFound, setNotFound] = useState(false);
@@ -442,7 +443,39 @@ function ProjectRoute() {
     );
   }
 
-  return <ProjectPage project={project} />;
+  return (
+    <ProjectPage
+      project={project}
+      onCloneThread={async (threadProjectId, payload) => {
+        const title = typeof payload?.title === "string" ? payload.title.trim() : "";
+        const description = typeof payload?.description === "string" ? payload.description.trim() : "";
+        try {
+          const res = await apiFetch(
+            `/projects/${encodeURIComponent(handle!)}/${encodeURIComponent(projectName!)}/thread/${threadProjectId}/clone`,
+            {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ title, description }),
+            },
+          );
+          if (!res.ok) {
+            return { error: await readError(res, "Failed to create thread") };
+          }
+          const data = (await res.json()) as { thread: ThreadDetail };
+          if (!data?.thread?.projectThreadId) {
+            return { error: "New thread not found" };
+          }
+          navigate(`/${encodeURIComponent(handle!)}/${encodeURIComponent(projectName!)}/thread/${data.thread.projectThreadId}`);
+          return data;
+        } catch (error: unknown) {
+          if (error instanceof Error && error.message.trim()) {
+            return { error: error.message };
+          }
+          return { error: "Failed to create thread" };
+        }
+      }}
+    />
+  );
 }
 
 function SettingsRoute() {
@@ -597,6 +630,7 @@ function ThreadRoute() {
     threadId: string;
   }>();
   const { isAuthenticated } = useAuth0();
+  const navigate = useNavigate();
   const apiFetch = useApi();
   const [searchParams, setSearchParams] = useSearchParams();
   const [detail, setDetail] = useState<ThreadDetailPayload | null>(null);
@@ -934,6 +968,34 @@ function ThreadRoute() {
             return { error: error.message };
           }
           return { error: "Failed to close thread" };
+        }
+      }}
+      onCloneThread={async (payload) => {
+        const title = typeof payload?.title === "string" ? payload.title.trim() : "";
+        const description = typeof payload?.description === "string" ? payload.description.trim() : "";
+        try {
+          const res = await apiFetch(
+            `/projects/${encodeURIComponent(handle!)}/${encodeURIComponent(projectName!)}/thread/${encodeURIComponent(threadId!)}/clone`,
+            {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ title, description }),
+            },
+          );
+          if (!res.ok) {
+            return { error: await readError(res, "Failed to create thread") };
+          }
+          const data = (await res.json()) as { thread: ThreadDetail };
+          if (!data?.thread?.projectThreadId) {
+            return { error: "New thread not found" };
+          }
+          navigate(`/${encodeURIComponent(handle!)}/${encodeURIComponent(projectName!)}/thread/${data.thread.projectThreadId}`);
+          return data;
+        } catch (error: unknown) {
+          if (error instanceof Error && error.message.trim()) {
+            return { error: error.message };
+          }
+          return { error: "Failed to create thread" };
         }
       }}
     />

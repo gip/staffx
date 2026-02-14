@@ -254,6 +254,7 @@ interface ThreadPageProps {
   onSendChatMessage?: (payload: { content: string }) => Promise<MutationResult<{ messages: ChatMessage[] }>>;
   onRunAssistant?: (payload: AssistantRunRequest) => Promise<MutationResult<AssistantRunResponse>>;
   onCloseThread?: () => Promise<MutationResult<{ thread: ThreadDetail }>>;
+  onCloneThread?: (payload: { title: string; description: string }) => Promise<MutationResult<{ thread: ThreadDetail }>>;
   integrationStatuses?: IntegrationStatusRecord;
 }
 
@@ -939,6 +940,7 @@ export function ThreadPage({
   onSendChatMessage,
   onRunAssistant,
   onCloseThread,
+  onCloneThread,
   integrationStatuses,
 }: ThreadPageProps) {
   const [isTopologyCollapsed, setIsTopologyCollapsed] = useState(false);
@@ -965,8 +967,13 @@ export function ThreadPage({
   const [assistantSummary, setAssistantSummary] = useState("");
   const [isRunningAssistant, setIsRunningAssistant] = useState(false);
   const [isClosingThread, setIsClosingThread] = useState(false);
+  const [isCloningThread, setIsCloningThread] = useState(false);
+  const [showCloneModal, setShowCloneModal] = useState(false);
   const [showCommitModal, setShowCommitModal] = useState(false);
   const [commitError, setCommitError] = useState("");
+  const [cloneError, setCloneError] = useState("");
+  const [cloneTitle, setCloneTitle] = useState(detail.thread.title);
+  const [cloneDescription, setCloneDescription] = useState(detail.thread.description ?? "");
   const [pendingPlanActionId, setPendingPlanActionId] = useState<string | null>(null);
   const [topologyError, setTopologyError] = useState("");
   const [isSavingTopologyLayout, setIsSavingTopologyLayout] = useState(false);
@@ -993,6 +1000,7 @@ export function ThreadPage({
 
   const isThreadOpen = detail.thread.status === "open";
   const effectiveCanEdit = detail.permissions.canEdit && isThreadOpen;
+  const canCloneThread = detail.thread.status === "closed" && detail.permissions.canEdit && !!onCloneThread;
 
   type FullscreenTab = "topology" | "matrix" | "chat";
   const titleInputRef = useRef<HTMLInputElement>(null);
@@ -1030,6 +1038,11 @@ export function ThreadPage({
       return nextSet.size > 0 ? nextSet : new Set(names);
     });
   }, [detail.matrix.concerns]);
+
+  useEffect(() => {
+    setCloneTitle(detail.thread.title);
+    setCloneDescription(detail.thread.description ?? "");
+  }, [detail.thread.title, detail.thread.description]);
 
   const toggleConcern = useCallback((name: string) => {
     setVisibleConcerns((prev) => {
@@ -2827,6 +2840,26 @@ export function ThreadPage({
               )}
             </section>
 
+            {canCloneThread && (
+              <section className="thread-card thread-commit-card">
+                <p className="thread-commit-text">
+                  Create a new open thread from this committed thread.
+                </p>
+                {cloneError && <p className="field-error">{cloneError}</p>}
+                <button
+                  className="btn"
+                  type="button"
+                  disabled={isCloningThread}
+                  onClick={() => {
+                    setCloneError("");
+                    setShowCloneModal(true);
+                  }}
+                >
+                  {isCloningThread ? "Creating…" : "New Thread"}
+                </button>
+              </section>
+            )}
+
             {detail.permissions.canEdit && isThreadOpen && onCloseThread && (
               <section className="thread-card thread-commit-card">
                 <p className="thread-commit-text">
@@ -2926,6 +2959,80 @@ export function ThreadPage({
                 }}
               >
                 {isClosingThread ? "Committing…" : "Confirm"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showCloneModal && onCloneThread && (
+        <div
+          className="modal-overlay"
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget && !isCloningThread) {
+              setShowCloneModal(false);
+            }
+          }}
+        >
+          <div className="modal">
+            <h3 className="modal-title">Create new thread</h3>
+            <label className="field">
+              <span className="field-label">Name</span>
+              <input
+                className="field-input"
+                type="text"
+                value={cloneTitle}
+                onChange={(event) => setCloneTitle(event.target.value)}
+                disabled={isCloningThread}
+              />
+            </label>
+            <label className="field">
+              <span className="field-label">Description</span>
+              <textarea
+                className="field-input field-textarea"
+                rows={6}
+                value={cloneDescription}
+                onChange={(event) => setCloneDescription(event.target.value)}
+                disabled={isCloningThread}
+              />
+            </label>
+            {cloneError && <p className="field-error">{cloneError}</p>}
+            <div className="modal-actions">
+              <button
+                className="btn btn-secondary"
+                type="button"
+                disabled={isCloningThread}
+                onClick={() => setShowCloneModal(false)}
+              >
+                Cancel
+              </button>
+              <button
+                className="btn"
+                type="button"
+                disabled={isCloningThread || !cloneTitle.trim()}
+                onClick={async () => {
+                  if (!cloneTitle.trim()) return;
+                  setIsCloningThread(true);
+                  setCloneError("");
+                  try {
+                    const result = await onCloneThread({
+                      title: cloneTitle.trim(),
+                      description: cloneDescription.trim(),
+                    });
+                    const error = getErrorMessage(result);
+                    if (error) {
+                      setCloneError(error);
+                    } else {
+                      setShowCloneModal(false);
+                    }
+                  } catch {
+                    setCloneError("Failed to create thread");
+                  } finally {
+                    setIsCloningThread(false);
+                  }
+                }}
+              >
+                {isCloningThread ? "Creating…" : "Create"}
               </button>
             </div>
           </div>

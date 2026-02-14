@@ -11,6 +11,7 @@ const PLACEHOLDER_ASSISTANT_MESSAGE = "Received. I captured your request in this
 interface ThreadContextRow {
   thread_id: string;
   project_thread_id: number;
+  project_id: string;
   title: string | null;
   description: string | null;
   status: string;
@@ -186,6 +187,18 @@ interface UpsertThreadRow {
   status: string;
 }
 
+interface ClonedThreadRow {
+  thread_id: string;
+  project_thread_id: number;
+  title: string;
+  description: string | null;
+  status: string;
+  created_at: Date;
+  created_by_handle: string;
+  project_name: string;
+  owner_handle: string;
+}
+
 interface ChangedRow {
   changed: number;
 }
@@ -193,6 +206,7 @@ interface ChangedRow {
 interface ThreadContext {
   threadId: string;
   projectThreadId: number;
+  projectId: string;
   title: string;
   description: string | null;
   status: string;
@@ -201,6 +215,11 @@ interface ThreadContext {
   projectName: string;
   ownerHandle: string;
   accessRole: string;
+}
+
+interface CloneThreadBody {
+  title?: string;
+  description?: string;
 }
 
 interface MatrixDoc {
@@ -799,26 +818,27 @@ async function resolveThreadContext(
 ): Promise<ThreadContext | null> {
   const result = await query<ThreadContextRow>(
     `SELECT
-       t.id AS thread_id,
-       t.project_thread_id,
-       t.title,
-       t.description,
-       t.status,
-       t.created_at,
-       creator.handle AS created_by_handle,
-       p.name AS project_name,
-       owner.handle AS owner_handle,
-       up.access_role
-     FROM user_projects up
-     JOIN projects p ON p.id = up.id
-     JOIN users owner ON owner.id = p.owner_id
-     JOIN threads t ON t.project_id = p.id
-     JOIN users creator ON creator.id = t.created_by
-     WHERE up.user_id = $1
-       AND owner.handle = $2
-       AND p.name = $3
-       AND t.project_thread_id = $4
-     LIMIT 1`,
+     t.id AS thread_id,
+     t.project_thread_id,
+     p.id AS project_id,
+     t.title,
+     t.description,
+     t.status,
+     t.created_at,
+     creator.handle AS created_by_handle,
+     p.name AS project_name,
+     owner.handle AS owner_handle,
+     up.access_role
+   FROM user_projects up
+   JOIN projects p ON p.id = up.id
+   JOIN users owner ON owner.id = p.owner_id
+   JOIN threads t ON t.project_id = p.id
+   JOIN users creator ON creator.id = t.created_by
+   WHERE up.user_id = $1
+     AND owner.handle = $2
+     AND p.name = $3
+     AND t.project_thread_id = $4
+   LIMIT 1`,
     [userId, handle, projectName, projectThreadId],
   );
 
@@ -828,6 +848,7 @@ async function resolveThreadContext(
   return {
     threadId: row.thread_id,
     projectThreadId: row.project_thread_id,
+    projectId: row.project_id,
     title: row.title ?? "Untitled",
     description: row.description,
     status: row.status,
@@ -1333,6 +1354,81 @@ export async function threadRoutes(app: FastifyInstance) {
           createdByHandle: context.createdByHandle,
           ownerHandle: context.ownerHandle,
           projectName: context.projectName,
+          accessRole: context.accessRole,
+        },
+      };
+    },
+  );
+
+  app.post<{
+    Params: { handle: string; projectName: string; threadId: string };
+    Body: CloneThreadBody;
+  }>(
+    "/projects/:handle/:projectName/thread/:threadId/clone",
+    async (req, reply) => {
+      const { handle, projectName, threadId } = req.params;
+      const context = await requireContext(reply, req.auth.id, handle, projectName, threadId);
+      if (!context) return;
+
+      if (!canEdit(context.accessRole)) {
+        return reply.code(403).send({ error: "Forbidden" });
+      }
+
+      if (context.status !== "closed") {
+        return reply.code(409).send({ error: "Thread is not committed" });
+      }
+
+      const hasRequestedDescription = typeof req.body?.description === "string";
+      const requestedTitle = typeof req.body?.title === "string" ? req.body.title.trim() : "";
+      const requestedDescription = hasRequestedDescription ? req.body.description.trim() : "";
+      const clonedTitle = requestedTitle || `${context.title ?? "Untitled"} (Clone)`;
+      const clonedDescription = hasRequestedDescription ? (requestedDescription || null) : (context.description || null);
+      const clonedThreadId = randomUUID();
+
+      await query("SELECT clone_thread($1, $2, $3, $4, $5, $6)", [
+        clonedThreadId,
+        context.threadId,
+        context.projectId,
+        req.auth.id,
+        clonedTitle,
+        clonedDescription,
+      ]);
+
+      const clonedResult = await query<ClonedThreadRow>(
+        `SELECT
+           t.id AS thread_id,
+           t.project_thread_id,
+           t.title,
+           t.description,
+           t.status,
+           t.created_at,
+           creator.handle AS created_by_handle,
+           p.name AS project_name,
+           owner.handle AS owner_handle
+         FROM threads t
+         JOIN users creator ON creator.id = t.created_by
+         JOIN projects p ON p.id = t.project_id
+         JOIN users owner ON owner.id = p.owner_id
+         WHERE t.id = $1`,
+        [clonedThreadId],
+      );
+
+      if (clonedResult.rowCount === 0) {
+        return reply.code(404).send({ error: "Cloned thread not found" });
+      }
+
+      const cloned = clonedResult.rows[0];
+      return {
+        thread: {
+          id: cloned.thread_id,
+          projectThreadId: cloned.project_thread_id,
+          title: cloned.title,
+          description: cloned.description,
+          status: cloned.status,
+          createdAt: cloned.created_at,
+          createdByHandle: cloned.created_by_handle,
+          ownerHandle: cloned.owner_handle,
+          projectName: cloned.project_name,
           accessRole: context.accessRole,
         },
       };
