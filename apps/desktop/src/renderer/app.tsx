@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Route, Routes, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { useLocalAgent } from "./use-local-agent";
 import {
@@ -811,6 +811,67 @@ function ThreadRoute({ isAuthenticated }: { isAuthenticated: boolean }) {
     };
   }, [localAgent.stop, handle, projectName, threadId]);
 
+  const pendingExecutionRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (!detail?.pendingExecution || !handle || !projectName || !threadId) return;
+    if (localAgent.status === "running") return;
+    if (pendingExecutionRef.current === detail.pendingExecution.executeActionId) return;
+
+    pendingExecutionRef.current = detail.pendingExecution.executeActionId;
+    const pendingPrompt = detail.pendingExecution.prompt;
+
+    void (async () => {
+      try {
+        await localAgent.start({
+          prompt: pendingPrompt,
+          handle,
+          projectName,
+          threadId,
+          systemPrompt: detail.systemPrompt ?? undefined,
+          allowedTools: ["Read", "Grep", "Glob", "Bash", "Edit", "Write"],
+        });
+      } catch {
+        // Agent start failure — non-blocking.
+      }
+    })();
+  }, [detail?.pendingExecution, handle, projectName, threadId, localAgent, detail?.systemPrompt]);
+
+  // When local agent finishes, call /agent/complete and refresh thread detail
+  useEffect(() => {
+    if (localAgent.status !== "completed" && localAgent.status !== "error") return;
+    if (!pendingExecutionRef.current || !handle || !projectName || !threadId) return;
+
+    const status = localAgent.status === "completed" ? "success" : "failed";
+    const message = localAgent.status === "completed"
+      ? "Agent execution completed."
+      : "Agent execution failed.";
+
+    pendingExecutionRef.current = null;
+
+    void (async () => {
+      try {
+        await apiFetch(
+          `/projects/${encodeURIComponent(handle)}/${encodeURIComponent(projectName)}/thread/${encodeURIComponent(threadId)}/agent/complete`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ status, message }),
+          },
+        );
+        // Refresh thread detail to clear pendingExecution and show new messages
+        const res = await apiFetch(
+          `/projects/${encodeURIComponent(handle)}/${encodeURIComponent(projectName)}/thread/${encodeURIComponent(threadId)}`,
+        );
+        if (res.ok) {
+          setDetail(await res.json());
+        }
+      } catch {
+        // Completion reporting failure — non-blocking.
+      }
+    })();
+  }, [localAgent.status, handle, projectName, threadId, apiFetch]);
+
   const refreshIntegrationStatuses = useCallback(async () => {
     const nextStatuses: IntegrationStatusRecord = {
       notion: "disconnected",
@@ -1153,34 +1214,20 @@ function ThreadRoute({ isAuthenticated }: { isAuthenticated: boolean }) {
           return { error: await readError(res, "Failed to run assistant") };
         }
         const data = (await res.json()) as AssistantRunResponse;
-        setDetail((prev) => (
-          prev
-            ? {
-                ...prev,
-                systemId: data.systemId,
-                chat: {
-                  ...prev.chat,
-                  messages: mergeChatMessages(prev.chat.messages, data.messages),
-                },
-              }
-            : prev
-        ));
-
-        const actionLabel = payload.mode === "plan" ? "Plan" : "Run";
-        const suffixes = [
-          payload.chatMessageId ? `message: ${payload.chatMessageId}` : null,
-          payload.planActionId ? `plan action: ${payload.planActionId}` : null,
-        ].filter((item): item is string => Boolean(item));
-        const contextSuffix = suffixes.length > 0 ? ` (${suffixes.join(", ")})` : "";
-        void localAgent.start({
-          prompt: `Project: ${handle}/${projectName}, Thread: ${threadId}. Action: ${actionLabel}${contextSuffix}`,
-          handle: handle!,
-          projectName: projectName!,
-          threadId: threadId!,
-          systemPrompt: detail.systemPrompt ?? undefined,
-          allowedTools: ["Read", "Grep", "Glob", "Bash", "Edit", "Write"],
-        }).catch(() => {
-          // Session failures are intentionally non-blocking for chat UX.
+        setDetail((prev) => {
+          if (!prev) return prev;
+          return {
+            ...prev,
+            systemId: data.systemId,
+            chat: {
+              ...prev.chat,
+              messages: mergeChatMessages(prev.chat.messages, data.messages),
+            },
+            // Surface pendingExecution so the useEffect picks it up
+            pendingExecution: data.executeActionId
+              ? { executeActionId: data.executeActionId, prompt: data.messages.find((m) => m.role === "User")?.content ?? "" }
+              : prev.pendingExecution,
+          };
         });
 
         return data;

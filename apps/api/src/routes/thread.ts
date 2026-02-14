@@ -200,6 +200,70 @@ function isFinalizedThreadStatus(status: string): status is "closed" | "committe
   return status === "closed" || status === "committed";
 }
 
+async function createExecuteResponse(
+  threadId: string,
+  status: "success" | "failed",
+  message: string,
+): Promise<void> {
+  const client = await pool.connect();
+  let inTransaction = false;
+  try {
+    await client.query("BEGIN");
+    inTransaction = true;
+
+    const actionId = randomUUID();
+    const messageId = randomUUID();
+
+    await client.query(
+      `SELECT begin_action($1, $2, $3::action_type, $4) AS output_system_id`,
+      [threadId, actionId, "ExecuteResponse", "Agent execution response"],
+    );
+    await client.query("SELECT commit_action_empty($1, $2)", [threadId, actionId]);
+    await client.query(
+      `INSERT INTO messages (id, thread_id, action_id, role, content, position)
+       VALUES ($1, $2, $3, 'Assistant'::message_role, $4, 1)`,
+      [messageId, threadId, actionId, `${status.toUpperCase()}: ${message}`],
+    );
+
+    await client.query("COMMIT");
+    inTransaction = false;
+  } catch (error) {
+    if (inTransaction) {
+      try { await client.query("ROLLBACK"); } catch { /* best effort */ }
+    }
+    console.error("[createExecuteResponse] error:", error);
+  } finally {
+    client.release();
+  }
+}
+
+interface PendingExecution {
+  executeActionId: string;
+  prompt: string;
+}
+
+async function getPendingExecution(threadId: string): Promise<PendingExecution | null> {
+  const result = await query<{ id: string; content: string }>(
+    `SELECT a.id, m.content
+     FROM actions a
+     JOIN messages m ON m.thread_id = a.thread_id AND m.action_id = a.id AND m.role = 'User'
+     WHERE a.thread_id = $1
+       AND a.type = 'Execute'
+       AND NOT EXISTS (
+         SELECT 1 FROM actions er
+         WHERE er.thread_id = a.thread_id
+           AND er.type = 'ExecuteResponse'
+           AND er.position > a.position
+       )
+     ORDER BY a.position DESC
+     LIMIT 1`,
+    [threadId],
+  );
+  const row = result.rows[0];
+  if (!row) return null;
+  return { executeActionId: row.id, prompt: row.content };
+}
+
 interface UpsertThreadRow {
   id: string;
   project_thread_id: number;
@@ -1413,7 +1477,7 @@ export async function threadRoutes(app: FastifyInstance) {
         return reply.code(500).send({ error: "Unable to resolve thread system" });
       }
 
-      const [nodesResult, edgesResult, concernsResult, matrixRefsResult, documentsResult, artifactsResult, messagesResult, systemPromptMetadataResult] =
+      const [nodesResult, edgesResult, concernsResult, matrixRefsResult, documentsResult, artifactsResult, messagesResult, systemPromptMetadataResult, pendingExecution] =
         await Promise.all([
           query<TopologyNodeRow>(
             `SELECT
@@ -1489,6 +1553,7 @@ export async function threadRoutes(app: FastifyInstance) {
             [context.threadId],
           ),
           getSystemPromptWithMetadataForSystem(systemId),
+          getPendingExecution(context.threadId),
         ]);
 
       const nodes = nodesResult.rows.map((row) => ({
@@ -1598,6 +1663,7 @@ export async function threadRoutes(app: FastifyInstance) {
         chat: {
           messages: mapChatMessages(messagesResult.rows),
         },
+        pendingExecution,
       };
     },
   );
@@ -2828,13 +2894,8 @@ export async function threadRoutes(app: FastifyInstance) {
       let planActionId: string | null = null;
       let planResponseActionId: string | null = null;
       let executeActionId: string | null = null;
-      let executeResponseActionId: string | null = null;
-      let updateActionId: string | null = null;
-      let execution: {
-        status: "success" | "failed";
-        messages: string[];
-        changes: AssistantRunPlanChange[];
-      } = { status: "success", messages: ["No execution run yet."], changes: [] };
+      const executeResponseActionId: string | null = null;
+      const updateActionId: string | null = null;
 
       if (parsedBody.mode === "direct") {
         if (parsedBody.planActionId) {
@@ -2896,108 +2957,46 @@ export async function threadRoutes(app: FastifyInstance) {
         }
         actionIds.push(executeActionId);
 
-        execution = simulateAssistantExecution(runPrompt, Boolean(planActionId));
-
-        const executeResponseActionClient = await pool.connect();
-        let responseInTransaction = false;
-        try {
-          await executeResponseActionClient.query("BEGIN");
-          responseInTransaction = true;
-
-          executeResponseActionId = randomUUID();
-          const executeResponseMessageId = randomUUID();
-          await executeResponseActionClient.query(
-            `SELECT begin_action($1, $2, $3::action_type, $4) AS output_system_id`,
-            [context.threadId, executeResponseActionId, "ExecuteResponse", "Agent execution response"],
-          );
-          await executeResponseActionClient.query("SELECT commit_action_empty($1, $2)", [context.threadId, executeResponseActionId]);
-
-          await executeResponseActionClient.query(
-            `INSERT INTO messages (id, thread_id, action_id, role, content, position)
-             VALUES ($1, $2, $3, 'Assistant'::message_role, $4, 1)`,
-            [
-              executeResponseMessageId,
-              context.threadId,
-              executeResponseActionId,
-              `${execution.status.toUpperCase()}: ${execution.messages.join(" | ")}`,
-            ],
-          );
-
-          await executeResponseActionClient.query("COMMIT");
-          responseInTransaction = false;
-        } catch (error) {
-          if (responseInTransaction) {
+        // Agent execution is decoupled: picked up by API (if ANTHROPIC_API_KEY set)
+        // or by desktop (via pendingExecution in thread detail).
+        if (process.env.ANTHROPIC_API_KEY) {
+          const capturedThreadId = context.threadId;
+          const capturedHandle = handle;
+          const capturedProjectName = projectName;
+          const capturedThreadProjectId = threadId;
+          void (async () => {
             try {
-              await executeResponseActionClient.query("ROLLBACK");
-            } catch {
-              // Best effort rollback.
-            }
-          }
-          throw error;
-        } finally {
-          executeResponseActionClient.release();
-        }
-
-        if (!executeResponseActionId) {
-          return reply.code(500).send({ error: "Unable to create execution response action" });
-        }
-        actionIds.push(executeResponseActionId);
-
-        if (execution.changes.length > 0) {
-          const updateClient = await pool.connect();
-          let updateInTransaction = false;
-
-          try {
-            await updateClient.query("BEGIN");
-            updateInTransaction = true;
-
-            updateActionId = randomUUID();
-            const beginUpdateResult = await updateClient.query<BeginActionRow>(
-              `SELECT begin_action($1, $2, $3::action_type, $4) AS output_system_id`,
-              [context.threadId, updateActionId, "Update", "Agent execution changes"],
-            );
-
-            if (!beginUpdateResult.rows[0]?.output_system_id) {
-              await updateClient.query("ROLLBACK");
-              updateInTransaction = false;
-              return reply.code(500).send({ error: "Unable to create update action" });
-            }
-
-            for (const change of execution.changes) {
-              await updateClient.query(
-                `INSERT INTO changes (
-                   id, thread_id, action_id, target_table, operation, target_id, previous, current
-                 )
-                 VALUES ($1, $2, $3, $4, $5::change_operation, $6, $7, $8)`,
-                [
-                  randomUUID(),
-                  context.threadId,
-                  updateActionId,
-                  change.target_table,
-                  change.operation,
-                  JSON.stringify(change.target_id),
-                  change.previous ? JSON.stringify(change.previous) : null,
-                  change.current ? JSON.stringify(change.current) : null,
-                ],
+              const sysId = await getThreadSystemId(capturedThreadId);
+              const pm = sysId ? await getSystemPromptWithMetadataForSystem(sysId) : { text: null };
+              await runAgent(
+                {
+                  prompt: runPrompt || "Run this request.",
+                  handle: capturedHandle,
+                  projectName: capturedProjectName,
+                  threadId: capturedThreadProjectId,
+                  systemPrompt: pm.text ?? undefined,
+                  allowedTools: ["Read", "Grep", "Glob", "Bash", "Edit", "Write"],
+                },
+                {
+                  onMessage() { /* streaming not needed for fire-and-forget */ },
+                  onDone(status) {
+                    void createExecuteResponse(
+                      capturedThreadId,
+                      status === "completed" ? "success" : "failed",
+                      status === "completed" ? "Agent execution completed." : "Agent execution failed.",
+                    );
+                  },
+                },
+              );
+            } catch (err) {
+              console.error("[agent] auto-execution error:", err);
+              void createExecuteResponse(
+                capturedThreadId,
+                "failed",
+                `Agent execution error: ${err instanceof Error ? err.message : String(err)}`,
               );
             }
-
-            await updateClient.query("COMMIT");
-            updateInTransaction = false;
-          } catch (error) {
-            if (updateInTransaction) {
-              try {
-                await updateClient.query("ROLLBACK");
-              } catch {
-                // Best effort rollback.
-              }
-            }
-            throw error;
-          } finally {
-            updateClient.release();
-          }
-
-          actionIds.push(updateActionId);
+          })();
         }
       } else {
         const planActionClient = await pool.connect();
@@ -3093,10 +3092,10 @@ export async function threadRoutes(app: FastifyInstance) {
       }
 
       const summary = parsedBody.mode === "direct"
-        ? assistantRunSummary(execution.status, execution.messages.length > 0 ? execution.messages : ["Execution completed."])
+        ? assistantRunSummary("success", [process.env.ANTHROPIC_API_KEY ? "Execution started." : "Execution pending."])
         : assistantRunSummary("success", ["Plan generated."]);
 
-      const changesCount = parsedBody.mode === "direct" ? execution.changes.length : 0;
+      const changesCount = 0;
       return {
         planActionId,
         planResponseActionId,
@@ -3171,6 +3170,35 @@ export async function threadRoutes(app: FastifyInstance) {
         },
         abortController.signal,
       );
+    },
+  );
+
+  app.post<{ Params: { handle: string; projectName: string; threadId: string } }>(
+    "/projects/:handle/:projectName/thread/:threadId/agent/complete",
+    async (req, reply) => {
+      const { handle, projectName, threadId } = req.params;
+
+      const context = await requireContext(reply, getViewerUserId(req), handle, projectName, threadId);
+      if (!context) return;
+
+      if (!canEdit(context.accessRole)) {
+        return reply.code(403).send({ error: "Forbidden" });
+      }
+
+      const body =
+        typeof req.body === "object" && req.body !== null ? (req.body as Record<string, unknown>) : {};
+      const status = body.status === "success" ? "success" : "failed";
+      const message = typeof body.message === "string" ? body.message : "Agent execution completed.";
+
+      // Check there is actually a pending execution
+      const pending = await getPendingExecution(context.threadId);
+      if (!pending) {
+        return reply.code(409).send({ error: "No pending execution" });
+      }
+
+      await createExecuteResponse(context.threadId, status, message);
+
+      return { ok: true };
     },
   );
 }

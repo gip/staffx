@@ -1154,59 +1154,6 @@ function ThreadRoute() {
               }
             : prev
         ));
-
-        const actionLabel = payload.mode === "plan" ? "Plan" : "Run";
-        const suffixes = [
-          payload.chatMessageId ? `message: ${payload.chatMessageId}` : null,
-          payload.planActionId ? `plan action: ${payload.planActionId}` : null,
-        ].filter((item): item is string => Boolean(item));
-        const contextSuffix = suffixes.length > 0 ? ` (${suffixes.join(", ")})` : "";
-        const agentPrompt = `Project: ${handle}/${projectName}, Thread: ${threadId}. Action: ${actionLabel}${contextSuffix}`;
-
-        const sseRes = await apiFetch(
-          `/projects/${encodeURIComponent(handle!)}/${encodeURIComponent(projectName!)}/thread/${encodeURIComponent(threadId!)}/agent/run`,
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ prompt: agentPrompt }),
-          },
-        );
-
-        if (sseRes.ok && sseRes.body) {
-          const reader = sseRes.body.getReader();
-          const decoder = new TextDecoder();
-          let buffer = "";
-
-          const read = async () => {
-            try {
-              for (;;) {
-                const { done, value } = await reader.read();
-                if (done) break;
-                buffer += decoder.decode(value, { stream: true });
-                const lines = buffer.split("\n");
-                buffer = lines.pop() ?? "";
-                for (const line of lines) {
-                  if (line.startsWith("event: done")) {
-                    // Re-fetch thread detail to get latest state
-                    const refreshRes = await apiFetch(
-                      `/projects/${encodeURIComponent(handle!)}/${encodeURIComponent(projectName!)}/thread/${encodeURIComponent(threadId!)}`,
-                      undefined,
-                      { auth: "optional" },
-                    );
-                    if (refreshRes.ok) {
-                      setDetail(await refreshRes.json());
-                    }
-                    return;
-                  }
-                }
-              }
-            } catch {
-              // Stream ended or was aborted — non-blocking.
-            }
-          };
-          void read();
-        }
-
         return data;
       }}
       onCloseThread={async () => {
