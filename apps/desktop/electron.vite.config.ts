@@ -6,6 +6,9 @@ export default defineConfig({
     envPrefix: "VITE_",
     build: {
       outDir: "out/main",
+      rollupOptions: {
+        external: ["@anthropic-ai/claude-agent-sdk"],
+      },
     },
   },
   preload: {
