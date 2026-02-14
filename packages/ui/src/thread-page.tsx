@@ -21,6 +21,7 @@ import ReactFlow, {
   type NodeMouseHandler,
   type Edge,
   type Node,
+  type NodeChange,
   type NodeProps,
   type ReactFlowInstance,
 } from "reactflow";
@@ -365,6 +366,7 @@ interface FlowLayoutModel {
   hiddenNodeIds: Set<string>;
   visibleParentById: Map<string, string | null>;
   nestedChildrenByHost: Map<string, TopologyNode[]>;
+  rootNode: TopologyNode | null;
 }
 
 interface TopologyNestedChildData {
@@ -606,8 +608,24 @@ function TopologyFlowNode({ data }: NodeProps<TopologyFlowNodeData>) {
   );
 }
 
+interface RootGroupNodeData {
+  name: string;
+}
+
+function RootGroupNode({ data }: NodeProps<RootGroupNodeData>) {
+  return (
+    <div className="thread-topology-root-group">
+      <div className="thread-topology-root-group-label">
+        <span className="thread-topology-root-group-badge">System</span>
+        <span className="thread-topology-root-group-name">{data.name}</span>
+      </div>
+    </div>
+  );
+}
+
 const FLOW_NODE_TYPES = {
   topology: TopologyFlowNode,
+  rootGroup: RootGroupNode,
 };
 
 function buildFlowLayoutModel(nodes: TopologyNode[]): FlowLayoutModel {
@@ -615,6 +633,16 @@ function buildFlowLayoutModel(nodes: TopologyNode[]): FlowLayoutModel {
   const hiddenNodeIds = new Set<string>();
   const nestedChildrenByHost = new Map<string, TopologyNode[]>();
   const nestedKinds = new Set(["Container", "Process", "Library"]);
+
+  // Extract Root node — rendered as a background boundary, not a regular card
+  let rootNode: TopologyNode | null = null;
+  for (const node of nodes) {
+    if (node.kind === "Root") {
+      rootNode = node;
+      hiddenNodeIds.add(node.id);
+      break;
+    }
+  }
 
   for (const node of nodes) {
     if (!node.parentId) continue;
@@ -650,6 +678,7 @@ function buildFlowLayoutModel(nodes: TopologyNode[]): FlowLayoutModel {
     hiddenNodeIds,
     visibleParentById,
     nestedChildrenByHost,
+    rootNode,
   };
 }
 
@@ -716,7 +745,7 @@ function buildFlowNodes(
     });
   }
 
-  return model.visibleNodes.map((node) => {
+  const childFlowNodes = model.visibleNodes.map((node) => {
     const nestedChildren = (model.nestedChildrenByHost.get(node.id) ?? []).map((child) => ({
       id: child.id,
       name: child.name,
@@ -760,6 +789,60 @@ function buildFlowNodes(
       },
     };
   });
+
+  if (model.rootNode) {
+    const rootGroupNode = buildRootGroupNode(childFlowNodes, model.rootNode);
+    if (rootGroupNode) {
+      return [rootGroupNode, ...childFlowNodes];
+    }
+  }
+
+  return childFlowNodes;
+}
+
+const ROOT_GROUP_ID = "__root_group__";
+const ROOT_GROUP_PADDING = 80;
+const ROOT_GROUP_TOP_PADDING = 112;
+const ESTIMATED_NODE_WIDTH = 240;
+const ESTIMATED_NODE_HEIGHT = 120;
+
+function buildRootGroupNode(childNodes: Node[], rootNode: TopologyNode): Node | null {
+  if (childNodes.length === 0) return null;
+
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+
+  for (const node of childNodes) {
+    const w = node.width ?? (node.style?.minWidth as number) ?? ESTIMATED_NODE_WIDTH;
+    const h = node.height ?? ESTIMATED_NODE_HEIGHT;
+    minX = Math.min(minX, node.position.x);
+    minY = Math.min(minY, node.position.y);
+    maxX = Math.max(maxX, node.position.x + w);
+    maxY = Math.max(maxY, node.position.y + h);
+  }
+
+  const w = maxX - minX + ROOT_GROUP_PADDING * 2;
+  const h = maxY - minY + ROOT_GROUP_TOP_PADDING + ROOT_GROUP_PADDING;
+
+  return {
+    id: ROOT_GROUP_ID,
+    type: "rootGroup",
+    position: { x: minX - ROOT_GROUP_PADDING, y: minY - ROOT_GROUP_TOP_PADDING },
+    data: { name: rootNode.name },
+    draggable: false,
+    selectable: false,
+    connectable: false,
+    width: w,
+    height: h,
+    style: {
+      width: w,
+      height: h,
+      pointerEvents: "none" as const,
+    },
+    zIndex: 0,
+  };
 }
 
 function resolveFlowEndpoint(
@@ -870,12 +953,12 @@ export function ThreadPage({
   const [documentModalError, setDocumentModalError] = useState("");
   const { user } = useAuth();
 
+  type FullscreenTab = "topology" | "matrix" | "chat";
   const titleInputRef = useRef<HTMLInputElement>(null);
-  const topologyPanelRef = useRef<HTMLDivElement>(null);
-  const matrixPanelRef = useRef<HTMLDivElement>(null);
+  const fullscreenRef = useRef<HTMLDivElement>(null);
   const reactFlowRef = useRef<ReactFlowInstance | null>(null);
-  const [isTopologyFullscreen, setIsTopologyFullscreen] = useState(false);
-  const [isMatrixFullscreen, setIsMatrixFullscreen] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [fullscreenTab, setFullscreenTab] = useState<FullscreenTab>("topology");
 
   useEffect(() => {
     if (!isTitleEditing) {
@@ -921,10 +1004,11 @@ export function ThreadPage({
 
   useEffect(() => {
     const onFullscreenChange = () => {
-      setIsTopologyFullscreen(document.fullscreenElement === topologyPanelRef.current);
-      setIsMatrixFullscreen(document.fullscreenElement === matrixPanelRef.current);
-      // Let the browser finish resizing, then fit nodes to the new viewport
-      setTimeout(() => reactFlowRef.current?.fitView({ duration: 200 }), 50);
+      const active = document.fullscreenElement === fullscreenRef.current;
+      setIsFullscreen(active);
+      if (active) {
+        setTimeout(() => reactFlowRef.current?.fitView({ duration: 200 }), 50);
+      }
     };
 
     document.addEventListener("fullscreenchange", onFullscreenChange);
@@ -1138,6 +1222,24 @@ export function ThreadPage({
   const [flowNodes, setFlowNodes, onFlowNodesChange] = useNodesState(initialFlowNodes);
   const flowEdges = useMemo(() => buildFlowEdges(detail.topology.edges, flowLayoutModel), [detail.topology.edges, flowLayoutModel]);
 
+  const handleNodesChange = useCallback(
+    (changes: NodeChange[]) => {
+      onFlowNodesChange(changes);
+      if (!flowLayoutModel.rootNode) return;
+      const needsRecalc = changes.some(
+        (c) => (c.type === "position" && c.dragging) || c.type === "dimensions",
+      );
+      if (!needsRecalc) return;
+      setFlowNodes((currentNodes) => {
+        const childNodes = currentNodes.filter((n) => n.id !== ROOT_GROUP_ID);
+        const updated = buildRootGroupNode(childNodes, flowLayoutModel.rootNode!);
+        if (!updated) return currentNodes;
+        return currentNodes.map((n) => (n.id === ROOT_GROUP_ID ? updated : n));
+      });
+    },
+    [onFlowNodesChange, flowLayoutModel.rootNode, setFlowNodes],
+  );
+
   useEffect(() => {
     setFlowNodes(initialFlowNodes);
   }, [initialFlowNodes, setFlowNodes]);
@@ -1320,14 +1422,27 @@ export function ThreadPage({
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [documentModal, canCloseDocumentModalWithEsc, resetDocumentModal]);
 
-  async function toggleFullscreen(ref: { current: HTMLDivElement | null }) {
-    if (!ref.current) return;
+  async function enterFullscreen(tab: FullscreenTab) {
+    setFullscreenTab(tab);
+
+    if (isFullscreen) {
+      if (tab === "topology") {
+        setTimeout(() => reactFlowRef.current?.fitView({ duration: 200 }), 50);
+      }
+      return;
+    }
 
     try {
-      if (document.fullscreenElement === ref.current) {
+      await fullscreenRef.current?.requestFullscreen();
+    } catch {
+      // Ignore fullscreen API failures silently.
+    }
+  }
+
+  async function exitFullscreen() {
+    try {
+      if (document.fullscreenElement) {
         await document.exitFullscreen();
-      } else {
-        await ref.current.requestFullscreen();
       }
     } catch {
       // Ignore fullscreen API failures silently.
@@ -1716,6 +1831,7 @@ export function ThreadPage({
 
   const handleNodeDragStop = useCallback<NodeMouseHandler>(
     async (_event, node) => {
+      if (node.type === "rootGroup") return;
       if (!detail.permissions.canEdit || !onSaveTopologyLayout) return;
       setTopologyError("");
       setIsSavingTopologyLayout(true);
@@ -1734,11 +1850,7 @@ export function ThreadPage({
   const renderDocumentModal = () => {
     if (!documentModal) return null;
 
-    const fullscreenContainer = isTopologyFullscreen
-      ? topologyPanelRef.current
-      : isMatrixFullscreen
-        ? matrixPanelRef.current
-        : null;
+    const fullscreenContainer = isFullscreen ? fullscreenRef.current : null;
     const isCreateMode = documentModal.mode === "create";
     const isEditMode = documentModal.mode === "edit";
     const editingDocument = isEditMode
@@ -1909,7 +2021,7 @@ export function ThreadPage({
             </>
           ) : (
             <>
-              {(documentModal.mode === "create" || documentModal.mode === "browse") ? renderConcernPicker() : null}
+              {documentModal.mode === "create" ? renderConcernPicker() : null}
               <div className="thread-doc-source">
                 <div className="thread-doc-source-row">
                   <label className="field-label">Source</label>
@@ -2300,35 +2412,15 @@ export function ThreadPage({
         )}
       </section>
 
-      <section
-        ref={topologyPanelRef}
-        className={`thread-card thread-collapsible ${isTopologyFullscreen ? "thread-card--fullscreen" : ""}`}
-      >
-        <div className="thread-card-header" onClick={() => setIsTopologyCollapsed((current) => !current)}>
-          <h3>Topology View</h3>
-          <div className="thread-card-actions">
-            <button
-              className="btn-icon thread-card-action"
-              type="button"
-              onClick={(e) => { e.stopPropagation(); if (!isTopologyFullscreen) setIsTopologyCollapsed(false); toggleFullscreen(topologyPanelRef); }}
-              aria-label={isTopologyFullscreen ? "Exit fullscreen topology" : "Enter fullscreen topology"}
-            >
-              {isTopologyFullscreen ? <Minimize2 size={16} /> : <FullscreenIcon size={16} />}
-            </button>
-            <span className="thread-card-action thread-collapse-icon" aria-hidden>
-              {isTopologyCollapsed ? <ChevronRight size={16} /> : <ChevronDown size={16} />}
-            </span>
-          </div>
-        </div>
-
-        {!isTopologyCollapsed && (
-          <div className="thread-card-body">
+      {(() => {
+        const renderTopologyBody = () => (
+          <>
             <div className="thread-topology-canvas">
               <ReactFlow
                 nodes={flowNodes}
                 edges={flowEdges}
                 nodeTypes={FLOW_NODE_TYPES}
-                onNodesChange={onFlowNodesChange}
+                onNodesChange={handleNodesChange}
                 onNodeDragStop={handleNodeDragStop}
                 onInit={(instance) => { reactFlowRef.current = instance; }}
                 fitView
@@ -2344,33 +2436,11 @@ export function ThreadPage({
             </div>
             {isSavingTopologyLayout && <p className="matrix-empty">Saving layout…</p>}
             {topologyError && <p className="field-error">{topologyError}</p>}
-          </div>
-        )}
-      </section>
+          </>
+        );
 
-      <section
-        ref={matrixPanelRef}
-        className={`thread-card thread-collapsible ${isMatrixFullscreen ? "thread-card--fullscreen" : ""}`}
-      >
-        <div className="thread-card-header" onClick={() => setIsMatrixCollapsed((current) => !current)}>
-          <h3>Matrix View</h3>
-          <div className="thread-card-actions">
-            <button
-              className="btn-icon thread-card-action"
-              type="button"
-              onClick={(e) => { e.stopPropagation(); if (!isMatrixFullscreen) setIsMatrixCollapsed(false); toggleFullscreen(matrixPanelRef); }}
-              aria-label={isMatrixFullscreen ? "Exit fullscreen matrix" : "Enter fullscreen matrix"}
-            >
-              {isMatrixFullscreen ? <Minimize2 size={16} /> : <FullscreenIcon size={16} />}
-            </button>
-            <span className="thread-card-action thread-collapse-icon" aria-hidden>
-              {isMatrixCollapsed ? <ChevronRight size={16} /> : <ChevronDown size={16} />}
-            </span>
-          </div>
-        </div>
-
-        {!isMatrixCollapsed && (
-          <div className="thread-card-body">
+        const renderMatrixBody = () => (
+          <>
             <div className="matrix-concern-filter">
               <span className="matrix-concern-filter-label">Concerns</span>
               {detail.matrix.concerns.map((c) => (
@@ -2521,22 +2591,11 @@ export function ThreadPage({
               </table>
             </div>
             {matrixError && <p className="field-error">{matrixError}</p>}
-          </div>
-        )}
-      </section>
+          </>
+        );
 
-      <section className="thread-card thread-collapsible">
-        <div className="thread-card-header" onClick={() => setIsChatCollapsed((current) => !current)}>
-          <h3>Chat View</h3>
-          <div className="thread-card-actions">
-            <span className="thread-card-action thread-collapse-icon" aria-hidden>
-              {isChatCollapsed ? <ChevronRight size={16} /> : <ChevronDown size={16} />}
-            </span>
-          </div>
-        </div>
-
-        {!isChatCollapsed && (
-          <div className={`thread-card-body ${detail.permissions.canChat ? "" : "thread-chat-disabled"}`}>
+        const renderChatBody = () => (
+          <div className={detail.permissions.canChat ? "" : "thread-chat-disabled"}>
             <div className="thread-chat-form">
               <div className="thread-chat-input-row">
                 <textarea
@@ -2583,8 +2642,128 @@ export function ThreadPage({
               )}
             </div>
           </div>
-        )}
-      </section>
+        );
+
+        return (
+          <>
+            <section className="thread-card thread-collapsible">
+              <div className="thread-card-header" onClick={() => setIsTopologyCollapsed((current) => !current)}>
+                <h3>Topology View</h3>
+                <div className="thread-card-actions">
+                  <button
+                    className="btn-icon thread-card-action"
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); enterFullscreen("topology"); }}
+                    aria-label="Enter fullscreen topology"
+                  >
+                    <FullscreenIcon size={16} />
+                  </button>
+                  <span className="thread-card-action thread-collapse-icon" aria-hidden>
+                    {isTopologyCollapsed ? <ChevronRight size={16} /> : <ChevronDown size={16} />}
+                  </span>
+                </div>
+              </div>
+
+              {!isTopologyCollapsed && !isFullscreen && (
+                <div className="thread-card-body">
+                  {renderTopologyBody()}
+                </div>
+              )}
+            </section>
+
+            <section className="thread-card thread-collapsible">
+              <div className="thread-card-header" onClick={() => setIsMatrixCollapsed((current) => !current)}>
+                <h3>Matrix View</h3>
+                <div className="thread-card-actions">
+                  <button
+                    className="btn-icon thread-card-action"
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); enterFullscreen("matrix"); }}
+                    aria-label="Enter fullscreen matrix"
+                  >
+                    <FullscreenIcon size={16} />
+                  </button>
+                  <span className="thread-card-action thread-collapse-icon" aria-hidden>
+                    {isMatrixCollapsed ? <ChevronRight size={16} /> : <ChevronDown size={16} />}
+                  </span>
+                </div>
+              </div>
+
+              {!isMatrixCollapsed && !isFullscreen && (
+                <div className="thread-card-body">
+                  {renderMatrixBody()}
+                </div>
+              )}
+            </section>
+
+            <section className="thread-card thread-collapsible">
+              <div className="thread-card-header" onClick={() => setIsChatCollapsed((current) => !current)}>
+                <h3>Chat View</h3>
+                <div className="thread-card-actions">
+                  <button
+                    className="btn-icon thread-card-action"
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); enterFullscreen("chat"); }}
+                    aria-label="Enter fullscreen chat"
+                  >
+                    <FullscreenIcon size={16} />
+                  </button>
+                  <span className="thread-card-action thread-collapse-icon" aria-hidden>
+                    {isChatCollapsed ? <ChevronRight size={16} /> : <ChevronDown size={16} />}
+                  </span>
+                </div>
+              </div>
+
+              {!isChatCollapsed && !isFullscreen && (
+                <div className="thread-card-body">
+                  {renderChatBody()}
+                </div>
+              )}
+            </section>
+
+            <section ref={fullscreenRef} className={isFullscreen ? "thread-fullscreen" : "thread-fullscreen-hidden"}>
+              <div className="thread-fullscreen-header">
+                <div className="thread-fullscreen-tabs">
+                  <button
+                    type="button"
+                    className={`thread-fullscreen-tab${fullscreenTab === "topology" ? " thread-fullscreen-tab--active" : ""}`}
+                    onClick={() => { setFullscreenTab("topology"); setTimeout(() => reactFlowRef.current?.fitView({ duration: 200 }), 50); }}
+                  >
+                    Topology
+                  </button>
+                  <button
+                    type="button"
+                    className={`thread-fullscreen-tab${fullscreenTab === "matrix" ? " thread-fullscreen-tab--active" : ""}`}
+                    onClick={() => setFullscreenTab("matrix")}
+                  >
+                    Matrix
+                  </button>
+                  <button
+                    type="button"
+                    className={`thread-fullscreen-tab${fullscreenTab === "chat" ? " thread-fullscreen-tab--active" : ""}`}
+                    onClick={() => setFullscreenTab("chat")}
+                  >
+                    Chat
+                  </button>
+                </div>
+                <button
+                  className="btn-icon thread-card-action"
+                  type="button"
+                  onClick={exitFullscreen}
+                  aria-label="Exit fullscreen"
+                >
+                  <Minimize2 size={16} />
+                </button>
+              </div>
+              <div className="thread-fullscreen-body">
+                {fullscreenTab === "topology" && renderTopologyBody()}
+                {fullscreenTab === "matrix" && renderMatrixBody()}
+                {fullscreenTab === "chat" && renderChatBody()}
+              </div>
+            </section>
+          </>
+        );
+      })()}
 
       {renderDocumentModal()}
     </main>
