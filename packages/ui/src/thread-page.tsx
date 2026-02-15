@@ -3203,7 +3203,10 @@ export function ThreadPage({
                           </div>
                           <span>{formatDateTime(message.createdAt)}</span>
                         </header>
-                        <p>{formatChatMessageContent(message.content)}</p>
+                        <div
+                          className="thread-chat-message-body"
+                          dangerouslySetInnerHTML={{ __html: renderMarkdown(formatChatMessageContent(message.content)) }}
+                        />
                       </>
                     )}
                   </article>

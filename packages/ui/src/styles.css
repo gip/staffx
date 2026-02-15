@@ -1906,10 +1906,65 @@ a.project-card {
   text-overflow: ellipsis;
 }
 
-.thread-chat-message p {
+.thread-chat-message > p {
   font-size: 14px;
   line-height: 1.5;
   white-space: pre-wrap;
+}
+
+.thread-chat-message-body {
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.thread-chat-message-body p {
+  margin: 0 0 8px;
+}
+
+.thread-chat-message-body p:last-child {
+  margin-bottom: 0;
+}
+
+.thread-chat-message-body ul,
+.thread-chat-message-body ol {
+  margin: 0 0 8px;
+  padding-left: 20px;
+}
+
+.thread-chat-message-body pre {
+  background: rgba(128, 128, 128, 0.1);
+  border-radius: 6px;
+  padding: 10px 12px;
+  overflow-x: auto;
+  margin: 0 0 8px;
+  font-size: 13px;
+}
+
+.thread-chat-message-body code {
+  font-size: 13px;
+  background: rgba(128, 128, 128, 0.12);
+  border-radius: 3px;
+  padding: 1px 4px;
+}
+
+.thread-chat-message-body pre code {
+  background: none;
+  padding: 0;
+}
+
+.thread-chat-message-body h1,
+.thread-chat-message-body h2,
+.thread-chat-message-body h3 {
+  margin: 0 0 6px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.thread-chat-message-body blockquote {
+  margin: 0 0 8px;
+  padding-left: 12px;
+  border-left: 3px solid var(--border);
+  color: var(--fg-muted);
 }
 
 .thread-chat-message--assistant {
