@@ -1,7 +1,9 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { PoolClient } from "pg";
+import { AgentRunPlanChange } from "@staffx/agent-runtime";
 import pool, { query } from "../db.js";
+import { enqueueAgentRunWithWait, waitForAgentRunCompletion } from "../agent-queue.js";
 import { verifyOptionalAuth, type AuthUser } from "../auth.js";
 import { decryptToken, encryptToken } from "../integrations/crypto.js";
 import { getProviderClient, sourceTypeToProvider, type DocSourceType } from "../integrations/index.js";
@@ -9,6 +11,15 @@ import { getProviderClient, sourceTypeToProvider, type DocSourceType } from "../
 const EDIT_ROLES = new Set(["Owner", "Editor"]);
 const PLACEHOLDER_ASSISTANT_MESSAGE = "Received. I captured your request in this thread.";
 const SYSTEM_PROMPT_CONCERN = "__system_prompt__";
+function parsePositiveMs(value: string, fallback: number): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+const AGENT_RUN_TIMEOUT_MS = parsePositiveMs(process.env.STAFFX_AGENT_RUN_TIMEOUT_MS ?? "120000", 120000);
+const AGENT_RUN_POLL_MS = parsePositiveMs(process.env.STAFFX_AGENT_RUN_POLL_MS ?? "700", 700);
+const AGENT_RUN_SLOT_WAIT_MS = parsePositiveMs(process.env.STAFFX_AGENT_RUN_SLOT_WAIT_MS ?? "120000", 120000);
+const AGENT_RUN_ENQUEUE_POLL_MS = parsePositiveMs(process.env.STAFFX_AGENT_RUN_ENQUEUE_POLL_MS ?? "500", 500);
 
 type ThreadStatus = "open" | "closed" | "committed";
 
@@ -143,13 +154,7 @@ interface MessageReferenceRow {
   content: string;
 }
 
-interface AssistantRunPlanChange {
-  target_table: string;
-  operation: "Create" | "Update" | "Delete";
-  target_id: Record<string, unknown>;
-  previous: Record<string, unknown> | null;
-  current: Record<string, unknown> | null;
-}
+type AssistantRunPlanChange = AgentRunPlanChange;
 
 interface AssistantRunMessageLookupRow {
   id: string;
@@ -608,39 +613,8 @@ function generatePlanResponseContent(prompt: string): string {
 4. Return a concise summary and changed artifacts.`;
 }
 
-function simulateAssistantExecution(prompt: string, hasPlan: boolean): {
-  status: "success" | "failed";
-  messages: string[];
-  changes: AssistantRunPlanChange[];
-} {
-  const input = prompt.trim();
-  if (!input) {
-    return {
-      status: "failed",
-      messages: ["No actionable prompt was provided."],
-      changes: [],
-    };
-  }
-
-  if (hasPlan) {
-    return {
-      status: "success",
-      messages: [
-        "Plan review completed.",
-        "No direct topology or document mutation hooks were triggered in this invocation.",
-      ],
-      changes: [],
-    };
-  }
-
-  return {
-    status: "success",
-    messages: [
-      "Execution completed.",
-      "No system changes were required for this request.",
-    ],
-    changes: [],
-  };
+function runExecutionError(error: unknown): string {
+  return error instanceof Error ? error.message : "Agent execution failed.";
 }
 
 function resolvePlanActionFromResponse(
@@ -2895,7 +2869,44 @@ export async function threadRoutes(app: FastifyInstance) {
         }
         actionIds.push(executeActionId);
 
-        execution = simulateAssistantExecution(runPrompt, Boolean(planActionId));
+        try {
+          const threadSystemId = await getThreadSystemId(context.threadId);
+          if (!threadSystemId) {
+            return reply.code(500).send({ error: "Unable to resolve thread system" });
+          }
+          const { text: systemPromptText } = await getSystemPromptWithMetadataForSystem(threadSystemId);
+
+          const runId = await enqueueAgentRunWithWait({
+            threadId: context.threadId,
+            projectId: context.projectId,
+            requestedByUserId: getViewerUserId(req),
+            mode: "direct",
+            planActionId,
+            chatMessageId: parsedBody.chatMessageId,
+            prompt: runPrompt,
+            systemPrompt: systemPromptText,
+          }, AGENT_RUN_SLOT_WAIT_MS, AGENT_RUN_ENQUEUE_POLL_MS);
+
+          const completed = await waitForAgentRunCompletion(runId, AGENT_RUN_TIMEOUT_MS, AGENT_RUN_POLL_MS);
+          if (!completed) {
+            return reply.code(408).send({ error: "Timed out waiting for agent execution to finish." });
+          }
+
+          execution = {
+            status: completed.status,
+            messages: completed.messages,
+            changes: completed.changes,
+          };
+        } catch (error: unknown) {
+          execution = {
+            status: "failed",
+            messages: [runExecutionError(error)],
+            changes: [],
+          };
+          if (error instanceof Error && error.message.includes("Timeout waiting for a free agent run slot")) {
+            return reply.code(408).send({ error: error.message });
+          }
+        }
 
         const executeResponseActionClient = await pool.connect();
         let responseInTransaction = false;
@@ -2942,7 +2953,7 @@ export async function threadRoutes(app: FastifyInstance) {
         }
         actionIds.push(executeResponseActionId);
 
-        if (execution.changes.length > 0) {
+        if (execution.status === "success" && execution.changes.length > 0) {
           const updateClient = await pool.connect();
           let updateInTransaction = false;
 
@@ -3095,7 +3106,9 @@ export async function threadRoutes(app: FastifyInstance) {
         ? assistantRunSummary(execution.status, execution.messages.length > 0 ? execution.messages : ["Execution completed."])
         : assistantRunSummary("success", ["Plan generated."]);
 
-      const changesCount = parsedBody.mode === "direct" ? execution.changes.length : 0;
+      const changesCount = parsedBody.mode === "direct" && execution.status === "success"
+        ? execution.changes.length
+        : 0;
       return {
         planActionId,
         planResponseActionId,

@@ -1,11 +1,12 @@
 import { app, BrowserWindow, ipcMain, nativeImage } from "electron";
 import { join } from "node:path";
 import { existsSync } from "node:fs";
-import { startAgent, stopAgent, getAgentStatus } from "./agent.js";
 import { getAccessToken, getAuthState, login, logout, notifyRenderer } from "./auth.js";
+import { startAgentRunner } from "./agent-runner.js";
 
 let mainWindow: BrowserWindow | null = null;
 let appIcon: Electron.NativeImage | null = null;
+let stopAgentRunner: () => Promise<void> = async () => {};
 
 function resolveIcon(): string | null {
   const candidates = [
@@ -63,7 +64,7 @@ function createWindow() {
   });
 }
 
-// IPC handlers
+// Auth IPC handlers
 ipcMain.handle("auth:get-state", () => getAuthState());
 ipcMain.handle("auth:get-token", () => getAccessToken());
 
@@ -80,22 +81,29 @@ ipcMain.on("auth:logout", async () => {
   if (mainWindow) notifyRenderer(mainWindow);
 });
 
-// Agent IPC handlers
-ipcMain.handle("agent:start", (_e, params) => {
-  if (!mainWindow) throw new Error("No main window");
-  return { threadId: startAgent(mainWindow, params) };
+app.whenReady().then(() => {
+  createWindow();
+  stopAgentRunner = startAgentRunner();
 });
 
-ipcMain.on("agent:stop", (_e, { threadId }) => stopAgent(threadId));
-
-ipcMain.handle("agent:get-status", (_e, { threadId }) => getAgentStatus(threadId));
-
-app.whenReady().then(createWindow);
-
 app.on("window-all-closed", () => {
-  if (process.platform !== "darwin") app.quit();
+  if (process.platform !== "darwin") {
+    stopAgentRunner().catch((error: unknown) => {
+      console.error("[desktop-agent-runner] stop error", { error: String(error) });
+    }).finally(() => {
+      app.quit();
+    });
+  }
 });
 
 app.on("activate", () => {
-  if (BrowserWindow.getAllWindows().length === 0) createWindow();
+  if (BrowserWindow.getAllWindows().length === 0) {
+    createWindow();
+  }
+});
+
+app.on("before-quit", () => {
+  void stopAgentRunner().catch((error: unknown) => {
+    console.error("[desktop-agent-runner] stop error", { error: String(error) });
+  });
 });

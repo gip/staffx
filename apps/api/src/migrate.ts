@@ -16,6 +16,7 @@ async function migrate() {
     drop view if exists thread_timeline cascade;
     drop view if exists project_summary cascade;
 
+    drop table if exists agent_runs cascade;
     drop table if exists changes cascade;
     drop table if exists messages cascade;
     drop table if exists actions cascade;
