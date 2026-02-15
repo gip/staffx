@@ -4,6 +4,11 @@ import { fileURLToPath } from "node:url";
 import { query } from "./db.js";
 import { claimNextAgentRun, updateAgentRunResult } from "./agent-queue.js";
 import {
+  applyOpenShipBundleToThreadSystem,
+  collectOpenShipBundleFiles,
+  type OpenShipBundleFile,
+} from "./openship-sync.js";
+import {
   diffOpenShipSnapshots,
   type AgentRunPlanChange,
   resolveThreadWorkspacePath,
@@ -686,17 +691,20 @@ async function findOpenShipBundleDirectory(workspace: string): Promise<string> {
   return workspace;
 }
 
+interface RunClaudeAgentResult {
+  status: QueueStatus;
+  messages: string[];
+  changes: AgentRunPlanChange[];
+  error?: string;
+  openShipBundleFiles?: OpenShipBundleFile[];
+}
+
 async function runClaudeAgentWithBundleDiff(
   runPrompt: string,
   systemPrompt: string | null,
   workspace: string,
   threadId: string,
-): Promise<{
-  status: QueueStatus;
-  messages: string[];
-  changes: AgentRunPlanChange[];
-  error?: string;
-}> {
+): Promise<RunClaudeAgentResult> {
   const openShipBundleDir = join(workspace, OPENSHIP_BUNDLE_DIR_NAME);
   console.info("[agent-runner] bundle generation start", {
     threadId,
@@ -781,7 +789,59 @@ async function runClaudeAgentWithBundleDiff(
     summary,
   ];
 
-  return runResult;
+  let openShipBundleFiles: OpenShipBundleFile[] = [];
+  if (runResult.status === "success" && fileChanges.length > 0) {
+    try {
+      openShipBundleFiles = await collectOpenShipBundleFiles(preRunDir);
+    } catch (error: unknown) {
+      return {
+        status: "failed",
+        messages: [...runResult.messages, `OpenShip reconciliation snapshot failed: ${runSummaryError(error)}`],
+        changes: runResult.changes,
+        error: runSummaryError(error),
+      };
+    }
+  }
+
+  return {
+    ...runResult,
+    openShipBundleFiles,
+  };
+}
+
+async function applyOpenShipBundleResult(
+  threadId: string,
+  result: RunClaudeAgentResult,
+): Promise<RunClaudeAgentResult> {
+  if (result.status !== "success" || result.openShipBundleFiles.length === 0) {
+    return result;
+  }
+
+  try {
+    await applyOpenShipBundleToThreadSystem({
+      threadId,
+      bundleFiles: result.openShipBundleFiles,
+    });
+  } catch (error: unknown) {
+    return {
+      status: "failed",
+      messages: [...result.messages, `OpenShip reconciliation failed: ${runSummaryError(error)}`],
+      changes: result.changes,
+      error: runSummaryError(error),
+    };
+  }
+
+  return result;
+}
+async function runAgentAndApplyResult(
+  runPrompt: string,
+  systemPrompt: string | null,
+  workspace: string,
+  threadId: string,
+): Promise<RunClaudeAgentResult> {
+  const runResult = await runClaudeAgentWithBundleDiff(runPrompt, systemPrompt, workspace, threadId);
+  const reconciled = await applyOpenShipBundleResult(threadId, runResult);
+  return reconciled;
 }
 
 function sleep(ms: number): Promise<void> {
@@ -824,7 +884,7 @@ export function startAgentRunner(options: AgentRunnerOptions = {}): () => void {
         workspace,
       });
 
-      const result = await runClaudeAgentWithBundleDiff(
+      const result = await runAgentAndApplyResult(
         run.prompt,
         run.system_prompt ?? null,
         workspace,

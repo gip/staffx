@@ -147,6 +147,7 @@ export interface AssistantRunResponse {
   changesCount: number;
   messages: ChatMessage[];
   systemId: string;
+  threadState?: ThreadDetailPayload;
 }
 
 export interface ThreadDetail {

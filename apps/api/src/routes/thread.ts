@@ -7,6 +7,10 @@ import type { PoolClient } from "pg";
 import { AgentRunPlanChange } from "@staffx/agent-runtime";
 import pool, { query } from "../db.js";
 import {
+  applyOpenShipBundleToThreadSystem,
+  type OpenShipBundleFile,
+} from "../openship-sync.js";
+import {
   claimAgentRunById,
   enqueueAgentRunWithWait,
   getAgentRunById,
@@ -29,7 +33,13 @@ const AGENT_RUN_TIMEOUT_MS = parsePositiveMs(process.env.STAFFX_AGENT_RUN_TIMEOU
 const AGENT_RUN_POLL_MS = parsePositiveMs(process.env.STAFFX_AGENT_RUN_POLL_MS ?? "700", 700);
 const AGENT_RUN_SLOT_WAIT_MS = parsePositiveMs(process.env.STAFFX_AGENT_RUN_SLOT_WAIT_MS ?? "120000", 120000);
 const AGENT_RUN_ENQUEUE_POLL_MS = parsePositiveMs(process.env.STAFFX_AGENT_RUN_ENQUEUE_POLL_MS ?? "500", 500);
-const DEFAULT_SYSTEM_PROMPT = "You are a staff software engineer with top design and implementation skills. Start by reading AGENTS.md.";
+const DEFAULT_SYSTEM_PROMPT =
+  "You are a staff software engineer with top design and implementation skills. " +
+  "Start by reading AGENTS.md. " + 
+  "You will update the system description and implementation in ./openship (or not if there is no update) " +
+  "and add to a file called SUMMARY.md a description of the plan executed, use Markdown. " +
+  "Check that the updated ./openship directory is fully compliant with the OpenShip description and write that you checked that in the summary. " +
+  "Send back the summary as the response to the user as well.";
 
 function extractAgentRunMessageText(value: unknown, depth = 0): string[] {
   if (depth > 8 || value === null || value === undefined) return [];
@@ -281,6 +291,7 @@ interface AssistantRunPlanResponse {
   changesCount: number;
   messages: ThreadChatMessage[];
   systemId: string;
+  threadState?: ThreadDetailPayload;
 }
 
 interface AssistantRunQueuedResponse {
@@ -308,6 +319,7 @@ interface AssistantRunCompleteRequestBody {
   changes: AgentRunPlanChange[];
   error?: string;
   runnerId?: string;
+  openShipBundleFiles?: OpenShipBundleFile[];
 }
 
 interface OpenShipBundleDescriptorFile {
@@ -831,6 +843,7 @@ function mapAgentRunRowToResponse(row: {
   runError?: string | null;
   threadStatus: "queued" | "running" | "success" | "failed" | "cancelled";
   messages?: AssistantRunMessageRow[];
+  threadState?: ThreadDetailPayload;
 }): AssistantRunPlanResponse | AssistantRunQueuedResponse {
   if (row.threadStatus !== "success" && row.threadStatus !== "failed" && row.threadStatus !== "cancelled") {
     return {
@@ -857,6 +870,7 @@ function mapAgentRunRowToResponse(row: {
     changesCount: status === "success" ? changes.length : 0,
     messages: row.messages ? mapAssistantRunMessages(row.messages) : [],
     systemId: row.systemId,
+    ...(row.threadState ? { threadState: row.threadState } : {}),
   };
 }
 
@@ -1370,6 +1384,91 @@ function buildThreadPayload(context: ThreadContext) {
   };
 }
 
+interface ThreadDetailPayload {
+  systemId: string;
+  thread: ReturnType<typeof buildThreadPayload>;
+  permissions: {
+    canEdit: boolean;
+    canChat: boolean;
+  };
+  topology: {
+    nodes: Array<{
+      id: string;
+      name: string;
+      kind: string;
+      parentId: string | null;
+      layoutX: number | null;
+      layoutY: number | null;
+    }>;
+    edges: Array<{
+      id: string;
+      type: string;
+      fromNodeId: string;
+      toNodeId: string;
+      protocol: string | null;
+    }>;
+  };
+  systemPrompt: string | null;
+  systemPromptTitle: string | null;
+  systemPrompts: SystemPromptRow[];
+  matrix: {
+    concerns: Array<{
+      name: string;
+      position: number;
+    }>;
+    nodes: Array<{
+      id: string;
+      name: string;
+      kind: string;
+      parentId: string | null;
+      layoutX: number | null;
+      layoutY: number | null;
+    }>;
+    cells: MatrixCell[];
+    documents: Array<{
+      hash: string;
+      kind: "Document" | "Skill";
+      title: string;
+      language: string;
+      text: string;
+      sourceType: DocSourceType;
+      sourceUrl: string | null;
+      sourceExternalId: string | null;
+      sourceMetadata: Record<string, unknown> | null;
+      sourceConnectedUserId: string | null;
+    }>;
+  };
+  chat: {
+    messages: ThreadChatMessage[];
+  };
+}
+
+interface RawOpenShipBundleFilePayload {
+  path?: unknown;
+  content?: unknown;
+}
+
+function parseOpenShipBundleFiles(value: unknown): OpenShipBundleFile[] | null {
+  if (value === undefined) return [];
+
+  if (!Array.isArray(value)) return null;
+
+  const files: OpenShipBundleFile[] = [];
+  for (const entry of value) {
+    if (!entry || typeof entry !== "object") return null;
+
+    const candidate = entry as RawOpenShipBundleFilePayload;
+    if (typeof candidate.path !== "string" || typeof candidate.content !== "string") return null;
+
+    files.push({
+      path: candidate.path,
+      content: candidate.content,
+    });
+  }
+
+  return files;
+}
+
 function canEdit(accessRole: string) {
   return EDIT_ROLES.has(accessRole);
 }
@@ -1582,6 +1681,200 @@ async function getThreadSystemId(threadId: string): Promise<string | null> {
   return result.rows[0]?.system_id ?? null;
 }
 
+async function buildThreadStatePayload(context: ThreadContext): Promise<ThreadDetailPayload> {
+  const systemId = await getThreadSystemId(context.threadId);
+  if (!systemId) {
+    throw new Error("Unable to resolve thread system");
+  }
+
+  const [nodesResult, edgesResult, concernsResult, matrixRefsResult, documentsResult, artifactsResult, messagesResult, systemPromptMetadataResult] =
+    await Promise.all([
+      query<TopologyNodeRow>(
+        `SELECT
+           id,
+           name,
+           kind,
+           parent_id,
+           (metadata->'layout'->>'x')::double precision AS layout_x,
+           (metadata->'layout'->>'y')::double precision AS layout_y
+         FROM nodes
+         WHERE system_id = $1
+         ORDER BY name, id`,
+        [systemId],
+      ),
+      query<TopologyEdgeRow>(
+        `SELECT id, type, from_node_id, to_node_id, metadata->>'protocol' AS protocol
+         FROM edges
+         WHERE system_id = $1
+         ORDER BY id`,
+        [systemId],
+      ),
+      query<ConcernRow>(
+        `SELECT name, position
+         FROM concerns
+         WHERE system_id = $1
+           AND scope IS DISTINCT FROM 'system'
+           AND name <> $2
+         ORDER BY position, name`,
+        [systemId, SYSTEM_PROMPT_CONCERN],
+      ),
+      query<MatrixRefRow>(
+        `SELECT
+           mr.node_id,
+           mr.concern,
+           mr.doc_hash,
+           mr.ref_type,
+           d.title AS doc_title,
+           d.kind AS doc_kind,
+           d.language AS doc_language,
+           d.source_type AS doc_source_type,
+           d.source_url AS doc_source_url,
+           d.source_external_id AS doc_source_external_id,
+           d.source_metadata AS doc_source_metadata,
+           d.source_connected_user_id AS doc_source_connected_user_id
+         FROM matrix_refs mr
+         JOIN documents d ON d.system_id = mr.system_id AND d.hash = mr.doc_hash
+         WHERE mr.system_id = $1
+           AND mr.ref_type IN ('Document'::ref_type, 'Skill'::ref_type)
+         ORDER BY mr.node_id, mr.concern, mr.ref_type, d.title`,
+        [systemId],
+      ),
+      query<MatrixDocumentRow>(
+        `SELECT hash, kind, title, language, text, source_type, source_url, source_external_id, source_metadata, source_connected_user_id
+         FROM documents
+         WHERE system_id = $1
+           AND kind IN ('Document'::doc_kind, 'Skill'::doc_kind)
+         ORDER BY kind, title, hash`,
+        [systemId],
+      ),
+      query<ArtifactRow>(
+        `SELECT id, node_id, concern, type, language, text
+         FROM artifacts
+         WHERE system_id = $1
+         ORDER BY node_id, concern, created_at, id`,
+        [systemId],
+      ),
+      query<ChatMessageRow>(
+        `SELECT m.id, m.action_id, m.role, m.content, m.created_at, a.position AS action_position, a.type AS action_type
+         FROM messages m
+         JOIN actions a ON a.thread_id = m.thread_id AND a.id = m.action_id
+         WHERE m.thread_id = $1
+         ORDER BY a.position, m.position`,
+        [context.threadId],
+      ),
+      getSystemPromptWithMetadataForSystem(systemId),
+    ]);
+
+  const nodes = nodesResult.rows.map((row) => ({
+    id: row.id,
+    name: row.name,
+    kind: row.kind,
+    parentId: row.parent_id,
+    layoutX: row.layout_x,
+    layoutY: row.layout_y,
+  }));
+
+  const concerns = concernsResult.rows.map((row) => ({
+    name: row.name,
+    position: row.position,
+  }));
+
+  const cellsByKey = new Map<string, MatrixCell>();
+  for (const node of nodes) {
+    for (const concern of concerns) {
+      const key = matrixCellKey(node.id, concern.name);
+      cellsByKey.set(key, {
+        nodeId: node.id,
+        concern: concern.name,
+        docs: [],
+        artifacts: [],
+      });
+    }
+  }
+
+  for (const row of matrixRefsResult.rows) {
+    const key = matrixCellKey(row.node_id, row.concern);
+    const existing = cellsByKey.get(key) ?? {
+      nodeId: row.node_id,
+      concern: row.concern,
+      docs: [],
+      artifacts: [],
+    };
+    existing.docs.push({
+      hash: row.doc_hash,
+      title: row.doc_title,
+      kind: row.doc_kind,
+      language: row.doc_language,
+      sourceType: row.doc_source_type,
+      sourceUrl: row.doc_source_url,
+      sourceExternalId: row.doc_source_external_id,
+      sourceMetadata: row.doc_source_metadata,
+      sourceConnectedUserId: row.doc_source_connected_user_id,
+      refType: row.ref_type,
+    });
+    cellsByKey.set(key, existing);
+  }
+
+  for (const row of artifactsResult.rows) {
+    const key = matrixCellKey(row.node_id, row.concern);
+    const existing = cellsByKey.get(key) ?? {
+      nodeId: row.node_id,
+      concern: row.concern,
+      docs: [],
+      artifacts: [],
+    };
+    existing.artifacts.push({
+      id: row.id,
+      type: row.type,
+      language: row.language,
+      text: row.text,
+    });
+    cellsByKey.set(key, existing);
+  }
+
+  return {
+    systemId,
+    thread: buildThreadPayload(context),
+    permissions: {
+      canEdit: canEdit(context.accessRole),
+      canChat: canEdit(context.accessRole),
+    },
+    topology: {
+      nodes,
+      edges: edgesResult.rows.map((row) => ({
+        id: row.id,
+        type: row.type,
+        fromNodeId: row.from_node_id,
+        toNodeId: row.to_node_id,
+        protocol: row.protocol,
+      })),
+    },
+    matrix: {
+      concerns,
+      nodes,
+      cells: Array.from(cellsByKey.values()),
+      documents: documentsResult.rows.map((row) => ({
+        hash: row.hash,
+        kind: row.kind,
+        title: row.title,
+        language: row.language,
+        text: row.text,
+        sourceType: row.source_type,
+        sourceUrl: row.source_url,
+        sourceExternalId: row.source_external_id,
+        sourceMetadata: row.source_metadata,
+        sourceConnectedUserId: row.source_connected_user_id,
+      })),
+    },
+    systemPrompt: systemPromptMetadataResult.text,
+    systemPromptTitle: systemPromptMetadataResult.title,
+    systemPrompts: systemPromptMetadataResult.systemPrompts,
+    chat: {
+      messages: mapChatMessages(messagesResult.rows),
+    },
+  };
+}
+
 async function getMatrixCell(systemId: string, nodeId: string, concern: string): Promise<MatrixCell> {
   const [docsResult, artifactsResult] = await Promise.all([
     query<MatrixRefRow>(
@@ -1689,197 +1982,7 @@ export async function threadRoutes(app: FastifyInstance) {
       const context = await requireContext(reply, getViewerUserId(req), handle, projectName, threadId);
       if (!context) return;
 
-      const systemId = await getThreadSystemId(context.threadId);
-      if (!systemId) {
-        return reply.code(500).send({ error: "Unable to resolve thread system" });
-      }
-
-      const [nodesResult, edgesResult, concernsResult, matrixRefsResult, documentsResult, artifactsResult, messagesResult, systemPromptMetadataResult] =
-        await Promise.all([
-          query<TopologyNodeRow>(
-            `SELECT
-               id,
-               name,
-               kind,
-               parent_id,
-               (metadata->'layout'->>'x')::double precision AS layout_x,
-               (metadata->'layout'->>'y')::double precision AS layout_y
-             FROM nodes
-             WHERE system_id = $1
-             ORDER BY name, id`,
-            [systemId],
-          ),
-          query<TopologyEdgeRow>(
-            `SELECT id, type, from_node_id, to_node_id, metadata->>'protocol' AS protocol
-             FROM edges
-             WHERE system_id = $1
-             ORDER BY id`,
-            [systemId],
-          ),
-          query<ConcernRow>(
-            `SELECT name, position
-             FROM concerns
-             WHERE system_id = $1
-               AND scope IS DISTINCT FROM 'system'
-               AND name <> $2
-             ORDER BY position, name`,
-            [systemId, SYSTEM_PROMPT_CONCERN],
-          ),
-          query<MatrixRefRow>(
-            `SELECT
-               mr.node_id,
-               mr.concern,
-               mr.doc_hash,
-               mr.ref_type,
-               d.title AS doc_title,
-               d.kind AS doc_kind,
-               d.language AS doc_language,
-               d.source_type AS doc_source_type,
-               d.source_url AS doc_source_url,
-               d.source_external_id AS doc_source_external_id,
-               d.source_metadata AS doc_source_metadata,
-               d.source_connected_user_id AS doc_source_connected_user_id
-             FROM matrix_refs mr
-             JOIN documents d ON d.system_id = mr.system_id AND d.hash = mr.doc_hash
-             WHERE mr.system_id = $1
-               AND mr.ref_type IN ('Document'::ref_type, 'Skill'::ref_type)
-             ORDER BY mr.node_id, mr.concern, mr.ref_type, d.title`,
-            [systemId],
-          ),
-          query<MatrixDocumentRow>(
-            `SELECT hash, kind, title, language, text, source_type, source_url, source_external_id, source_metadata, source_connected_user_id
-             FROM documents
-             WHERE system_id = $1
-               AND kind IN ('Document'::doc_kind, 'Skill'::doc_kind)
-             ORDER BY kind, title, hash`,
-            [systemId],
-          ),
-          query<ArtifactRow>(
-            `SELECT id, node_id, concern, type, language, text
-             FROM artifacts
-             WHERE system_id = $1
-             ORDER BY node_id, concern, created_at, id`,
-            [systemId],
-          ),
-          query<ChatMessageRow>(
-            `SELECT m.id, m.action_id, m.role, m.content, m.created_at, a.position AS action_position, a.type AS action_type
-             FROM messages m
-             JOIN actions a ON a.thread_id = m.thread_id AND a.id = m.action_id
-             WHERE m.thread_id = $1
-             ORDER BY a.position, m.position`,
-            [context.threadId],
-          ),
-          getSystemPromptWithMetadataForSystem(systemId),
-        ]);
-
-      const nodes = nodesResult.rows.map((row) => ({
-        id: row.id,
-        name: row.name,
-        kind: row.kind,
-        parentId: row.parent_id,
-        layoutX: row.layout_x,
-        layoutY: row.layout_y,
-      }));
-
-      const concerns = concernsResult.rows.map((row) => ({
-        name: row.name,
-        position: row.position,
-      }));
-
-      const cellsByKey = new Map<string, MatrixCell>();
-      for (const node of nodes) {
-        for (const concern of concerns) {
-          const key = matrixCellKey(node.id, concern.name);
-          cellsByKey.set(key, {
-            nodeId: node.id,
-            concern: concern.name,
-            docs: [],
-            artifacts: [],
-          });
-        }
-      }
-
-      for (const row of matrixRefsResult.rows) {
-        const key = matrixCellKey(row.node_id, row.concern);
-        const existing = cellsByKey.get(key) ?? {
-          nodeId: row.node_id,
-          concern: row.concern,
-          docs: [],
-          artifacts: [],
-        };
-        existing.docs.push({
-          hash: row.doc_hash,
-          title: row.doc_title,
-          kind: row.doc_kind,
-          language: row.doc_language,
-          sourceType: row.doc_source_type,
-          sourceUrl: row.doc_source_url,
-          sourceExternalId: row.doc_source_external_id,
-          sourceMetadata: row.doc_source_metadata,
-          sourceConnectedUserId: row.doc_source_connected_user_id,
-          refType: row.ref_type,
-        });
-        cellsByKey.set(key, existing);
-      }
-
-      for (const row of artifactsResult.rows) {
-        const key = matrixCellKey(row.node_id, row.concern);
-        const existing = cellsByKey.get(key) ?? {
-          nodeId: row.node_id,
-          concern: row.concern,
-          docs: [],
-          artifacts: [],
-        };
-        existing.artifacts.push({
-          id: row.id,
-          type: row.type,
-          language: row.language,
-          text: row.text,
-        });
-        cellsByKey.set(key, existing);
-      }
-
-      return {
-        systemId,
-        thread: buildThreadPayload(context),
-        permissions: {
-          canEdit: canEdit(context.accessRole),
-          canChat: canEdit(context.accessRole),
-        },
-        topology: {
-          nodes,
-          edges: edgesResult.rows.map((row) => ({
-            id: row.id,
-            type: row.type,
-            fromNodeId: row.from_node_id,
-            toNodeId: row.to_node_id,
-            protocol: row.protocol,
-          })),
-        },
-        matrix: {
-          concerns,
-          nodes,
-          cells: Array.from(cellsByKey.values()),
-          documents: documentsResult.rows.map((row) => ({
-            hash: row.hash,
-            kind: row.kind,
-            title: row.title,
-            language: row.language,
-            text: row.text,
-            sourceType: row.source_type,
-            sourceUrl: row.source_url,
-            sourceExternalId: row.source_external_id,
-            sourceMetadata: row.source_metadata,
-            sourceConnectedUserId: row.source_connected_user_id,
-          })),
-        },
-        systemPrompt: systemPromptMetadataResult.text,
-        systemPromptTitle: systemPromptMetadataResult.title,
-        systemPrompts: systemPromptMetadataResult.systemPrompts,
-        chat: {
-          messages: mapChatMessages(messagesResult.rows),
-        },
-      };
+      return buildThreadStatePayload(context);
     },
   );
 
@@ -3154,6 +3257,12 @@ export async function threadRoutes(app: FastifyInstance) {
         if (!runRow) {
           return reply.code(500).send({ error: "Run was not created." });
         }
+        const includeThreadState = runRow.status === "success"
+          && runRow.run_result_status === "success"
+          && (runRow.run_result_changes?.length ?? 0) > 0;
+        const threadState = includeThreadState
+          ? await buildThreadStatePayload(context).catch(() => undefined)
+          : undefined;
         return mapAgentRunRowToResponse({
           runId: runRow.id,
           systemId,
@@ -3162,6 +3271,7 @@ export async function threadRoutes(app: FastifyInstance) {
           runResultChanges: runRow.run_result_changes,
           runError: runRow.run_error,
           threadStatus: runRow.status,
+          threadState,
         });
       }
 
@@ -3476,6 +3586,9 @@ export async function threadRoutes(app: FastifyInstance) {
       const changesCount = parsedBody.mode === "direct" && execution.status === "success"
         ? execution.changes.length
         : 0;
+      const threadState = parsedBody.mode === "direct" && execution.status === "success" && changesCount > 0
+        ? await buildThreadStatePayload(context).catch(() => undefined)
+        : undefined;
       return {
         planActionId,
         planResponseActionId,
@@ -3487,6 +3600,7 @@ export async function threadRoutes(app: FastifyInstance) {
         changesCount,
         messages: mapAssistantRunMessages(messagesResult.rows),
         systemId,
+        ...(threadState ? { threadState } : {}),
       };
     },
   );
@@ -3571,6 +3685,11 @@ export async function threadRoutes(app: FastifyInstance) {
         return reply.code(400).send({ error: "Invalid complete payload" });
       }
 
+      const openShipBundleFiles = parseOpenShipBundleFiles(parsed.openShipBundleFiles);
+      if (openShipBundleFiles === null) {
+        return reply.code(400).send({ error: "Invalid OpenShip bundle files payload" });
+      }
+
       const run = await getAgentRunByThreadId(context.threadId, runId);
       if (!run) {
         return reply.code(404).send({ error: "Run not found" });
@@ -3586,29 +3705,50 @@ export async function threadRoutes(app: FastifyInstance) {
       let completionRunUpdateApplied = false;
       let responseActionId: string | null = null;
       let responseMessages: AssistantRunMessageRow[] = [];
+      let completionStatus: "success" | "failed" = parsed.status === "failed" ? "failed" : "success";
+      let completionMessages = [...parsed.messages];
+      let completionError = parsed.error;
+      let completionThreadState: ThreadDetailPayload | undefined;
+
+      if (completionStatus === "success" && parsed.changes.length > 0 && openShipBundleFiles.length > 0) {
+        try {
+          await applyOpenShipBundleToThreadSystem({
+            threadId: context.threadId,
+            bundleFiles: openShipBundleFiles,
+          });
+          completionThreadState = await buildThreadStatePayload(context);
+        } catch (error: unknown) {
+          completionStatus = "failed";
+          const reconcileError = runExecutionError(error);
+          completionError = completionError ? `${completionError} / OpenShip reconciliation failed: ${reconcileError}` : `OpenShip reconciliation failed: ${reconcileError}`;
+          completionMessages = [...completionMessages, `OpenShip reconciliation failed: ${reconcileError}`];
+        }
+      }
 
       try {
         completionRunUpdateApplied = await updateAgentRunResult(
           run.id,
-          parsed.status,
+          completionStatus,
           {
-            status: parsed.status,
-            messages: parsed.messages,
+            status: completionStatus,
+            messages: completionMessages,
             changes: parsed.changes,
-            error: parsed.error,
+            error: completionError,
           },
           parsed.error,
           runnerId,
         );
-        const normalizedCompletionStatus = parsed.status === "failed" ? "failed" : (parsed.status === "success" ? "success" : "failed");
+        const normalizedCompletionStatus = completionStatus === "failed" ? "failed" : "success";
         await completionClient.query("BEGIN");
         if (completionRunUpdateApplied) {
           const completionRecord = await persistDesktopAgentRunCompletionMessage(
             completionClient,
             context.threadId,
             {
-              ...parsed,
               status: normalizedCompletionStatus,
+              messages: completionMessages,
+              changes: parsed.changes,
+              error: completionError,
             },
             normalizedCompletionStatus,
           );
@@ -3655,6 +3795,9 @@ export async function threadRoutes(app: FastifyInstance) {
         runError: updated.run_error,
         messages: responseMessages,
         threadStatus: updated.status,
+        threadState: completionStatus === "success" && (updated.run_result_changes?.length ?? 0) > 0
+          ? completionThreadState
+          : undefined,
       });
     },
   );
@@ -3683,6 +3826,13 @@ export async function threadRoutes(app: FastifyInstance) {
         return reply.code(500).send({ error: "Unable to resolve thread system" });
       }
 
+      const shouldIncludeThreadState = run.status === "success"
+        && run.run_result_status === "success"
+        && (run.run_result_changes?.length ?? 0) > 0;
+      const threadState = shouldIncludeThreadState
+        ? await buildThreadStatePayload(context).catch(() => undefined)
+        : undefined;
+
       return mapAgentRunRowToResponse({
         runId: run.id,
         systemId,
@@ -3691,6 +3841,7 @@ export async function threadRoutes(app: FastifyInstance) {
         runResultChanges: run.run_result_changes,
         runError: run.run_error,
         threadStatus: run.status,
+        threadState,
       });
     },
   );
