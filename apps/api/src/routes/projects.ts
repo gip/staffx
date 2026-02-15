@@ -27,6 +27,7 @@ interface ThreadRow {
   description: string | null;
   project_thread_id: number | null;
   status: string;
+  source_thread_id: string | null;
   created_by: string | null;
   created_at: Date;
   updated_at: Date;
@@ -358,7 +359,7 @@ export async function projectRoutes(app: FastifyInstance) {
               (SELECT jsonb_agg(t ORDER BY t.project_thread_id DESC)
               FROM (
                 SELECT t.id, t.title, t.description, t.project_thread_id, t.status,
-                       t.created_by, t.created_at, t.updated_at
+                       t.source_thread_id, t.created_by, t.created_at, t.updated_at
                 FROM threads t
                 WHERE t.project_id = p.id
               ) t),
@@ -389,6 +390,7 @@ export async function projectRoutes(app: FastifyInstance) {
           description: t.description,
           projectThreadId: t.project_thread_id,
           status: t.status,
+          sourceThreadId: t.source_thread_id,
           createdBy: t.created_by,
           createdAt: t.created_at,
           updatedAt: t.updated_at,

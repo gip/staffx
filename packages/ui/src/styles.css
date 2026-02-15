@@ -530,6 +530,17 @@ select.field-input {
   margin-bottom: 12px;
 }
 
+.thread-filter-info {
+  font-size: 13px;
+  color: var(--fg-muted);
+  margin-bottom: 8px;
+}
+
+.thread-filter-info a {
+  color: var(--fg);
+  text-decoration: underline;
+}
+
 /* Thread list */
 
 .thread-list {
@@ -611,6 +622,10 @@ select.field-input {
 
 .thread-row-error {
   margin-top: -4px;
+}
+
+.thread-row--nested {
+  border-left: 2px solid var(--border);
 }
 
 /* Status badge */

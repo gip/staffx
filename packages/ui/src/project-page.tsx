@@ -12,6 +12,7 @@ type MutationResult<T> = T | MutationError | void;
 
 interface ProjectPageProps {
   project: Project;
+  fromThreadId?: number | null;
   onCloseThread?: (threadProjectId: number) => Promise<MutationResult<{ thread: ThreadDetail }>>;
   onCommitThread?: (threadProjectId: number) => Promise<MutationResult<{ thread: ThreadDetail }>>;
   onCloneThread?: (
@@ -37,7 +38,43 @@ function getErrorMessage<T>(result: MutationResult<T>): string | null {
   return null;
 }
 
-export function ProjectPage({ project, onCloseThread, onCommitThread, onCloneThread }: ProjectPageProps) {
+function flattenThreadTree(threads: Thread[], fromProjectThreadId?: number | null): Array<{ thread: Thread; depth: number }> {
+  const threadIds = new Set(threads.map((t) => t.id));
+  const childrenMap = new Map<string, Thread[]>();
+  const roots: Thread[] = [];
+
+  for (const t of threads) {
+    const parentId = t.sourceThreadId;
+    if (parentId && threadIds.has(parentId)) {
+      if (!childrenMap.has(parentId)) childrenMap.set(parentId, []);
+      childrenMap.get(parentId)!.push(t);
+    } else {
+      roots.push(t);
+    }
+  }
+
+  const result: Array<{ thread: Thread; depth: number }> = [];
+  function walk(nodes: Thread[], depth: number) {
+    for (const node of nodes) {
+      result.push({ thread: node, depth });
+      const children = childrenMap.get(node.id);
+      if (children) walk(children, depth + 1);
+    }
+  }
+
+  if (fromProjectThreadId != null) {
+    const startThread = threads.find((t) => t.projectThreadId === fromProjectThreadId);
+    if (startThread) {
+      walk([startThread], 0);
+      return result;
+    }
+  }
+
+  walk(roots, 0);
+  return result;
+}
+
+export function ProjectPage({ project, fromThreadId, onCloseThread, onCommitThread, onCloneThread }: ProjectPageProps) {
   const [cloningThreadId, setCloningThreadId] = useState<string | null>(null);
   const [threadTransitionThreadId, setThreadTransitionThreadId] = useState<string | null>(null);
   const [threadTransitionAction, setThreadTransitionAction] = useState<"close" | "commit" | null>(null);
@@ -70,15 +107,26 @@ export function ProjectPage({ project, onCloseThread, onCommitThread, onCloneThr
 
       <section className="thread-section">
         <h3 className="thread-section-title">Threads</h3>
-        {project.threads.length === 0 ? (
-          <p className="status-text">No threads yet</p>
-        ) : (
-          <div className="thread-list">
-            {project.threads.map((t: Thread) => (
+        {(() => {
+          const flatThreads = flattenThreadTree(project.threads, fromThreadId);
+          const isFiltered = fromThreadId != null && flatThreads.length < project.threads.length;
+          return project.threads.length === 0 ? (
+            <p className="status-text">No threads yet</p>
+          ) : (
+            <>
+              {isFiltered && (
+                <p className="thread-filter-info">
+                  Showing threads from #{fromThreadId} &mdash;{" "}
+                  <Link to={`/${project.ownerHandle}/${project.name}`}>Show all</Link>
+                </p>
+              )}
+              <div className="thread-list">
+                {flatThreads.map(({ thread: t, depth }) => (
               <Link
                 key={t.id}
                 to={`/${project.ownerHandle}/${project.name}/thread/${t.projectThreadId}`}
-                className="thread-row"
+                className={`thread-row${depth > 0 ? " thread-row--nested" : ""}`}
+                style={depth > 0 ? { paddingLeft: `${16 + depth * 24}px` } : undefined}
               >
                 <span className="thread-row-main">
                   <span className="thread-row-id">#{t.projectThreadId}</span>
@@ -199,8 +247,10 @@ export function ProjectPage({ project, onCloseThread, onCommitThread, onCloneThr
                 )}
               </Link>
             ))}
-          </div>
-        )}
+              </div>
+            </>
+          );
+        })()}
       </section>
 
       {cloneThreadDraft && onCloneThread && (

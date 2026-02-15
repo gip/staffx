@@ -491,8 +491,11 @@ function AccountSettingsRoute() {
 
 function ProjectRoute() {
   const { handle, project: projectName } = useParams<{ handle: string; project: string }>();
+  const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const apiFetch = useApi();
+  const fromParam = searchParams.get("from");
+  const fromThreadId = fromParam !== null ? (Number.isFinite(Number(fromParam)) ? Number(fromParam) : null) : null;
   const [project, setProject] = useState<Project | null>(null);
   const [notFound, setNotFound] = useState(false);
 
@@ -529,6 +532,7 @@ function ProjectRoute() {
   return (
     <ProjectPage
       project={project}
+      fromThreadId={fromThreadId}
       onCloseThread={async (threadProjectId) => {
         try {
           const res = await apiFetch(

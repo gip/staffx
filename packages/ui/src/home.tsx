@@ -15,6 +15,7 @@ export interface Thread {
   description: string | null;
   projectThreadId: number | null;
   status: ThreadStatus;
+  sourceThreadId?: string | null;
   createdBy?: string;
   createdAt?: string;
   updatedAt: string;
