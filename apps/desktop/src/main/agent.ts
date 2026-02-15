@@ -242,6 +242,13 @@ export async function startAssistantRunLocal(payload: {
   const bundleDir = join(workspace, "openship");
   const before = await snapshotOpenShipBundle(bundleDir);
 
+  console.info("[desktop-agent] invoking Claude agent", {
+    runId: payload.runId,
+    workspace,
+    bundleDir,
+    systemPrompt: claimPayload.systemPrompt ?? null,
+  });
+
   const runResult = await runClaudeAgent({
     prompt: claimPayload.prompt ?? "Run this request.",
     cwd: workspace,

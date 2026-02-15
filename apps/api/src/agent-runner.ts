@@ -729,6 +729,12 @@ async function runClaudeAgentWithBundleDiff(
   }
   let runResult: AgentRunResult;
   try {
+    console.info("[agent-runner] invoking Claude agent", {
+      threadId,
+      openShipBundleDir,
+      workspace,
+      systemPrompt,
+    });
     runResult = await runClaudeAgent({
       prompt: runPrompt,
       cwd: workspace,

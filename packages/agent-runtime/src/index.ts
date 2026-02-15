@@ -55,23 +55,72 @@ export function resolveThreadWorkspacePath(input: ResolveThreadWorkspacePathInpu
   return join(baseDir, input.projectId, input.threadId);
 }
 
-function extractMessageSummary(message: SDKMessage): string | null {
-  if (typeof message !== "object" || message === null) return null;
-  const typed = message as SDKMessage & { content?: unknown; text?: unknown; type?: unknown };
-  const type = typeof typed.type === "string" ? typed.type : "message";
-  if (typed.type !== "system" && typed.type !== "assistant" && typed.type !== "user" && typed.type !== "tool") {
-    return `[${type}] ${JSON.stringify(typed).slice(0, 400)}`;
+function extractMessageText(value: unknown, depth = 0): string[] {
+  if (depth > 5 || value === null || value === undefined) return [];
+
+  if (typeof value === "string") {
+    return [value];
   }
 
-  const content = typeof typed.content === "string"
-    ? typed.content
-    : typeof typed.text === "string"
-      ? typed.text
-      : null;
+  if (Array.isArray(value)) {
+    return value.flatMap((item) => extractMessageText(item, depth + 1));
+  }
 
-  return content
-    ? `[${type}] ${content.slice(0, 400)}`
-    : `[${type}] ${JSON.stringify(typed).slice(0, 400)}`;
+  if (typeof value === "object") {
+    const typedValue = value as Record<string, unknown>;
+
+    if (typeof typedValue.text === "string") {
+      return [typedValue.text];
+    }
+
+    if (typeof typedValue.content === "string") {
+      return [typedValue.content];
+    }
+
+    if (typedValue.content !== undefined) {
+      return extractMessageText(typedValue.content, depth + 1);
+    }
+
+    if (typedValue.message !== undefined) {
+      return extractMessageText(typedValue.message, depth + 1);
+    }
+
+    if (typedValue.result !== undefined) {
+      return extractMessageText(typedValue.result, depth + 1);
+    }
+
+    return [];
+  }
+
+  return [];
+}
+
+function extractMessageSummary(message: SDKMessage): string | null {
+  if (typeof message !== "object" || message === null) return null;
+  const typed = message as SDKMessage & {
+    content?: unknown;
+    text?: unknown;
+    type?: unknown;
+    message?: unknown;
+  };
+  const type = typeof typed.type === "string" ? typed.type : "message";
+
+  if (type !== "assistant") {
+    return null;
+  }
+
+  const contentTextValues = [
+    ...(typed.message !== undefined ? extractMessageText(typed.message) : []),
+    ...(typed.content !== undefined ? extractMessageText(typed.content) : []),
+    ...(typed.text !== undefined ? extractMessageText(typed.text) : []),
+  ]
+    .filter((entry) => entry.trim().length > 0);
+
+  if (contentTextValues.length === 0) {
+    return null;
+  }
+
+  return contentTextValues.join("\n");
 }
 
 const DEFAULT_IGNORE_FILE_NAMES = new Set([
