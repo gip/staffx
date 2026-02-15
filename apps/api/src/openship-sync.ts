@@ -5,6 +5,7 @@ import type { PoolClient } from "pg";
 import pool, { query } from "./db.js";
 
 const SYSTEM_PROMPT_CONCERN = "__system_prompt__";
+const OPENSHIP_ROOT_NODE_ID = "s.root";
 
 type YamlScalar = string | number | boolean | null;
 type YamlValue = YamlScalar | YamlValue[] | Record<string, YamlValue>;
@@ -631,8 +632,9 @@ async function upsertDocumentArtifacts(
 function appendSystemPromptRefs(
   nodePayloads: ParsedNodeManifest[],
   manifest: ParsedOpenShipManifest,
+  resolvedRootNodeId: string,
 ): string[] {
-  const root = manifest.systemNodeId;
+  const root = resolvedRootNodeId;
   const rootNode = nodePayloads.find((node) => node.id === root);
   const refs = new Set<string>([...manifest.systemPromptRefs]);
   if (rootNode) {
@@ -641,6 +643,21 @@ function appendSystemPromptRefs(
     }
   }
   return Array.from(refs);
+}
+
+function resolveOpenShipRootNodeId(manifestRootNodeId: string, nodeLookup: Map<string, ParsedNodeManifest>): string {
+  if (manifestRootNodeId === OPENSHIP_ROOT_NODE_ID) {
+    if (!nodeLookup.has(OPENSHIP_ROOT_NODE_ID)) {
+      throw new Error(`Missing root node ${OPENSHIP_ROOT_NODE_ID} in nodes manifest.`);
+    }
+    return OPENSHIP_ROOT_NODE_ID;
+  }
+
+  if (!nodeLookup.has(manifestRootNodeId)) {
+    throw new Error(`Missing root node ${manifestRootNodeId} in nodes manifest.`);
+  }
+
+  return manifestRootNodeId;
 }
 
 async function ensurePromptDocsExist(
@@ -754,6 +771,9 @@ export async function applyOpenShipBundleToThreadSystemWithClient(
     ...Array.from(concernsFromMatrix).filter((concern) => !sortedConcerns.includes(concern)),
   ];
 
+  const nodeLookup = new Map<string, ParsedNodeManifest>(parsed.nodes.map((node) => [node.id, node]));
+  const resolvedSystemNodeId = resolveOpenShipRootNodeId(manifest.systemNodeId, nodeLookup);
+
   await client.query(
     `UPDATE systems
        SET name = $1,
@@ -761,7 +781,7 @@ export async function applyOpenShipBundleToThreadSystemWithClient(
            root_node_id = $3,
            updated_at = now()
      WHERE id = $4`,
-    [manifest.systemName, manifest.specVersion, manifest.systemNodeId, systemId],
+    [manifest.systemName, manifest.specVersion, resolvedSystemNodeId, systemId],
   );
 
   await client.query("DELETE FROM matrix_refs WHERE system_id = $1 AND ref_type IN ('Document'::ref_type, 'Skill'::ref_type)", [systemId]);
@@ -780,11 +800,6 @@ export async function applyOpenShipBundleToThreadSystemWithClient(
              is_baseline = EXCLUDED.is_baseline`,
       [systemId, concern, index],
     );
-  }
-
-  const nodeLookup = new Map<string, ParsedNodeManifest>(parsed.nodes.map((node) => [node.id, node]));
-  if (!nodeLookup.has(manifest.systemNodeId)) {
-    throw new Error(`Missing root node ${manifest.systemNodeId} in nodes manifest.`);
   }
 
   for (const node of parsed.nodes) {
@@ -876,8 +891,8 @@ export async function applyOpenShipBundleToThreadSystemWithClient(
     );
   }
 
-  const rootPromptRefs = appendSystemPromptRefs(parsed.nodes, parsed.manifest);
-  await ensurePromptDocsExist(client, systemId, manifest.systemNodeId, rootPromptRefs);
+  const rootPromptRefs = appendSystemPromptRefs(parsed.nodes, parsed.manifest, resolvedSystemNodeId);
+  await ensurePromptDocsExist(client, systemId, resolvedSystemNodeId, rootPromptRefs);
 
   for (const edge of parsed.edges) {
     await client.query(

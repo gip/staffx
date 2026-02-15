@@ -7,6 +7,7 @@ import { type Query, type SDKMessage, query } from "@anthropic-ai/claude-agent-s
 type AgentRunStatus = "success" | "failed";
 
 const DEFAULT_TOOLS = ["Read", "Grep", "Glob", "Bash", "Edit", "Write"] as const;
+const DEFAULT_CLAUDE_MODEL = "claude-opus-4-6";
 
 export interface AgentRunPlanChange {
   target_table: string;
@@ -306,9 +307,9 @@ export async function runClaudeAgent(input: RunClaudeAgentInput): Promise<AgentR
       permissionMode: "bypassPermissions",
       allowDangerouslySkipPermissions: true,
       allowedTools,
+      model: DEFAULT_CLAUDE_MODEL,
       cwd,
       ...(input.systemPrompt ? { systemPrompt: input.systemPrompt } : {}),
-      ...(input.model ? { model: input.model } : {}),
     },
   });
 

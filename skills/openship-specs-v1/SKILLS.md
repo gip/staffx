@@ -399,9 +399,11 @@ Code files live as real files on disk under `nodes/<nodeId>/artifacts/code/`. Th
 
 ### 10.2 Root Manifest (`openship.yaml`)
 
+OpenShip file-based bundles MUST use `s.root` as the canonical root system node identifier.
+
 ```yaml
 specVersion: openship/v1
-systemNodeId: sys.main
+systemNodeId: s.root
 concerns:
   - Features
   - General Specs
@@ -666,7 +668,7 @@ Implementations MAY impose stricter limits and SHOULD document them.
   },
   "nodes": [
     {
-      "id": "sys.main",
+      "id": "s.root",
       "kind": "Root",
       "name": "Example System",
       "metadata": {},
@@ -762,7 +764,7 @@ Given the JSON above, the file-based representation would be:
 │   └── documents
 │       └── sha256:1111...1111.md
 ├── nodes
-│   ├── sys.main
+│   ├── s.root
 │   │   └── node.yaml
 │   ├── h.main
 │   │   └── node.yaml
