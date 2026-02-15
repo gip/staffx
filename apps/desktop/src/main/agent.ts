@@ -7,6 +7,8 @@ import { getAccessToken } from "./auth.js";
 
 const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:3001";
 const DEFAULT_RUNNER_ID = process.env.STAFFX_AGENT_RUNNER_ID ?? "desktop-runner";
+const AGENTS_BOOTSTRAP_FILE_NAME = "AGENTS.md";
+const OPENSHIP_SPEC_WORKSPACE_FILE_PATH = "skills/openship-specs-v1/SKILL.md";
 
 interface AssistantRunClaimResponse {
   runId: string;
@@ -100,6 +102,17 @@ async function writeOpenShipBundle(workspace: string, files: OpenShipBundleFile[
     const filePath = join(bundleDir, ...safePath);
     await mkdir(dirname(filePath), { recursive: true });
     await writeFile(filePath, file.content, "utf8");
+
+    if (file.path === AGENTS_BOOTSTRAP_FILE_NAME) {
+      await writeFile(join(workspace, AGENTS_BOOTSTRAP_FILE_NAME), file.content, "utf8");
+      continue;
+    }
+
+    if (file.path === OPENSHIP_SPEC_WORKSPACE_FILE_PATH) {
+      const workspaceSpecPath = join(workspace, OPENSHIP_SPEC_WORKSPACE_FILE_PATH);
+      await mkdir(dirname(workspaceSpecPath), { recursive: true });
+      await writeFile(workspaceSpecPath, file.content, "utf8");
+    }
   }
 }
 
