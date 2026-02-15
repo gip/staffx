@@ -10,11 +10,10 @@
     "preview": "electron-vite preview"
   },
   "dependencies": {
-    "@staffx/agent-runtime": "workspace:*",
-    "pg": "^8.13.1",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "react-router-dom": "^7.13.0",
+    "@staffx/agent-runtime": "workspace:*",
     "@staffx/ui": "workspace:*"
   },
   "devDependencies": {

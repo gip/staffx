@@ -177,6 +177,84 @@ export async function claimNextAgentRun(runnerId: string): Promise<AgentRunRow |
   }
 }
 
+export async function claimAgentRunById(runId: string, runnerId: string, threadId?: string): Promise<AgentRunRow | null> {
+  try {
+    const values = threadId ? [runnerId, runId, threadId] : [runnerId, runId];
+    const whereClause = threadId ? "AND ar.thread_id = $3" : "";
+
+    const result = await query<AgentRunRow>(
+      `UPDATE agent_runs ar
+          SET status = 'running',
+              runner_id = $1,
+              started_at = NOW(),
+              updated_at = NOW(),
+              run_error = NULL
+        WHERE ar.id = $2
+          AND ar.status = 'queued'
+          ${whereClause}
+      RETURNING
+        ar.id,
+        ar.thread_id,
+        ar.project_id,
+        ar.requested_by_user_id,
+        ar.mode,
+        ar.plan_action_id,
+        ar.chat_message_id,
+        ar.prompt,
+        ar.system_prompt,
+        ar.status,
+        ar.runner_id,
+        ar.run_result_status,
+        ar.run_result_messages,
+        ar.run_result_changes,
+        ar.run_error,
+        ar.created_at,
+        ar.started_at,
+        ar.completed_at,
+        ar.updated_at`,
+      values,
+    );
+
+    if (!result.rowCount) return null;
+    return mapQueryRow(result.rows[0]);
+  } catch (error: unknown) {
+    if (error instanceof Error && (error as { code?: string }).code === "23505") {
+      // Unique constraint on active run per-thread.
+      return null;
+    }
+    throw error;
+  }
+}
+
+export async function getAgentRunById(runId: string): Promise<AgentRunRow | null> {
+  const result = await query<AgentRunRow>(
+    `SELECT
+      id,
+      thread_id,
+      project_id,
+      requested_by_user_id,
+      mode,
+      plan_action_id,
+      chat_message_id,
+      prompt,
+      system_prompt,
+      status,
+      runner_id,
+      run_result_status,
+      run_result_messages,
+      run_result_changes,
+      run_error,
+      created_at,
+      started_at,
+      completed_at,
+      updated_at
+    FROM agent_runs
+    WHERE id = $1`,
+    [runId],
+  );
+  return result.rowCount ? mapQueryRow(result.rows[0]) : null;
+}
+
 export interface AgentRunCompletionResult {
   status: AgentRunResult["status"];
   messages: string[];
@@ -236,8 +314,24 @@ export async function updateAgentRunResult(
   status: AgentRunStatus,
   result: Pick<AgentRunResult, "status" | "messages" | "changes" | "error">,
   runnerError?: string,
-): Promise<void> {
-  await query(
+  runnerId?: string,
+): Promise<boolean> {
+  const whereClause = runnerId
+    ? "WHERE id = $6 AND status = 'running' AND runner_id = $7"
+    : "WHERE id = $6 AND status = 'running'";
+  const values: Array<unknown> = [
+    status,
+    result.status,
+    result.messages,
+    JSON.stringify(result.changes),
+    runnerError ?? result.error ?? null,
+    runId,
+  ];
+  if (runnerId) {
+    values.push(runnerId);
+  }
+
+  const updateResult = await query(
     `UPDATE agent_runs
        SET status = $1,
            run_result_status = $2,
@@ -246,14 +340,19 @@ export async function updateAgentRunResult(
            run_error = COALESCE($5, run_error),
            completed_at = NOW(),
            updated_at = NOW()
-     WHERE id = $6`,
-    [
-      status,
-      result.status,
-      result.messages,
-      JSON.stringify(result.changes),
-      runnerError ?? result.error ?? null,
-      runId,
-    ],
+     ${whereClause}`,
+    values,
   );
+
+  if (updateResult.rowCount === 0) {
+    console.warn("[agent-queue] updateAgentRunResult no-op", {
+      runId,
+      status,
+      runnerId,
+      reason: "run already finalized or owned by different runner",
+    });
+    return false;
+  }
+
+  return true;
 }

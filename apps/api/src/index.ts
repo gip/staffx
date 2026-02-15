@@ -11,6 +11,7 @@ import { startAgentRunner } from "./agent-runner.js";
 
 const port = Number(process.env.PORT ?? 3001);
 const app = Fastify({ logger: true });
+const isClaudeAgentEnabled = process.env.STAFFX_ENABLE_CLAUDE_AGENT === "1";
 const apiPollMsRaw = Number(process.env.STAFFX_AGENT_RUNNER_POLL_MS ?? "1000");
 const apiPollMs = Number.isFinite(apiPollMsRaw) && apiPollMsRaw > 0 ? apiPollMsRaw : 1000;
 
@@ -22,9 +23,15 @@ await app.register(threadRoutes);
 await app.register(integrationsRoutes);
 await app.register(userRoutes);
 
-const stopAgentRunner = startAgentRunner({
-  pollIntervalMs: apiPollMs,
-  runnerId: process.env.STAFFX_AGENT_RUNNER_ID,
+const stopAgentRunner = isClaudeAgentEnabled
+  ? startAgentRunner({
+      pollIntervalMs: apiPollMs,
+      runnerId: process.env.STAFFX_AGENT_RUNNER_ID,
+    })
+  : () => {};
+
+app.log.info({
+  agentRunnerEnabled: isClaudeAgentEnabled,
 });
 
 try {

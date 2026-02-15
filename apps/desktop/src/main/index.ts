@@ -1,12 +1,12 @@
 import { app, BrowserWindow, ipcMain, nativeImage } from "electron";
 import { join } from "node:path";
 import { existsSync } from "node:fs";
+import { startAssistantRunLocal } from "./agent.js";
 import { getAccessToken, getAuthState, login, logout, notifyRenderer } from "./auth.js";
-import { startAgentRunner } from "./agent-runner.js";
 
 let mainWindow: BrowserWindow | null = null;
 let appIcon: Electron.NativeImage | null = null;
-let stopAgentRunner: () => Promise<void> = async () => {};
+const isClaudeAgentEnabled = process.env.STAFFX_ENABLE_CLAUDE_AGENT === "1";
 
 function resolveIcon(): string | null {
   const candidates = [
@@ -67,6 +67,17 @@ function createWindow() {
 // Auth IPC handlers
 ipcMain.handle("auth:get-state", () => getAuthState());
 ipcMain.handle("auth:get-token", () => getAccessToken());
+ipcMain.handle("assistant:run", async (_event, payload: {
+  handle: string;
+  projectName: string;
+  threadId: string;
+  runId: string;
+}) => {
+  if (!isClaudeAgentEnabled) {
+    return { error: "Desktop agent processing is disabled. Set STAFFX_ENABLE_CLAUDE_AGENT=1." };
+  }
+  return startAssistantRunLocal(payload);
+});
 
 ipcMain.on("auth:login", async () => {
   const success = await login();
@@ -83,16 +94,12 @@ ipcMain.on("auth:logout", async () => {
 
 app.whenReady().then(() => {
   createWindow();
-  stopAgentRunner = startAgentRunner();
+  console.info("[desktop] agent task processing enabled", { enabled: isClaudeAgentEnabled });
 });
 
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") {
-    stopAgentRunner().catch((error: unknown) => {
-      console.error("[desktop-agent-runner] stop error", { error: String(error) });
-    }).finally(() => {
-      app.quit();
-    });
+    app.quit();
   }
 });
 
@@ -100,10 +107,4 @@ app.on("activate", () => {
   if (BrowserWindow.getAllWindows().length === 0) {
     createWindow();
   }
-});
-
-app.on("before-quit", () => {
-  void stopAgentRunner().catch((error: unknown) => {
-    console.error("[desktop-agent-runner] stop error", { error: String(error) });
-  });
 });
