@@ -22,6 +22,7 @@ const DEFAULT_POLL_INTERVAL_MS = 1000;
 const DEFAULT_RUNNER_ID = process.env.STAFFX_AGENT_RUNNER_ID || "api-worker";
 const OPENSHIP_BUNDLE_DIR_NAME = "openship";
 const OPENSHIP_MANIFEST_FILE_NAME = "openship.yaml";
+const OPENSHIP_ROOT_NODE_ID = "s.root";
 const OPENSHIP_AGENT_SPEC_FILE_NAME = "SKILL.md";
 const OPENSHIP_AGENT_LEGACY_SPEC_FILE_NAME = "SKILLS.md";
 const OPENSHIP_BUNDLE_SPEC_FILE_NAME = "SKILLS.md";
@@ -64,6 +65,10 @@ const OPENSHIP_AGENT_AGENTS_CANDIDATES = [
 
 const SYSTEM_PROMPT_CONCERN = "__system_prompt__";
 const YAML_INDENT = "  ";
+
+function toBundleNodeId(nodeId: string, systemRootNodeId: string): string {
+  return nodeId === systemRootNodeId ? OPENSHIP_ROOT_NODE_ID : nodeId;
+}
 
 interface SystemRow {
   id: string;
@@ -452,7 +457,7 @@ export async function generateOpenShipFileBundle(threadId: string, workspace: st
     join(bundleDir, OPENSHIP_MANIFEST_FILE_NAME),
     toYaml({
       specVersion: system.spec_version,
-      systemNodeId: system.root_node_id,
+      systemNodeId: OPENSHIP_ROOT_NODE_ID,
       systemName: system.name,
       concerns: manifestConcerns,
       ...(rootPromptRefs.size > 0 ? { systemPromptRefs: [...rootPromptRefs].sort() } : {}),
@@ -476,14 +481,15 @@ export async function generateOpenShipFileBundle(threadId: string, workspace: st
       edges: edgesResult.rows.map((edge) => ({
         id: edge.id,
         type: edge.type,
-        fromNodeId: edge.from_node_id,
-        toNodeId: edge.to_node_id,
+        fromNodeId: toBundleNodeId(edge.from_node_id, system.root_node_id),
+        toNodeId: toBundleNodeId(edge.to_node_id, system.root_node_id),
         ...(edge.metadata && Object.keys(edge.metadata).length > 0 ? { metadata: edge.metadata } : {}),
       })),
     }) + "\n",
   );
 
   for (const node of nodesResult.rows) {
+    const bundleNodeId = toBundleNodeId(node.id, system.root_node_id);
     const nodeArtifacts = artifactsByNode.get(node.id) ?? [];
     const byNode = nodeMatrix.get(node.id);
     const matrix: Record<string, MatrixCellArtifacts> = {};
@@ -506,7 +512,7 @@ export async function generateOpenShipFileBundle(threadId: string, workspace: st
     const docs: Array<{ id: string; concern: string; files: string[]; language: string; text: string | null }> = [];
     const code: Array<{ id: string; concern: string; files: string[]; language: string; text: string | null }> = [];
 
-    const nodeBasePath = join(bundleDir, "nodes", node.id);
+    const nodeBasePath = join(bundleDir, "nodes", bundleNodeId);
 
     for (const artifact of nodeArtifacts) {
       if (artifact.type === "Summary") {
@@ -542,10 +548,12 @@ export async function generateOpenShipFileBundle(threadId: string, workspace: st
     }
 
     const nodeManifest = toYaml({
-      id: node.id,
+      id: bundleNodeId,
       kind: node.kind,
       name: node.name,
-      ...(node.parent_id ? { parentId: node.parent_id } : {}),
+      ...(node.parent_id
+        ? { parentId: toBundleNodeId(node.parent_id, system.root_node_id) }
+        : {}),
       metadata: node.metadata ?? {},
       ...(Object.keys(matrix).length > 0 ? { matrix } : { matrix: {} }),
       artifacts: {
@@ -561,7 +569,9 @@ export async function generateOpenShipFileBundle(threadId: string, workspace: st
             }
           : {}),
       },
-      ...(node.id === system.root_node_id && rootPromptRefs.size > 0 ? { systemPromptRefs: [...rootPromptRefs].sort() } : {}),
+      ...(node.id === system.root_node_id && rootPromptRefs.size > 0
+        ? { systemPromptRefs: [...rootPromptRefs].sort() }
+        : {}),
     }) + "\n";
 
     await writeFileInDir(join(nodeBasePath, "node.yaml"), nodeManifest);
@@ -572,7 +582,7 @@ export async function generateOpenShipFileBundle(threadId: string, workspace: st
         target,
         splitArtifactFrontMatter({
           id: artifact.id,
-          node_id: node.id,
+          node_id: bundleNodeId,
           concern: artifact.concern,
           type: "Summary",
           language: artifact.language,
@@ -587,7 +597,7 @@ export async function generateOpenShipFileBundle(threadId: string, workspace: st
         target,
         splitArtifactFrontMatter({
           id: artifact.id,
-          node_id: node.id,
+          node_id: bundleNodeId,
           concern: artifact.concern,
           type: "Docs",
           language: artifact.language,

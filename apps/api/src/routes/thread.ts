@@ -39,6 +39,7 @@ const DEFAULT_SYSTEM_PROMPT =
   "You will update the system description and implementation in ./openship (or not if there is no update) " +
   "and add to a file called SUMMARY.md a description of the plan executed, use Markdown. " +
   "Check that the updated ./openship directory is fully compliant with the OpenShip description and write that you checked that in the summary. " +
+  "Check that the YAML files that were modified or created are correct. " +
   "Send back the summary as the response to the user as well.";
 
 function extractAgentRunMessageText(value: unknown, depth = 0): string[] {
