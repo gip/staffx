@@ -17,9 +17,14 @@ const DEFAULT_POLL_INTERVAL_MS = 1000;
 const DEFAULT_RUNNER_ID = process.env.STAFFX_AGENT_RUNNER_ID || "api-worker";
 const OPENSHIP_BUNDLE_DIR_NAME = "openship";
 const OPENSHIP_MANIFEST_FILE_NAME = "openship.yaml";
-const OPENSHIP_TEMPLATE_SPEC_FILE_NAME = "SKILLS.md";
+const OPENSHIP_AGENT_SPEC_FILE_NAME = "SKILL.md";
+const OPENSHIP_AGENT_LEGACY_SPEC_FILE_NAME = "SKILLS.md";
+const OPENSHIP_BUNDLE_SPEC_FILE_NAME = "SKILLS.md";
+const OPENSHIP_BUNDLE_SPEC_REL_DIR = "openship-specs-v1";
+const OPENSHIP_AGENT_AGENTS_FILE_NAME = "AGENTS.md";
 const OPENSHIP_TEMPLATE_SPEC_CANDIDATES = [
-  resolve(process.cwd(), "skills", "openship-specs-v1", OPENSHIP_TEMPLATE_SPEC_FILE_NAME),
+  resolve(process.cwd(), "skills", "openship-specs-v1", OPENSHIP_AGENT_SPEC_FILE_NAME),
+  resolve(process.cwd(), "skills", "openship-specs-v1", OPENSHIP_AGENT_LEGACY_SPEC_FILE_NAME),
   resolve(
     dirname(fileURLToPath(import.meta.url)),
     "..",
@@ -27,7 +32,28 @@ const OPENSHIP_TEMPLATE_SPEC_CANDIDATES = [
     "..",
     "skills",
     "openship-specs-v1",
-    OPENSHIP_TEMPLATE_SPEC_FILE_NAME,
+    OPENSHIP_AGENT_SPEC_FILE_NAME,
+  ),
+  resolve(
+    dirname(fileURLToPath(import.meta.url)),
+    "..",
+    "..",
+    "..",
+    "skills",
+    "openship-specs-v1",
+    OPENSHIP_AGENT_LEGACY_SPEC_FILE_NAME,
+  ),
+];
+const OPENSHIP_AGENT_AGENTS_CANDIDATES = [
+  resolve(process.cwd(), "packages", "agent-runtime", OPENSHIP_AGENT_AGENTS_FILE_NAME),
+  resolve(
+    dirname(fileURLToPath(import.meta.url)),
+    "..",
+    "..",
+    "..",
+    "packages",
+    "agent-runtime",
+    OPENSHIP_AGENT_AGENTS_FILE_NAME,
   ),
 ];
 
@@ -217,14 +243,44 @@ function splitArtifactFrontMatter(artifact: ArtifactRow): string {
   return `${parts.join("\n")}\n`;
 }
 
-async function copyOpenShipSpec(bundleDir: string): Promise<void> {
+async function copyOpenShipSpec(bundleDir: string, workspace: string): Promise<void> {
+  let text: string | null = null;
   for (const candidate of OPENSHIP_TEMPLATE_SPEC_CANDIDATES) {
+    const specText = await readFile(candidate, "utf8").catch(() => null);
+    if (specText === null) continue;
+    text = specText;
+    break;
+  }
+
+  if (text === null) {
+    console.warn("[agent-runner] OpenShip spec not found in candidate paths; skipping spec injection");
+    return;
+  }
+
+  await writeFileInDir(
+    join(bundleDir, OPENSHIP_BUNDLE_SPEC_FILE_NAME),
+    text,
+  );
+  await writeFileInDir(
+    join(bundleDir, "skills", OPENSHIP_BUNDLE_SPEC_REL_DIR, OPENSHIP_AGENT_SPEC_FILE_NAME),
+    text,
+  );
+  await writeFileInDir(
+    join(workspace, "skills", OPENSHIP_BUNDLE_SPEC_REL_DIR, OPENSHIP_AGENT_SPEC_FILE_NAME),
+    text,
+  );
+}
+
+async function copyOpenShipAgentsBootstrap(targetDir: string): Promise<void> {
+  for (const candidate of OPENSHIP_AGENT_AGENTS_CANDIDATES) {
     const text = await readFile(candidate, "utf8").catch(() => null);
     if (text === null) continue;
 
-    await writeFile(join(bundleDir, OPENSHIP_TEMPLATE_SPEC_FILE_NAME), text, "utf8");
+    await writeFile(join(targetDir, OPENSHIP_AGENT_AGENTS_FILE_NAME), text, "utf8");
     return;
   }
+
+  console.warn("[agent-runner] AGENTS.md not found in candidates; skipping bootstrap injection");
 }
 
 async function writeFileInDir(filePath: string, contents: string): Promise<void> {
@@ -397,7 +453,9 @@ export async function generateOpenShipFileBundle(threadId: string, workspace: st
       ...(rootPromptRefs.size > 0 ? { systemPromptRefs: [...rootPromptRefs].sort() } : {}),
     }) + "\n",
   );
-  await copyOpenShipSpec(bundleDir);
+  await copyOpenShipSpec(bundleDir, workspace);
+  await copyOpenShipAgentsBootstrap(bundleDir);
+  await copyOpenShipAgentsBootstrap(workspace);
 
   for (const document of documentsByHash.values()) {
     if (document.kind !== "Document" && document.kind !== "Skill") {
@@ -671,6 +729,12 @@ async function runClaudeAgentWithBundleDiff(
   }
   let runResult: AgentRunResult;
   try {
+    console.info("[agent-runner] invoking Claude agent", {
+      threadId,
+      openShipBundleDir,
+      workspace,
+      systemPrompt,
+    });
     runResult = await runClaudeAgent({
       prompt: runPrompt,
       cwd: workspace,

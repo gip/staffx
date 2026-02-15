@@ -3111,6 +3111,47 @@ export function ThreadPage({
           </>
         );
 
+        const extractMessageTextFromUnknown = (value: unknown, depth = 0): string[] => {
+          if (depth > 5 || value === null || value === undefined) return [];
+          if (typeof value === "string") return [value];
+
+          if (Array.isArray(value)) {
+            return value.flatMap((item) => extractMessageTextFromUnknown(item, depth + 1));
+          }
+
+          if (typeof value === "object") {
+            const typedValue = value as Record<string, unknown>;
+            if (typeof typedValue.content === "string") return [typedValue.content];
+            if (typeof typedValue.text === "string") return [typedValue.text];
+            return Object.values(typedValue).flatMap((item) => extractMessageTextFromUnknown(item, depth + 1));
+          }
+
+          return [];
+        };
+
+        const formatChatMessageContent = (content: string) => {
+          const trimmed = content.trim();
+          if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) return content;
+
+          try {
+            const parsed = JSON.parse(trimmed);
+            const texts = extractMessageTextFromUnknown(parsed);
+            if (texts.length > 0) {
+              return texts.join("\n");
+            }
+          } catch {
+            return content;
+          }
+
+          return content;
+        };
+
+        const getChatSenderName = (role: "User" | "Assistant" | "System") => {
+          if (role === "User") return detail.thread.createdByHandle;
+          if (role === "Assistant") return selectedAgentModel;
+          return role;
+        };
+
         const renderChatBody = () => (
           <div>
             <div className="thread-chat-history">
@@ -3131,11 +3172,11 @@ export function ThreadPage({
                       <>
                         <header>
                           <div className="thread-chat-message-header-left">
-                            <strong>{message.role === "User" ? detail.thread.createdByHandle : message.role}</strong>
+                            <strong>{getChatSenderName(message.role)}</strong>
                           </div>
                           <span>{formatDateTime(message.createdAt)}</span>
                         </header>
-                        <p>{message.content}</p>
+                        <p>{formatChatMessageContent(message.content)}</p>
                       </>
                     )}
                   </article>

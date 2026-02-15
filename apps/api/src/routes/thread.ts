@@ -29,6 +29,78 @@ const AGENT_RUN_TIMEOUT_MS = parsePositiveMs(process.env.STAFFX_AGENT_RUN_TIMEOU
 const AGENT_RUN_POLL_MS = parsePositiveMs(process.env.STAFFX_AGENT_RUN_POLL_MS ?? "700", 700);
 const AGENT_RUN_SLOT_WAIT_MS = parsePositiveMs(process.env.STAFFX_AGENT_RUN_SLOT_WAIT_MS ?? "120000", 120000);
 const AGENT_RUN_ENQUEUE_POLL_MS = parsePositiveMs(process.env.STAFFX_AGENT_RUN_ENQUEUE_POLL_MS ?? "500", 500);
+const DEFAULT_SYSTEM_PROMPT = "You are a staff software engineer with top design and implementation skills. Start by reading AGENTS.md.";
+
+function extractAgentRunMessageText(value: unknown, depth = 0): string[] {
+  if (depth > 8 || value === null || value === undefined) return [];
+
+  if (typeof value === "string") {
+    return [value];
+  }
+
+  if (Array.isArray(value)) {
+    return value.flatMap((item) => extractAgentRunMessageText(item, depth + 1));
+  }
+
+  if (typeof value === "object") {
+    const typedValue = value as Record<string, unknown>;
+
+    if (typeof typedValue.text === "string") {
+      return [typedValue.text];
+    }
+
+    if (typedValue.content !== undefined) {
+      return extractAgentRunMessageText(typedValue.content, depth + 1);
+    }
+
+    if (typedValue.message !== undefined) {
+      return extractAgentRunMessageText(typedValue.message, depth + 1);
+    }
+
+    if (typedValue.result !== undefined) {
+      return extractAgentRunMessageText(typedValue.result, depth + 1);
+    }
+
+    if (typedValue.summary !== undefined) {
+      return extractAgentRunMessageText(typedValue.summary, depth + 1);
+    }
+
+    return [];
+  }
+
+  return [];
+}
+
+function normalizeAgentRunMessages(messages: string[]): string[] {
+  const unique = new Set<string>();
+  const normalized: string[] = [];
+
+  for (const rawMessage of messages) {
+    const trimmed = rawMessage.trim();
+    if (!trimmed) continue;
+
+    const withoutPrefix = trimmed.replace(/^\[[^\]]+\]\s*/g, "");
+
+    let candidateTexts: string[] = [];
+    try {
+      const parsed = JSON.parse(withoutPrefix) as unknown;
+      candidateTexts = extractAgentRunMessageText(parsed)
+        .map((entry) => entry.trim())
+        .filter((entry) => entry.length > 0);
+    } catch {
+      candidateTexts = [trimmed];
+    }
+
+    for (const text of candidateTexts) {
+      if (!unique.has(text)) {
+        unique.add(text);
+        normalized.push(text);
+      }
+    }
+  }
+
+  return normalized.length > 0 ? normalized : ["Execution completed."];
+}
 
 type AssistantExecutor = "backend" | "desktop";
 
@@ -809,7 +881,9 @@ async function persistDesktopAgentRunCompletionMessage(
   if (payload.messages.length === 0) return null;
 
   const responseActionId = randomUUID();
-  const responseMessage = `${runResultStatus.toUpperCase()}: ${payload.messages.join(" | ")}`;
+  const normalizedMessages = normalizeAgentRunMessages(payload.messages)
+    .filter((message) => !message.startsWith("OpenShip changes:"));
+  const responseMessage = `${runResultStatus.toUpperCase()}: ${normalizedMessages.join(" | ")}`;
   await client.query(
     `SELECT begin_action($1, $2, $3::action_type, $4) AS output_system_id`,
     [threadId, responseActionId, "ExecuteResponse", "Agent execution response"],
@@ -3044,6 +3118,14 @@ export async function threadRoutes(app: FastifyInstance) {
           return reply.code(500).send({ error: "Unable to resolve thread system" });
         }
         const { text: systemPromptText } = await getSystemPromptWithMetadataForSystem(threadSystemId);
+        const resolvedSystemPrompt = systemPromptText?.trim() || DEFAULT_SYSTEM_PROMPT;
+        req.log.info(
+          {
+            threadId: context.threadId,
+            systemPrompt: resolvedSystemPrompt,
+          },
+          "Passing control to agent with system prompt (desktop direct)",
+        );
 
         const runId = await enqueueAgentRunWithWait({
           threadId: context.threadId,
@@ -3053,7 +3135,7 @@ export async function threadRoutes(app: FastifyInstance) {
           planActionId: null,
           chatMessageId: parsedBody.chatMessageId,
           prompt: runPrompt,
-          systemPrompt: systemPromptText,
+          systemPrompt: resolvedSystemPrompt,
         }, AGENT_RUN_SLOT_WAIT_MS, AGENT_RUN_ENQUEUE_POLL_MS);
 
         const systemId = await getThreadSystemId(context.threadId);
@@ -3149,6 +3231,14 @@ export async function threadRoutes(app: FastifyInstance) {
             return reply.code(500).send({ error: "Unable to resolve thread system" });
           }
           const { text: systemPromptText } = await getSystemPromptWithMetadataForSystem(threadSystemId);
+          const resolvedSystemPrompt = systemPromptText?.trim() || DEFAULT_SYSTEM_PROMPT;
+          req.log.info(
+            {
+              threadId: context.threadId,
+              systemPrompt: resolvedSystemPrompt,
+            },
+            "Passing control to agent with system prompt (backend direct execution)",
+          );
 
           const runId = await enqueueAgentRunWithWait({
             threadId: context.threadId,
@@ -3158,7 +3248,7 @@ export async function threadRoutes(app: FastifyInstance) {
             planActionId,
             chatMessageId: parsedBody.chatMessageId,
             prompt: runPrompt,
-            systemPrompt: systemPromptText,
+            systemPrompt: resolvedSystemPrompt,
           }, AGENT_RUN_SLOT_WAIT_MS, AGENT_RUN_ENQUEUE_POLL_MS);
 
           const completed = await waitForAgentRunCompletion(runId, AGENT_RUN_TIMEOUT_MS, AGENT_RUN_POLL_MS);
