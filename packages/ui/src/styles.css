@@ -1899,10 +1899,14 @@ a.project-card {
 
 .thread-chat-message--user {
   border-color: rgba(31, 109, 255, 0.4);
+  max-width: 80%;
+  margin-left: auto;
 }
 
 .thread-chat-message--system {
   border-style: dashed;
+  max-width: 80%;
+  margin-left: auto;
 }
 
 .thread-chat-message--system header {

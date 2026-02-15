@@ -3131,8 +3131,7 @@ export function ThreadPage({
                       <>
                         <header>
                           <div className="thread-chat-message-header-left">
-                            <strong>{message.role}</strong>
-                            {message.actionType ? <span className="thread-chat-action-type">{message.actionType}</span> : null}
+                            <strong>{message.role === "User" ? detail.thread.createdByHandle : message.role}</strong>
                           </div>
                           <span>{formatDateTime(message.createdAt)}</span>
                         </header>
