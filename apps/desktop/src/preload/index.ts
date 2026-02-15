@@ -15,7 +15,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
     },
   },
   agent: {
-    start: (params: { prompt: string; cwd?: string; allowedTools?: string[]; systemPrompt?: string; model?: string }) =>
+    start: (params: { prompt: string; handle?: string; projectName?: string; threadId?: string; cwd?: string; allowedTools?: string[]; systemPrompt?: string; model?: string }) =>
       ipcRenderer.invoke("agent:start", params) as Promise<{ threadId: string }>,
     stop: (threadId: string) => ipcRenderer.send("agent:stop", { threadId }),
     getStatus: (threadId: string) =>

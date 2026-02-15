@@ -172,6 +172,10 @@ export interface ThreadDetailPayload {
   chat: {
     messages: ChatMessage[];
   };
+  pendingExecution?: {
+    executeActionId: string;
+    prompt: string;
+  } | null;
 }
 
 interface MutationError {
