@@ -1,0 +1,17 @@
+{
+  "name": "@staffx/agent-runtime",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.2.41"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.1"
+  }
+}

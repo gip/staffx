@@ -384,6 +384,36 @@ create index idx_changes_action on changes (thread_id, action_id);
 create index idx_changes_target on changes (target_table, target_id);
 
 -- ============================================================
+-- AGENT RUNS (unified backend + desktop queue)
+-- ============================================================
+
+create table if not exists agent_runs (
+  id uuid primary key default gen_random_uuid(),
+  thread_id text not null references threads(id) on delete cascade,
+  project_id text not null references projects(id) on delete cascade,
+  requested_by_user_id uuid references users(id) on delete set null,
+  mode text not null check (mode in ('direct', 'plan')),
+  plan_action_id text,
+  chat_message_id text,
+  prompt text not null,
+  system_prompt text,
+  status text not null default 'queued' check (status in ('queued', 'running', 'success', 'failed', 'cancelled')),
+  runner_id text,
+  run_result_status text check (run_result_status in ('success', 'failed')),
+  run_result_messages text[] default ARRAY[]::text[],
+  run_result_changes jsonb default '[]'::jsonb,
+  run_error text,
+  created_at timestamptz not null default now(),
+  started_at timestamptz,
+  completed_at timestamptz,
+  updated_at timestamptz not null default now()
+);
+
+create index idx_agent_runs_status_created on agent_runs (status, created_at);
+create unique index uq_agent_runs_thread_active on agent_runs (thread_id)
+  where status = 'running';
+
+-- ============================================================
 -- FUNCTIONS
 -- ============================================================
 

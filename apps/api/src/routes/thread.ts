@@ -1,14 +1,36 @@
 import { createHash, randomUUID } from "node:crypto";
+import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { PoolClient } from "pg";
+import { AgentRunPlanChange } from "@staffx/agent-runtime";
 import pool, { query } from "../db.js";
+import {
+  claimAgentRunById,
+  enqueueAgentRunWithWait,
+  getAgentRunById,
+  waitForAgentRunCompletion,
+  updateAgentRunResult,
+} from "../agent-queue.js";
 import { verifyOptionalAuth, type AuthUser } from "../auth.js";
 import { decryptToken, encryptToken } from "../integrations/crypto.js";
 import { getProviderClient, sourceTypeToProvider, type DocSourceType } from "../integrations/index.js";
+import { generateOpenShipFileBundle } from "../agent-runner.js";
 
 const EDIT_ROLES = new Set(["Owner", "Editor"]);
-const PLACEHOLDER_ASSISTANT_MESSAGE = "Received. I captured your request in this thread.";
 const SYSTEM_PROMPT_CONCERN = "__system_prompt__";
+function parsePositiveMs(value: string, fallback: number): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+const AGENT_RUN_TIMEOUT_MS = parsePositiveMs(process.env.STAFFX_AGENT_RUN_TIMEOUT_MS ?? "120000", 120000);
+const AGENT_RUN_POLL_MS = parsePositiveMs(process.env.STAFFX_AGENT_RUN_POLL_MS ?? "700", 700);
+const AGENT_RUN_SLOT_WAIT_MS = parsePositiveMs(process.env.STAFFX_AGENT_RUN_SLOT_WAIT_MS ?? "120000", 120000);
+const AGENT_RUN_ENQUEUE_POLL_MS = parsePositiveMs(process.env.STAFFX_AGENT_RUN_ENQUEUE_POLL_MS ?? "500", 500);
+
+type AssistantExecutor = "backend" | "desktop";
 
 type ThreadStatus = "open" | "closed" | "committed";
 
@@ -143,13 +165,7 @@ interface MessageReferenceRow {
   content: string;
 }
 
-interface AssistantRunPlanChange {
-  target_table: string;
-  operation: "Create" | "Update" | "Delete";
-  target_id: Record<string, unknown>;
-  previous: Record<string, unknown> | null;
-  current: Record<string, unknown> | null;
-}
+type AssistantRunPlanChange = AgentRunPlanChange;
 
 interface AssistantRunMessageLookupRow {
   id: string;
@@ -170,12 +186,22 @@ interface AssistantRunMessageRow {
   created_at: Date;
 }
 
+interface AssistantRunCompletionRecord {
+  responseActionId: string;
+}
+
 interface AssistantRunPlanResponse {
   planActionId: string | null;
   planResponseActionId: string | null;
   executeActionId: string | null;
   executeResponseActionId: string | null;
   updateActionId: string | null;
+  filesChanged: {
+    kind: "Create" | "Update" | "Delete";
+    path: string;
+    fromHash?: string;
+    toHash?: string;
+  }[];
   summary: {
     status: "success" | "failed";
     messages: string[];
@@ -185,10 +211,61 @@ interface AssistantRunPlanResponse {
   systemId: string;
 }
 
+interface AssistantRunQueuedResponse {
+  runId: string;
+  status: "queued" | "running";
+  message: "Run queued for desktop execution";
+  systemId: string;
+}
+
 interface AssistantRunRequestBody {
   chatMessageId: string | null;
   mode: "direct" | "plan";
   planActionId: string | null;
+  executor: AssistantExecutor;
+  wait: boolean;
+}
+
+interface AssistantRunClaimRequestBody {
+  runnerId?: string;
+}
+
+interface AssistantRunCompleteRequestBody {
+  status: "success" | "failed";
+  messages: string[];
+  changes: AgentRunPlanChange[];
+  error?: string;
+  runnerId?: string;
+}
+
+interface OpenShipBundleDescriptorFile {
+  path: string;
+  content: string;
+}
+
+interface OpenShipBundleDescriptor {
+  threadId: string;
+  systemId: string;
+  generatedAt: string;
+  files: OpenShipBundleDescriptorFile[];
+}
+
+interface AssistantRunRow {
+  id: string;
+  thread_id: string;
+  project_id: string;
+  requested_by_user_id: string | null;
+  mode: "direct" | "plan";
+  plan_action_id: string | null;
+  chat_message_id: string | null;
+  prompt: string;
+  system_prompt: string | null;
+  status: "queued" | "running" | "success" | "failed" | "cancelled";
+  runner_id: string | null;
+  run_result_status: "success" | "failed" | null;
+  run_result_messages: string[] | null;
+  run_result_changes: AssistantRunPlanChange[] | null;
+  run_error: string | null;
 }
 
 interface BeginActionRow {
@@ -248,6 +325,60 @@ function getViewerUserId(req: FastifyRequest): string | null {
 interface CloneThreadBody {
   title?: string;
   description?: string;
+}
+
+function extractAssistantRunChangedFiles(changes: AssistantRunPlanChange[]): AssistantRunPlanResponse["filesChanged"] {
+  return changes
+    .filter((change) => change.target_table === "OpenShipBundleFile")
+    .map((change) => ({
+      kind: change.operation,
+      path: String(change.target_id.path ?? ""),
+      fromHash: (change.previous as { hash?: string } | null)?.hash,
+      toHash: (change.current as { hash?: string } | null)?.hash,
+    }));
+}
+
+async function collectOpenShipBundleDescriptorFiles(bundleDir: string): Promise<OpenShipBundleDescriptorFile[]> {
+  const entries = await readdir(bundleDir, { withFileTypes: true });
+  const files: OpenShipBundleDescriptorFile[] = [];
+
+  for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
+    const childPath = join(bundleDir, entry.name);
+    if (entry.isDirectory()) {
+      const nested = await collectOpenShipBundleDescriptorFiles(childPath);
+      files.push(...nested.map((file) => ({
+        path: join(entry.name, file.path).replace(/\\/g, "/"),
+        content: file.content,
+      })));
+      continue;
+    }
+    if (!entry.isFile()) continue;
+
+    const content = await readFile(childPath, "utf8").catch(() => null);
+    if (content === null) continue;
+    files.push({
+      path: entry.name,
+      content,
+    });
+  }
+
+  return files;
+}
+
+async function buildOpenShipBundleDescriptor(threadId: string, contextSystemId: string): Promise<OpenShipBundleDescriptor> {
+  const workspace = await mkdtemp(join(tmpdir(), "staffx-openship-bundle-"));
+  try {
+    const bundleDir = await generateOpenShipFileBundle(threadId, workspace);
+    const files = await collectOpenShipBundleDescriptorFiles(bundleDir);
+    return {
+      threadId,
+      systemId: contextSystemId,
+      generatedAt: new Date().toISOString(),
+      files,
+    };
+  } finally {
+    await rm(workspace, { recursive: true, force: true });
+  }
 }
 
 interface MatrixDoc {
@@ -401,13 +532,20 @@ function parseAssistantRunRequest(body: unknown): AssistantRunRequestBody | null
     chatMessageId: unknown;
     mode: unknown;
     planActionId: unknown;
+    executor: unknown;
+    wait: unknown;
   }>;
   const mode = parseAssistantRunMode(payload.mode);
   if (!mode) return null;
 
   const chatMessageId = parseOptionalUuid(payload.chatMessageId);
   const planActionId = parseOptionalUuid(payload.planActionId);
-  return { mode, chatMessageId, planActionId };
+  const executorRaw = typeof payload.executor === "string" ? payload.executor : "backend";
+  if (payload.wait !== undefined && payload.wait !== true && payload.wait !== false) return null;
+  const wait = payload.wait === undefined ? true : payload.wait;
+  const executor: AssistantExecutor = executorRaw === "desktop" ? "desktop" : "backend";
+
+  return { mode, chatMessageId, planActionId, executor, wait };
 }
 
 async function getAssistantRunTriggerMessage(threadId: string, chatMessageId: string | null): Promise<AssistantRunMessageLookupRow | null> {
@@ -416,7 +554,7 @@ async function getAssistantRunTriggerMessage(threadId: string, chatMessageId: st
       `SELECT m.id, m.role, m.content, m.created_at, a.type AS action_type, a.position AS action_position
        FROM messages m
        JOIN actions a ON a.thread_id = m.thread_id AND a.id = m.action_id
-       WHERE m.thread_id = $1 AND m.id = $2
+       WHERE m.thread_id = $1 AND m.id = $2 AND m.role = 'User'
        LIMIT 1`,
       [threadId, chatMessageId],
     );
@@ -608,39 +746,109 @@ function generatePlanResponseContent(prompt: string): string {
 4. Return a concise summary and changed artifacts.`;
 }
 
-function simulateAssistantExecution(prompt: string, hasPlan: boolean): {
-  status: "success" | "failed";
-  messages: string[];
-  changes: AssistantRunPlanChange[];
-} {
-  const input = prompt.trim();
-  if (!input) {
+function runExecutionError(error: unknown): string {
+  return error instanceof Error ? error.message : "Agent execution failed.";
+}
+
+function mapAgentRunRowToResponse(row: {
+  runId: string;
+  systemId: string;
+  runResultStatus?: "success" | "failed" | null;
+  runResultMessages?: string[] | null;
+  runResultChanges?: AssistantRunPlanChange[] | null;
+  runError?: string | null;
+  threadStatus: "queued" | "running" | "success" | "failed" | "cancelled";
+  messages?: AssistantRunMessageRow[];
+}): AssistantRunPlanResponse | AssistantRunQueuedResponse {
+  if (row.threadStatus !== "success" && row.threadStatus !== "failed" && row.threadStatus !== "cancelled") {
     return {
-      status: "failed",
-      messages: ["No actionable prompt was provided."],
-      changes: [],
+      runId: row.runId,
+      status: row.threadStatus,
+      message: "Run has not completed yet.",
+      systemId: row.systemId,
     };
   }
 
-  if (hasPlan) {
-    return {
-      status: "success",
-      messages: [
-        "Plan review completed.",
-        "No direct topology or document mutation hooks were triggered in this invocation.",
-      ],
-      changes: [],
-    };
-  }
-
+  const status = row.threadStatus === "cancelled" ? "failed" : row.runResultStatus ?? row.threadStatus;
+  const messages = row.runResultMessages && row.runResultMessages.length > 0
+    ? row.runResultMessages
+    : [row.runError ?? "No execution output."];
+  const changes = row.runResultChanges ?? [];
   return {
-    status: "success",
-    messages: [
-      "Execution completed.",
-      "No system changes were required for this request.",
-    ],
-    changes: [],
+    planActionId: null,
+    planResponseActionId: null,
+    executeActionId: null,
+    executeResponseActionId: null,
+    updateActionId: null,
+    filesChanged: extractAssistantRunChangedFiles(changes),
+    summary: assistantRunSummary(status, messages),
+    changesCount: status === "success" ? changes.length : 0,
+    messages: row.messages ? mapAssistantRunMessages(row.messages) : [],
+    systemId: row.systemId,
   };
+}
+
+async function getAgentRunByThreadId(threadId: string, runId: string): Promise<AssistantRunRow | null> {
+  const result = await query<AssistantRunRow>(
+    `SELECT id, thread_id, project_id, requested_by_user_id, mode, plan_action_id, chat_message_id,
+            prompt, system_prompt, status, runner_id, run_result_status,
+            run_result_messages, run_result_changes, run_error
+       FROM agent_runs
+      WHERE id = $1 AND thread_id = $2`,
+    [runId, threadId],
+  );
+  return result.rowCount ? result.rows[0] : null;
+}
+
+async function persistDesktopAgentRunCompletionMessage(
+  client: PoolClient,
+  threadId: string,
+  payload: AssistantRunCompleteRequestBody,
+  runResultStatus: "success" | "failed",
+): Promise<AssistantRunCompletionRecord | null> {
+  if (payload.messages.length === 0) return null;
+
+  const responseActionId = randomUUID();
+  const responseMessage = `${runResultStatus.toUpperCase()}: ${payload.messages.join(" | ")}`;
+  await client.query(
+    `SELECT begin_action($1, $2, $3::action_type, $4) AS output_system_id`,
+    [threadId, responseActionId, "ExecuteResponse", "Agent execution response"],
+  );
+  await client.query("SELECT commit_action_empty($1, $2)", [threadId, responseActionId]);
+  await client.query(
+    `INSERT INTO messages (id, thread_id, action_id, role, content, position)
+     VALUES ($1, $2, $3, 'Assistant'::message_role, $4, 1)`,
+    [randomUUID(), threadId, responseActionId, responseMessage],
+  );
+
+  if (runResultStatus === "success" && payload.changes.length > 0) {
+    const changeActionId = randomUUID();
+    await client.query(
+      `SELECT begin_action($1, $2, $3::action_type, $4) AS output_system_id`,
+      [threadId, changeActionId, "Update", "Agent execution changes"],
+    );
+    for (const change of payload.changes) {
+      await client.query(
+        `INSERT INTO changes (
+           id, thread_id, action_id, target_table, operation, target_id, previous, current
+         )
+         VALUES ($1, $2, $3, $4, $5::change_operation, $6, $7, $8)`,
+        [
+          randomUUID(),
+          threadId,
+          changeActionId,
+          change.target_table,
+          change.operation,
+          JSON.stringify(change.target_id),
+          change.previous ? JSON.stringify(change.previous) : null,
+          change.current ? JSON.stringify(change.current) : null,
+        ],
+      );
+    }
+    await client.query("SELECT commit_action_empty($1, $2)", [threadId, changeActionId]);
+  }
+
+  return { responseActionId };
 }
 
 function resolvePlanActionFromResponse(
@@ -2750,7 +2958,6 @@ export async function threadRoutes(app: FastifyInstance) {
       const content = req.body.content.trim();
       const actionId = randomUUID();
       const userMessageId = randomUUID();
-      const assistantMessageId = randomUUID();
 
       const client = await pool.connect();
       let inTransaction = false;
@@ -2768,16 +2975,12 @@ export async function threadRoutes(app: FastifyInstance) {
 
         await client.query(
           `INSERT INTO messages (id, thread_id, action_id, role, content, position)
-           VALUES
-             ($1, $2, $3, 'User'::message_role, $4, 1),
-             ($5, $2, $3, 'Assistant'::message_role, $6, 2)`,
+           VALUES ($1, $2, $3, 'User'::message_role, $4, 1)`,
           [
             userMessageId,
             context.threadId,
             actionId,
             content,
-            assistantMessageId,
-            PLACEHOLDER_ASSISTANT_MESSAGE,
           ],
         );
 
@@ -2834,6 +3037,51 @@ export async function threadRoutes(app: FastifyInstance) {
         messages: string[];
         changes: AssistantRunPlanChange[];
       } = { status: "success", messages: ["No execution run yet."], changes: [] };
+
+      if (parsedBody.executor === "desktop" && parsedBody.mode === "direct") {
+        const threadSystemId = await getThreadSystemId(context.threadId);
+        if (!threadSystemId) {
+          return reply.code(500).send({ error: "Unable to resolve thread system" });
+        }
+        const { text: systemPromptText } = await getSystemPromptWithMetadataForSystem(threadSystemId);
+
+        const runId = await enqueueAgentRunWithWait({
+          threadId: context.threadId,
+          projectId: context.projectId,
+          requestedByUserId: getViewerUserId(req),
+          mode: "direct",
+          planActionId: null,
+          chatMessageId: parsedBody.chatMessageId,
+          prompt: runPrompt,
+          systemPrompt: systemPromptText,
+        }, AGENT_RUN_SLOT_WAIT_MS, AGENT_RUN_ENQUEUE_POLL_MS);
+
+        const systemId = await getThreadSystemId(context.threadId);
+        if (!systemId) {
+          return reply.code(500).send({ error: "Unable to resolve thread system" });
+        }
+
+        if (parsedBody.wait) {
+          const completed = await waitForAgentRunCompletion(runId, AGENT_RUN_TIMEOUT_MS, AGENT_RUN_POLL_MS);
+          if (!completed) {
+            return reply.code(408).send({ error: "Timed out waiting for agent execution to finish." });
+          }
+        }
+
+        const runRow = await getAgentRunByThreadId(context.threadId, runId);
+        if (!runRow) {
+          return reply.code(500).send({ error: "Run was not created." });
+        }
+        return mapAgentRunRowToResponse({
+          runId: runRow.id,
+          systemId,
+          runResultStatus: runRow.run_result_status,
+          runResultMessages: runRow.run_result_messages,
+          runResultChanges: runRow.run_result_changes,
+          runError: runRow.run_error,
+          threadStatus: runRow.status,
+        });
+      }
 
       if (parsedBody.mode === "direct") {
         if (parsedBody.planActionId) {
@@ -2895,7 +3143,44 @@ export async function threadRoutes(app: FastifyInstance) {
         }
         actionIds.push(executeActionId);
 
-        execution = simulateAssistantExecution(runPrompt, Boolean(planActionId));
+        try {
+          const threadSystemId = await getThreadSystemId(context.threadId);
+          if (!threadSystemId) {
+            return reply.code(500).send({ error: "Unable to resolve thread system" });
+          }
+          const { text: systemPromptText } = await getSystemPromptWithMetadataForSystem(threadSystemId);
+
+          const runId = await enqueueAgentRunWithWait({
+            threadId: context.threadId,
+            projectId: context.projectId,
+            requestedByUserId: getViewerUserId(req),
+            mode: "direct",
+            planActionId,
+            chatMessageId: parsedBody.chatMessageId,
+            prompt: runPrompt,
+            systemPrompt: systemPromptText,
+          }, AGENT_RUN_SLOT_WAIT_MS, AGENT_RUN_ENQUEUE_POLL_MS);
+
+          const completed = await waitForAgentRunCompletion(runId, AGENT_RUN_TIMEOUT_MS, AGENT_RUN_POLL_MS);
+          if (!completed) {
+            return reply.code(408).send({ error: "Timed out waiting for agent execution to finish." });
+          }
+
+          execution = {
+            status: completed.status,
+            messages: completed.messages,
+            changes: completed.changes,
+          };
+        } catch (error: unknown) {
+          execution = {
+            status: "failed",
+            messages: [runExecutionError(error)],
+            changes: [],
+          };
+          if (error instanceof Error && error.message.includes("Timeout waiting for a free agent run slot")) {
+            return reply.code(408).send({ error: error.message });
+          }
+        }
 
         const executeResponseActionClient = await pool.connect();
         let responseInTransaction = false;
@@ -2942,7 +3227,7 @@ export async function threadRoutes(app: FastifyInstance) {
         }
         actionIds.push(executeResponseActionId);
 
-        if (execution.changes.length > 0) {
+        if (execution.status === "success" && execution.changes.length > 0) {
           const updateClient = await pool.connect();
           let updateInTransaction = false;
 
@@ -3094,19 +3379,229 @@ export async function threadRoutes(app: FastifyInstance) {
       const summary = parsedBody.mode === "direct"
         ? assistantRunSummary(execution.status, execution.messages.length > 0 ? execution.messages : ["Execution completed."])
         : assistantRunSummary("success", ["Plan generated."]);
+      const filesChanged = parsedBody.mode === "direct" && execution.status === "success"
+        ? extractAssistantRunChangedFiles(execution.changes)
+        : [];
 
-      const changesCount = parsedBody.mode === "direct" ? execution.changes.length : 0;
+      const changesCount = parsedBody.mode === "direct" && execution.status === "success"
+        ? execution.changes.length
+        : 0;
       return {
         planActionId,
         planResponseActionId,
         executeActionId,
         executeResponseActionId,
         updateActionId,
+        filesChanged,
         summary,
         changesCount,
         messages: mapAssistantRunMessages(messagesResult.rows),
         systemId,
       };
+    },
+  );
+
+  app.get<{ Params: { handle: string; projectName: string; threadId: string } }>(
+    "/projects/:handle/:projectName/thread/:threadId/openship/bundle",
+    async (req, reply) => {
+      const { handle, projectName, threadId } = req.params;
+      const context = await requireContext(reply, getViewerUserId(req), handle, projectName, threadId);
+      if (!context) return;
+
+      if (!canEdit(context.accessRole)) {
+        return reply.code(403).send({ error: "Forbidden" });
+      }
+
+      const systemId = await getThreadSystemId(context.threadId);
+      if (!systemId) {
+        return reply.code(500).send({ error: "Unable to resolve thread system" });
+      }
+
+      const descriptor = await buildOpenShipBundleDescriptor(context.threadId, systemId);
+      return descriptor;
+    },
+  );
+
+  app.post<{ Params: { handle: string; projectName: string; threadId: string; runId: string }; Body: AssistantRunClaimRequestBody }>(
+    "/projects/:handle/:projectName/thread/:threadId/assistant/run/:runId/claim",
+    async (req, reply) => {
+      const { handle, projectName, threadId, runId } = req.params;
+      const context = await requireContext(reply, getViewerUserId(req), handle, projectName, threadId);
+      if (!context) return;
+
+      if (!canEdit(context.accessRole)) {
+        return reply.code(403).send({ error: "Forbidden" });
+      }
+
+      const runnerId = typeof req.body?.runnerId === "string" && req.body.runnerId.trim()
+        ? req.body.runnerId.trim()
+        : null;
+      const claimed = await claimAgentRunById(runId, runnerId ?? `desktop-${process.env.HOSTNAME ?? "local"}`, context.threadId);
+      if (!claimed) {
+        return reply.code(409).send({ error: "Run is not available for claiming." });
+      }
+
+      if (claimed.thread_id !== context.threadId) {
+        return reply.code(404).send({ error: "Run not found." });
+      }
+
+      const systemId = await getThreadSystemId(context.threadId);
+      if (!systemId) {
+        return reply.code(500).send({ error: "Unable to resolve thread system" });
+      }
+
+      return {
+        runId: claimed.id,
+        status: claimed.status,
+        prompt: claimed.prompt,
+        systemPrompt: claimed.system_prompt,
+        systemId,
+      };
+    },
+  );
+
+  app.post<
+    {
+      Params: { handle: string; projectName: string; threadId: string; runId: string };
+      Body: AssistantRunCompleteRequestBody;
+    }
+  >(
+    "/projects/:handle/:projectName/thread/:threadId/assistant/run/:runId/complete",
+    async (req, reply) => {
+      const { handle, projectName, threadId, runId } = req.params;
+      const context = await requireContext(reply, getViewerUserId(req), handle, projectName, threadId);
+      if (!context) return;
+
+      if (!canEdit(context.accessRole)) {
+        return reply.code(403).send({ error: "Forbidden" });
+      }
+
+      const parsed = req.body;
+      if (!parsed || typeof parsed.status !== "string" || !Array.isArray(parsed.messages) || !Array.isArray(parsed.changes)) {
+        return reply.code(400).send({ error: "Invalid complete payload" });
+      }
+
+      const run = await getAgentRunByThreadId(context.threadId, runId);
+      if (!run) {
+        return reply.code(404).send({ error: "Run not found" });
+      }
+      if (run.thread_id !== context.threadId) {
+        return reply.code(404).send({ error: "Run not found" });
+      }
+
+      const runnerId = typeof parsed.runnerId === "string" && parsed.runnerId.trim()
+        ? parsed.runnerId.trim()
+        : undefined;
+      const completionClient = await pool.connect();
+      let completionRunUpdateApplied = false;
+      let responseActionId: string | null = null;
+      let responseMessages: AssistantRunMessageRow[] = [];
+
+      try {
+        completionRunUpdateApplied = await updateAgentRunResult(
+          run.id,
+          parsed.status,
+          {
+            status: parsed.status,
+            messages: parsed.messages,
+            changes: parsed.changes,
+            error: parsed.error,
+          },
+          parsed.error,
+          runnerId,
+        );
+        const normalizedCompletionStatus = parsed.status === "failed" ? "failed" : (parsed.status === "success" ? "success" : "failed");
+        await completionClient.query("BEGIN");
+        if (completionRunUpdateApplied) {
+          const completionRecord = await persistDesktopAgentRunCompletionMessage(
+            completionClient,
+            context.threadId,
+            {
+              ...parsed,
+              status: normalizedCompletionStatus,
+            },
+            normalizedCompletionStatus,
+          );
+          responseActionId = completionRecord?.responseActionId ?? null;
+        }
+        await completionClient.query("COMMIT");
+      } catch (error) {
+        try {
+          await completionClient.query("ROLLBACK");
+        } catch {
+          // Best effort rollback.
+        }
+        throw error;
+      } finally {
+        completionClient.release();
+      }
+
+      const updated = await getAgentRunByThreadId(context.threadId, run.id);
+      if (!updated) {
+        return reply.code(404).send({ error: "Run not found" });
+      }
+      const systemId = await getThreadSystemId(context.threadId);
+      if (!systemId) {
+        return reply.code(500).send({ error: "Unable to resolve thread system" });
+      }
+      if (responseActionId) {
+        const responseMessageRows = await query<AssistantRunMessageRow>(
+          `SELECT m.id, m.action_id, m.role, m.content, m.created_at, a.position AS action_position, a.type AS action_type
+           FROM messages m
+           JOIN actions a ON a.thread_id = m.thread_id AND a.id = m.action_id
+           WHERE m.thread_id = $1 AND m.action_id = $2
+           ORDER BY m.position`,
+          [context.threadId, responseActionId],
+        );
+        responseMessages = responseMessageRows.rows;
+      }
+
+      return mapAgentRunRowToResponse({
+        runId: updated.id,
+        systemId,
+        runResultStatus: updated.run_result_status,
+        runResultMessages: updated.run_result_messages,
+        runResultChanges: updated.run_result_changes,
+        runError: updated.run_error,
+        messages: responseMessages,
+        threadStatus: updated.status,
+      });
+    },
+  );
+
+  app.get<{ Params: { handle: string; projectName: string; threadId: string; runId: string } }>(
+    "/projects/:handle/:projectName/thread/:threadId/assistant/run/:runId",
+    async (req, reply) => {
+      const { handle, projectName, threadId, runId } = req.params;
+      const context = await requireContext(reply, getViewerUserId(req), handle, projectName, threadId);
+      if (!context) return;
+
+      if (!canEdit(context.accessRole)) {
+        return reply.code(403).send({ error: "Forbidden" });
+      }
+
+      const run = await getAgentRunByThreadId(context.threadId, runId);
+      if (!run) {
+        return reply.code(404).send({ error: "Run not found" });
+      }
+      if (run.thread_id !== context.threadId) {
+        return reply.code(404).send({ error: "Run not found" });
+      }
+
+      const systemId = await getThreadSystemId(context.threadId);
+      if (!systemId) {
+        return reply.code(500).send({ error: "Unable to resolve thread system" });
+      }
+
+      return mapAgentRunRowToResponse({
+        runId: run.id,
+        systemId,
+        runResultStatus: run.run_result_status,
+        runResultMessages: run.run_result_messages,
+        runResultChanges: run.run_result_changes,
+        runError: run.run_error,
+        threadStatus: run.status,
+      });
     },
   );
 }

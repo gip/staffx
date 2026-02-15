@@ -10,16 +10,17 @@
     "preview": "electron-vite preview"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.2.41",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "react-router-dom": "^7.13.0",
+    "@staffx/agent-runtime": "workspace:*",
     "@staffx/ui": "workspace:*"
   },
   "devDependencies": {
     "electron": "^40.4.0",
     "electron-vite": "^5.0.0",
     "@vitejs/plugin-react": "^4.3.4",
+    "@types/node": "^22.13.1",
     "@types/react": "^19.0.8",
     "@types/react-dom": "^19.0.3"
   }

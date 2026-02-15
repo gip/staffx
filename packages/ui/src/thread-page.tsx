@@ -118,10 +118,14 @@ export interface ChatMessage {
 
 export type AssistantRunMode = "direct" | "plan";
 
+export type AssistantExecutor = "backend" | "desktop";
+
 export interface AssistantRunRequest {
   chatMessageId: string | null;
   mode: AssistantRunMode;
   planActionId: string | null;
+  executor?: AssistantExecutor;
+  wait?: boolean;
 }
 
 export interface AssistantRunResponse {
@@ -130,6 +134,12 @@ export interface AssistantRunResponse {
   executeActionId: string | null;
   executeResponseActionId: string | null;
   updateActionId: string | null;
+  filesChanged: {
+    kind: "Create" | "Update" | "Delete";
+    path: string;
+    fromHash?: string;
+    toHash?: string;
+  }[];
   summary: {
     status: "success" | "failed";
     messages: string[];
@@ -1229,6 +1239,37 @@ export function ThreadPage({
   const [documentModalError, setDocumentModalError] = useState("");
   const { user } = useAuth();
 
+  const formatChangedFilesSummary = (payload: AssistantRunResponse): string => {
+    const lines = (payload.filesChanged ?? []).map((entry) => {
+      const prefix = entry.kind === "Create" ? "A" : entry.kind === "Update" ? "M" : "D";
+      const hashSummary = entry.fromHash && entry.toHash
+        ? ` (${entry.fromHash} -> ${entry.toHash})`
+        : entry.fromHash
+        ? ` (from ${entry.fromHash})`
+        : entry.toHash
+        ? ` (to ${entry.toHash})`
+        : "";
+
+      return `${prefix} ${entry.path}${hashSummary}`;
+    });
+
+    return lines.length > 0 ? lines.join(", ") : "No files changed.";
+  };
+
+  const setAssistantRunSummary = (payload: AssistantRunResponse) => {
+    const responseText = (payload.summary.messages ?? []).join(" ");
+    const filesSummary = formatChangedFilesSummary(payload);
+    setAssistantSummary(`${responseText}\n${filesSummary}`);
+  };
+
+  const updateAssistantSummary = (payload: AssistantRunResponse) => {
+    if (payload.messages?.length) {
+      setAssistantSummary("");
+      return;
+    }
+    setAssistantRunSummary(payload);
+  };
+
   const isThreadOpen = detail.thread.status === "open";
   const effectiveCanEdit = detail.permissions.canEdit && isThreadOpen;
   const canCloneThread = isFinalizedThreadStatus(detail.thread.status) && detail.permissions.canEdit && !!onCloneThread;
@@ -2214,19 +2255,58 @@ export function ThreadPage({
   async function handleSendChat() {
     if (!onSendChatMessage || !effectiveCanEdit || !chatInput.trim()) return;
     setChatError("");
-    setIsSendingChat(true);
-
-    const result = await onSendChatMessage({ content: chatInput.trim() });
-    setIsSendingChat(false);
-    const error = getErrorMessage(result);
-    if (error) {
-      setChatError(error);
-      return;
-    }
-
-    setPendingPlanActionId(null);
+    setAssistantError("");
     setAssistantSummary("");
-    setChatInput("");
+    const prompt = chatInput.trim();
+
+    setIsSendingChat(true);
+    setIsRunningAssistant(true);
+
+    try {
+      const result = await onSendChatMessage({ content: prompt });
+      const sendError = getErrorMessage(result);
+      if (sendError) {
+        setChatError(sendError);
+        return;
+      }
+
+      const payload = (result as { messages?: ChatMessage[] } | null) ?? {};
+      const userMessageId = payload.messages?.find((message) => message.role === "User")?.id ?? null;
+      setPendingPlanActionId(null);
+      setChatInput("");
+
+      if (!onRunAssistant || !userMessageId) {
+        if (!onRunAssistant) {
+          return;
+        }
+        setAssistantError("Unable to queue assistant run: chat message was saved but not linked.");
+        return;
+      }
+
+      const runResult = await onRunAssistant({
+        chatMessageId: userMessageId,
+        mode: "direct",
+        planActionId: null,
+      });
+
+      const runError = getErrorMessage(runResult);
+      if (runError) {
+        setAssistantError(runError);
+        return;
+      }
+
+      if (!runResult) {
+        setAssistantError("No response from assistant endpoint.");
+        return;
+      }
+
+      updateAssistantSummary(runResult as AssistantRunResponse);
+    } catch (error: unknown) {
+      setAssistantError(error instanceof Error ? error.message : "Failed to send chat message and execute assistant.");
+    } finally {
+      setIsSendingChat(false);
+      setIsRunningAssistant(false);
+    }
   }
 
   async function handleRunAssistant(mode: AssistantRunMode, planActionId: string | null = null) {
@@ -2255,15 +2335,17 @@ export function ThreadPage({
       }
 
       const payload = result as AssistantRunResponse;
-      setAssistantSummary(payload.summary.messages.join(" "));
-
       if (mode === "plan" && payload.planActionId) {
         setPendingPlanActionId(payload.planActionId);
       }
 
       if (mode === "direct") {
         setPendingPlanActionId(null);
+        updateAssistantSummary(payload);
+        return;
       }
+
+      setAssistantSummary(payload.summary.messages.join(" "));
     } finally {
       setIsRunningAssistant(false);
     }
@@ -3049,8 +3131,7 @@ export function ThreadPage({
                       <>
                         <header>
                           <div className="thread-chat-message-header-left">
-                            <strong>{message.role}</strong>
-                            {message.actionType ? <span className="thread-chat-action-type">{message.actionType}</span> : null}
+                            <strong>{message.role === "User" ? detail.thread.createdByHandle : message.role}</strong>
                           </div>
                           <span>{formatDateTime(message.createdAt)}</span>
                         </header>

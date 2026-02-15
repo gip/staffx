@@ -20,6 +20,9 @@ importers:
       '@fastify/cors':
         specifier: ^11.0.0
         version: 11.2.0
+      '@staffx/agent-runtime':
+        specifier: workspace:*
+        version: link:../../packages/agent-runtime
       fastify:
         specifier: ^5.2.1
         version: 5.7.4
@@ -42,12 +45,15 @@ importers:
 
   apps/desktop:
     dependencies:
-      '@anthropic-ai/claude-agent-sdk':
-        specifier: ^0.2.41
-        version: 0.2.41(zod@4.3.6)
+      '@staffx/agent-runtime':
+        specifier: workspace:*
+        version: link:../../packages/agent-runtime
       '@staffx/ui':
         specifier: workspace:*
         version: link:../../packages/ui
+      pg:
+        specifier: ^8.13.1
+        version: 8.18.0
       react:
         specifier: ^19.0.0
         version: 19.2.4
@@ -58,6 +64,9 @@ importers:
         specifier: ^7.13.0
         version: 7.13.0(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
     devDependencies:
+      '@types/node':
+        specifier: ^22.13.1
+        version: 22.19.11
       '@types/react':
         specifier: ^19.0.8
         version: 19.2.14
@@ -66,13 +75,13 @@ importers:
         version: 19.2.3(@types/react@19.2.14)
       '@vitejs/plugin-react':
         specifier: ^4.3.4
-        version: 4.7.0(vite@6.4.1(@types/node@24.10.13)(tsx@4.21.0))
+        version: 4.7.0(vite@6.4.1(@types/node@22.19.11)(tsx@4.21.0))
       electron:
         specifier: ^40.4.0
         version: 40.4.1
       electron-vite:
         specifier: ^5.0.0
-        version: 5.0.0(vite@6.4.1(@types/node@24.10.13)(tsx@4.21.0))
+        version: 5.0.0(vite@6.4.1(@types/node@22.19.11)(tsx@4.21.0))
 
   apps/web:
     dependencies:
@@ -104,6 +113,16 @@ importers:
       vite:
         specifier: ^6.1.0
         version: 6.4.1(@types/node@24.10.13)(tsx@4.21.0)
+
+  packages/agent-runtime:
+    dependencies:
+      '@anthropic-ai/claude-agent-sdk':
+        specifier: ^0.2.41
+        version: 0.2.41(zod@4.3.6)
+    devDependencies:
+      '@types/node':
+        specifier: ^22.13.1
+        version: 22.19.11
 
   packages/ui:
     dependencies:
@@ -2521,6 +2540,18 @@ snapshots:
       '@types/node': 22.19.11
     optional: true
 
+  '@vitejs/plugin-react@4.7.0(vite@6.4.1(@types/node@22.19.11)(tsx@4.21.0))':
+    dependencies:
+      '@babel/core': 7.29.0
+      '@babel/plugin-transform-react-jsx-self': 7.27.1(@babel/core@7.29.0)
+      '@babel/plugin-transform-react-jsx-source': 7.27.1(@babel/core@7.29.0)
+      '@rolldown/pluginutils': 1.0.0-beta.27
+      '@types/babel__core': 7.20.5
+      react-refresh: 0.17.0
+      vite: 6.4.1(@types/node@22.19.11)(tsx@4.21.0)
+    transitivePeerDependencies:
+      - supports-color
+
   '@vitejs/plugin-react@4.7.0(vite@6.4.1(@types/node@24.10.13)(tsx@4.21.0))':
     dependencies:
       '@babel/core': 7.29.0
@@ -2669,7 +2700,7 @@ snapshots:
 
   electron-to-chromium@1.5.286: {}
 
-  electron-vite@5.0.0(vite@6.4.1(@types/node@24.10.13)(tsx@4.21.0)):
+  electron-vite@5.0.0(vite@6.4.1(@types/node@22.19.11)(tsx@4.21.0)):
     dependencies:
       '@babel/core': 7.29.0
       '@babel/plugin-transform-arrow-functions': 7.27.1(@babel/core@7.29.0)
@@ -2677,7 +2708,7 @@ snapshots:
       esbuild: 0.25.12
       magic-string: 0.30.21
       picocolors: 1.1.1
-      vite: 6.4.1(@types/node@24.10.13)(tsx@4.21.0)
+      vite: 6.4.1(@types/node@22.19.11)(tsx@4.21.0)
     transitivePeerDependencies:
       - supports-color
 
@@ -3259,6 +3290,19 @@ snapshots:
   use-sync-external-store@1.6.0(react@19.2.4):
     dependencies:
       react: 19.2.4
+
+  vite@6.4.1(@types/node@22.19.11)(tsx@4.21.0):
+    dependencies:
+      esbuild: 0.25.12
+      fdir: 6.5.0(picomatch@4.0.3)
+      picomatch: 4.0.3
+      postcss: 8.5.6
+      rollup: 4.57.1
+      tinyglobby: 0.2.15
+    optionalDependencies:
+      '@types/node': 22.19.11
+      fsevents: 2.3.3
+      tsx: 4.21.0
 
   vite@6.4.1(@types/node@24.10.13)(tsx@4.21.0):
     dependencies:

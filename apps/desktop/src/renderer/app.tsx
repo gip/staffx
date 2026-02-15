@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
 import { Route, Routes, useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { useLocalAgent } from "./use-local-agent";
 import {
   AuthContext,
   useAuth,
@@ -39,12 +38,46 @@ interface ElectronAuthAPI {
   onStateChanged: (cb: (state: { isAuthenticated: boolean }) => void) => () => void;
 }
 
-interface ElectronAgentAPI {
-  start: (params: { prompt: string; cwd?: string; allowedTools?: string[]; systemPrompt?: string; model?: string }) => Promise<{ threadId: string }>;
-  stop: (threadId: string) => void;
-  getStatus: (threadId: string) => Promise<{ status: string; sessionId: string | null } | null>;
-  onMessage: (callback: (data: { threadId: string; message: unknown }) => void) => () => void;
-  onDone: (callback: (data: { threadId: string; status: string }) => void) => () => void;
+interface AssistantRunResultResponse {
+  error?: string;
+  runId: string;
+  status?: "queued" | "running" | "success" | "failed";
+  systemId?: string;
+  planActionId?: string | null;
+  planResponseActionId?: string | null;
+  executeActionId?: string | null;
+  executeResponseActionId?: string | null;
+  updateActionId?: string | null;
+  filesChanged?: Array<{
+    kind: "Create" | "Update" | "Delete";
+    path: string;
+    fromHash?: string;
+    toHash?: string;
+  }>;
+  summary?: {
+    status: "success" | "failed";
+    messages: string[];
+  };
+  changesCount?: number;
+  messages?: Array<{
+    id: string;
+    actionId: string;
+    role: "User" | "Assistant" | "System";
+    actionType: string;
+    actionPosition: number;
+    content: string;
+    createdAt: string;
+  }>;
+  systemIdPrompt?: string;
+}
+
+interface ElectronAssistantAPI {
+  run: (payload: {
+    handle: string;
+    projectName: string;
+    threadId: string;
+    runId: string;
+  }) => Promise<AssistantRunResultResponse>;
 }
 
 declare global {
@@ -52,7 +85,7 @@ declare global {
     electronAPI: {
       platform: string;
       auth: ElectronAuthAPI;
-      agent: ElectronAgentAPI;
+      assistant?: ElectronAssistantAPI;
     };
   }
 }
@@ -803,14 +836,6 @@ function ThreadRoute({ isAuthenticated }: { isAuthenticated: boolean }) {
     notion: "disconnected",
     google: "disconnected",
   });
-  const localAgent = useLocalAgent();
-
-  useEffect(() => {
-    return () => {
-      localAgent.stop();
-    };
-  }, [localAgent.stop, handle, projectName, threadId]);
-
   const refreshIntegrationStatuses = useCallback(async () => {
     const nextStatuses: IntegrationStatusRecord = {
       notion: "disconnected",
@@ -1141,46 +1166,139 @@ function ThreadRoute({ isAuthenticated }: { isAuthenticated: boolean }) {
         return data;
       }}
       onRunAssistant={async (payload) => {
+        const requestPayload = {
+          ...payload,
+          executor: payload.mode === "direct" ? "desktop" : payload.executor ?? "backend",
+          wait: payload.mode === "direct" ? false : payload.wait ?? true,
+        };
+        const resolveRunResult = async (runId: string) => {
+          const runRes = await apiFetch(
+            `/projects/${encodeURIComponent(handle!)}/${encodeURIComponent(projectName!)}/thread/${encodeURIComponent(threadId!)}/assistant/run/${encodeURIComponent(runId)}`,
+            { method: "GET" },
+          );
+          if (!runRes.ok) {
+            return null;
+          }
+          return (await runRes.json()) as AssistantRunResultResponse;
+        };
+
         const res = await apiFetch(
           `/projects/${encodeURIComponent(handle!)}/${encodeURIComponent(projectName!)}/thread/${encodeURIComponent(threadId!)}/assistant/run`,
           {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(payload),
+            body: JSON.stringify(requestPayload),
           },
         );
         if (!res.ok) {
           return { error: await readError(res, "Failed to run assistant") };
         }
-        const data = (await res.json()) as AssistantRunResponse;
+        const data = (await res.json()) as unknown;
+        const runStartResponse = data as {
+          runId?: string;
+          status?: "queued" | "running" | "success" | "failed";
+          systemId?: string;
+          messages?: Array<{
+            id: string;
+            actionId: string;
+            role: "User" | "Assistant" | "System";
+            actionType: string;
+            actionPosition: number;
+            content: string;
+            createdAt: string;
+          }>;
+        };
+        const refreshThread = async () => {
+          const threadRes = await apiFetch(
+            `/projects/${encodeURIComponent(handle!)}/${encodeURIComponent(projectName!)}/thread/${encodeURIComponent(threadId!)}`,
+          );
+          if (!threadRes.ok) {
+            return null;
+          }
+          return (await threadRes.json()) as ThreadDetailPayload;
+        };
+        if (
+          requestPayload.executor === "desktop"
+          && payload.mode === "direct"
+          && (runStartResponse.status === "queued" || runStartResponse.status === "running")
+          && typeof runStartResponse.runId === "string"
+        ) {
+          const localRun = await window.electronAPI.assistant?.run?.({
+            handle: handle ?? "",
+            projectName: projectName ?? "",
+            threadId: threadId ?? "",
+            runId: runStartResponse.runId,
+          });
+          if (localRun) {
+            if ("error" in localRun && typeof localRun.error === "string") {
+              return localRun;
+            }
+            let localResult = localRun as AssistantRunResponse;
+            if (!localResult.messages || localResult.messages.length === 0) {
+              const refreshed = await resolveRunResult(runStartResponse.runId);
+              if (refreshed && !("error" in refreshed) && refreshed.messages && refreshed.messages.length > 0) {
+                localResult = {
+                  ...localResult,
+                  ...refreshed,
+                  filesChanged: refreshed.filesChanged ?? localResult.filesChanged,
+                  changesCount: refreshed.changesCount ?? localResult.changesCount,
+                  planActionId: refreshed.planActionId ?? localResult.planActionId,
+                  planResponseActionId: refreshed.planResponseActionId ?? localResult.planResponseActionId,
+                  executeActionId: refreshed.executeActionId ?? localResult.executeActionId,
+                  executeResponseActionId: refreshed.executeResponseActionId ?? localResult.executeResponseActionId,
+                  updateActionId: refreshed.updateActionId ?? localResult.updateActionId,
+                  messages: refreshed.messages,
+                } as AssistantRunResponse;
+              } else {
+                const refreshedThread = await refreshThread();
+                if (refreshedThread) {
+                  setDetail(refreshedThread);
+                  const assistantMessages = [...refreshedThread.chat.messages]
+                    .filter((message) => message.role === "Assistant")
+                    .sort((a, b) => {
+                      const aPosition = typeof a.actionPosition === "number" ? a.actionPosition : Number.MAX_SAFE_INTEGER;
+                      const bPosition = typeof b.actionPosition === "number" ? b.actionPosition : Number.MAX_SAFE_INTEGER;
+                      return aPosition - bPosition;
+                    })
+                    .slice(-1);
+                  localResult = {
+                    ...localResult,
+                    messages: assistantMessages,
+                  } as AssistantRunResponse;
+                }
+              }
+            }
+
+            setDetail((prev) => (
+              prev
+                ? {
+                    ...prev,
+                    systemId: localResult.systemId,
+                    chat: {
+                      ...prev.chat,
+                      messages: mergeChatMessages(prev.chat.messages, localResult.messages ?? []),
+                    },
+                  }
+                : prev
+            ));
+            return localResult;
+          }
+        }
+        const finalResult = data as AssistantRunResponse;
         setDetail((prev) => (
           prev
             ? {
                 ...prev,
-                systemId: data.systemId,
+                systemId: finalResult.systemId,
                 chat: {
                   ...prev.chat,
-                  messages: mergeChatMessages(prev.chat.messages, data.messages),
+                  messages: mergeChatMessages(prev.chat.messages, finalResult.messages),
                 },
               }
             : prev
         ));
 
-        const actionLabel = payload.mode === "plan" ? "Plan" : "Run";
-        const suffixes = [
-          payload.chatMessageId ? `message: ${payload.chatMessageId}` : null,
-          payload.planActionId ? `plan action: ${payload.planActionId}` : null,
-        ].filter((item): item is string => Boolean(item));
-        const contextSuffix = suffixes.length > 0 ? ` (${suffixes.join(", ")})` : "";
-        void localAgent.start({
-          prompt: `Project: ${handle}/${projectName}, Thread: ${threadId}. Action: ${actionLabel}${contextSuffix}`,
-          systemPrompt: detail.systemPrompt ?? undefined,
-          allowedTools: ["Read", "Grep", "Glob", "Bash", "Edit", "Write"],
-        }).catch(() => {
-          // Session failures are intentionally non-blocking for chat UX.
-        });
-
-        return data;
+        return finalResult;
       }}
       onCloseThread={async () => {
         try {

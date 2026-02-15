@@ -1,11 +1,12 @@
 import { app, BrowserWindow, ipcMain, nativeImage } from "electron";
 import { join } from "node:path";
 import { existsSync } from "node:fs";
-import { startAgent, stopAgent, getAgentStatus } from "./agent.js";
+import { startAssistantRunLocal } from "./agent.js";
 import { getAccessToken, getAuthState, login, logout, notifyRenderer } from "./auth.js";
 
 let mainWindow: BrowserWindow | null = null;
 let appIcon: Electron.NativeImage | null = null;
+const isClaudeAgentEnabled = process.env.STAFFX_ENABLE_CLAUDE_AGENT === "1";
 
 function resolveIcon(): string | null {
   const candidates = [
@@ -63,9 +64,20 @@ function createWindow() {
   });
 }
 
-// IPC handlers
+// Auth IPC handlers
 ipcMain.handle("auth:get-state", () => getAuthState());
 ipcMain.handle("auth:get-token", () => getAccessToken());
+ipcMain.handle("assistant:run", async (_event, payload: {
+  handle: string;
+  projectName: string;
+  threadId: string;
+  runId: string;
+}) => {
+  if (!isClaudeAgentEnabled) {
+    return { error: "Desktop agent processing is disabled. Set STAFFX_ENABLE_CLAUDE_AGENT=1." };
+  }
+  return startAssistantRunLocal(payload);
+});
 
 ipcMain.on("auth:login", async () => {
   const success = await login();
@@ -80,22 +92,19 @@ ipcMain.on("auth:logout", async () => {
   if (mainWindow) notifyRenderer(mainWindow);
 });
 
-// Agent IPC handlers
-ipcMain.handle("agent:start", (_e, params) => {
-  if (!mainWindow) throw new Error("No main window");
-  return { threadId: startAgent(mainWindow, params) };
+app.whenReady().then(() => {
+  createWindow();
+  console.info("[desktop] agent task processing enabled", { enabled: isClaudeAgentEnabled });
 });
 
-ipcMain.on("agent:stop", (_e, { threadId }) => stopAgent(threadId));
-
-ipcMain.handle("agent:get-status", (_e, { threadId }) => getAgentStatus(threadId));
-
-app.whenReady().then(createWindow);
-
 app.on("window-all-closed", () => {
-  if (process.platform !== "darwin") app.quit();
+  if (process.platform !== "darwin") {
+    app.quit();
+  }
 });
 
 app.on("activate", () => {
-  if (BrowserWindow.getAllWindows().length === 0) createWindow();
+  if (BrowserWindow.getAllWindows().length === 0) {
+    createWindow();
+  }
 });
