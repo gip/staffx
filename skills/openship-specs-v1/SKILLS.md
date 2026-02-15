@@ -17,7 +17,7 @@ This specification defines:
 
 - the node and edge model
 - the concern matrix model
-- shared input document types (`Feature`, `Spec`, `Skill`)
+- shared input document types (`Document`, `Skill`, `Prompt`)
 - node-local output artifact types (`Summary`, `Code`, `Docs`)
 - a canonical file-based representation
 - a canonical JSON representation
@@ -32,13 +32,17 @@ The key words `MUST`, `MUST NOT`, `SHOULD`, `SHOULD NOT`, and `MAY` are to be in
 
 ### 2.2 Core Terms
 
-- **Node**: a typed architectural element (`System`, `Host`, `Container`, `Process`, `Library`).
+- **Node**: a typed architectural element (`Root`, `Host`, `Container`, `Process`, `Library`).
 - **Edge**: a directed, typed connection between eligible node endpoints.
 - **Concern**: a category used in the matrix (for example, `Interfaces`).
 - **Cell**: one `(node, concern)` entry in the matrix.
-- **Input Document**: reusable shared source content (`Feature`, `Spec`, `Skill`).
+- **Input Document**: reusable shared source content (`Document`, `Skill`, `Prompt`).
 - **Artifact**: output content produced for a single node (`Summary`, `Code`, `Docs`).
 - **Content Hash**: deterministic identifier derived from canonical content.
+- **NodeKind**: `Root` | `Host` | `Container` | `Process` | `Library`.
+- **DocKind**: `Document` | `Skill` | `Prompt`.
+- **MatrixRefKind**: `Document` | `Skill` | `Prompt`.
+- `Prompt` is a constrained matrix reference kind: attach-only to root via `__system_prompt__`.
 
 ### 2.3 Identifier Formats
 
@@ -50,7 +54,7 @@ The key words `MUST`, `MUST NOT`, `SHOULD`, `SHOULD NOT`, and `MAY` are to be in
 
 An OpenShip system is composed of:
 
-- exactly one `System` node
+- exactly one `Root` node
 - zero or more `Host`, `Container`, `Process`, and `Library` nodes
 - zero or more typed edges
 - a concern matrix over all nodes
@@ -64,18 +68,18 @@ The model has two graph dimensions:
 
 Rules:
 
-- `System` is freestanding and MUST NOT participate in edges.
+- `Root` is freestanding and MUST NOT participate in edges.
 - `Library` nodes may participate in `Dependency` edges only (see Section 5).
 - Input documents are shared, reusable, and globally stored at system scope.
 - Artifacts are node-local outputs and MUST NOT be shared across nodes.
 
-A `Host` node with no `parentId` is implicitly contained by the `System` node. This does not alter the System node's freestanding status for edge purposes; it only establishes logical containment scope.
+A `Host` node with no `parentId` is implicitly contained by the `Root` node. This does not alter the `Root` node's freestanding status for edge purposes; it only establishes logical containment scope.
 
 ## 4. Node Types
 
 ### 4.1 Node Kind Definitions
 
-- **System**: logical root for the full product description.
+- **Root**: logical root for the full product description.
 - **Host**: execution environment that may contain containers and/or processes.
 - **Container**: grouped runtime unit that may contain processes.
 - **Process**: executable runtime component.
@@ -87,8 +91,8 @@ A `Host` node with no `parentId` is implicitly contained by the `System` node. T
 - `Container` MAY contain `Process`.
 - `Process` MUST NOT contain children.
 - `Library` MUST be freestanding (no parent, no children).
-- `System` MUST be freestanding for containment (no parent).
-- `Host` nodes without a `parentId` are implicitly scoped under the `System` node.
+- `Root` MUST be freestanding for containment (no parent).
+- `Host` nodes without a `parentId` are implicitly scoped under the `Root` node.
 
 ### 4.3 Canonical Node Shape
 
@@ -104,8 +108,7 @@ A `Host` node with no `parentId` is implicitly contained by the `System` node. T
   },
   "matrix": {
     "Interfaces": {
-      "featureRefs": ["sha256:..."],
-      "specRefs": ["sha256:..."],
+      "documentRefs": ["sha256:..."],
       "skillRefs": ["sha256:..."]
     }
   }
@@ -115,7 +118,7 @@ A `Host` node with no `parentId` is implicitly contained by the `System` node. T
 Field requirements:
 
 - `id`, `kind`, `name`, `matrix` are REQUIRED.
-- `parentId` is REQUIRED for `Container` and `Process`; forbidden for `System` and `Library`; optional for `Host`.
+- `parentId` is REQUIRED for `Container` and `Process`; forbidden for `Root` and `Library`; optional for `Host`.
 - `metadata` is OPTIONAL and extensible.
 - `matrix` keys MUST reference known concerns.
 
@@ -154,7 +157,7 @@ OpenShip v1 defines three edge types:
 
 - For `Runtime` and `Dataflow` edges: `fromNodeId` MUST reference a `Process` node. `toNodeId` MUST reference a `Process` or `Container` node.
 - For `Dependency` edges: `fromNodeId` MUST reference a `Process` node. `toNodeId` MUST reference a `Library` node.
-- Edges to or from `System` are forbidden for all edge types.
+- Edges to or from `Root` are forbidden for all edge types.
 
 ### 5.4 Edge Target Semantics for Containers
 
@@ -203,8 +206,7 @@ Each cell contains only input document references:
 
 ```json
 {
-  "featureRefs": ["sha256:..."],
-  "specRefs": ["sha256:..."],
+  "documentRefs": ["sha256:..."],
   "skillRefs": ["sha256:..."]
 }
 ```
@@ -214,6 +216,7 @@ Rules:
 - Arrays MAY be empty.
 - References MUST resolve in shared document stores.
 - A single input document MAY be referenced by multiple cells across multiple nodes.
+- `Prompt` is not represented inside standard matrix cell references.
 
 ## 7. Input Documents and Output Artifacts
 
@@ -221,15 +224,15 @@ Rules:
 
 Input document types:
 
-- **Feature**: functional or non-functional requirement description.
-- **Spec**: implementation or design specification for one aspect.
-- **Skill**: guidance that enables specialized execution tasks.
+- **Document**: general product requirements, design notes, and implementation-level narrative.
+- **Skill**: domain knowledge, execution guidance, and workflow instructions.
+- **Prompt**: system-level instruction block used as global system prompt context.
 
 Canonical shared document shape:
 
 ```json
 {
-  "kind": "Feature",
+  "kind": "Document",
   "hash": "sha256:...",
   "title": "Public API authentication",
   "language": "en",
@@ -239,10 +242,18 @@ Canonical shared document shape:
 
 Rules:
 
-- `kind` is REQUIRED and MUST be one of `Feature`, `Spec`, or `Skill`.
+- `kind` is REQUIRED and MUST be one of `Document`, `Skill`, or `Prompt`.
 - `language` SHOULD be BCP-47 (`en` default).
 - `text` MAY be Markdown or plain text.
 - Input documents are system-scoped shared assets.
+
+`Prompt` documents are a distinct kind with explicit restrictions:
+
+- They MUST be local documents in editor-created flows.
+- They MUST use `sourceType = "local"` in any implementation that supports source types.
+- They MUST be attached only to the system `Root` node.
+- They MUST use concern `__system_prompt__` (hidden system concern).
+- Prompt attachments are represented as `Prompt` reference types and do not occupy normal matrix concern cells in all tooling flows.
 
 ### 7.2 Output Artifacts (Node-Local, Non-Shared)
 
@@ -296,7 +307,7 @@ General artifact rules:
 
 ### 8.1 Problem Statement
 
-Because input documents are content-addressed, any change to a document's text, title, or kind produces a new hash and thus a new document identity. Without additional structure, there is no way to express that one document is a revision of another.
+Because input documents are content-addressed, any change to a document's text, title, kind, or language produces a new hash and thus a new document identity. Without additional structure, there is no way to express that one document is a revision of another.
 
 ### 8.2 Supersedes Relation
 
@@ -304,7 +315,7 @@ An input document MAY include an optional `supersedes` field containing the hash
 
 ```json
 {
-  "kind": "Spec",
+  "kind": "Document",
   "hash": "sha256:new...",
   "title": "API auth contract v2",
   "language": "en",
@@ -316,13 +327,13 @@ An input document MAY include an optional `supersedes` field containing the hash
 ### 8.3 Rules
 
 - `supersedes` is OPTIONAL. When absent, the document is treated as an original (no predecessor).
-- The `supersedes` hash SHOULD reference a document of the same kind, but cross-kind supersession (e.g., a Spec superseding a Feature) is permitted.
+- The `supersedes` hash SHOULD reference a document of the same kind, but cross-kind supersession is permitted.
 - Supersession chains MUST be acyclic. Tooling SHOULD detect and reject cycles.
 - The superseded document MAY still exist in the store for historical purposes. Tooling MUST NOT require the superseded document to be present for validation to pass.
 
 ### 8.4 Hash Computation
 
-The `supersedes` field is excluded from hash computation (see Section 12). This means a document's identity is determined solely by its `kind`, `title`, `language`, and `text`. The supersedes relation is metadata layered on top of content identity.
+The `supersedes` field is excluded from hash computation (see Section 12). This means a document's identity is determined by `kind`, `title`, `language`, and `text`. The supersedes relation is metadata layered on top of content identity.
 
 ### 8.5 Artifact Versioning
 
@@ -332,25 +343,25 @@ Artifact IDs are opaque local identifiers. This specification does not mandate a
 
 A payload is OpenShip v1 conformant only if all rules pass.
 
-1. Exactly one node has `kind = System`.
+1. Exactly one node has `kind = Root`.
 2. All node IDs are unique.
 3. All edge IDs are unique.
 4. All artifact IDs are unique.
 5. Containment graph is acyclic.
-6. `System` and `Library` are freestanding and have no parent.
+6. `Root` and `Library` are freestanding and have no parent.
 7. `Host` may parent only `Container` or `Process`.
 8. `Container` may parent only `Process`.
 9. `Process` and `Library` have no children.
 10. Every edge MUST have a `type` field with value `Runtime`, `Dataflow`, or `Dependency`.
 11. For `Runtime` and `Dataflow` edges: source MUST be `Process`; target MUST be `Process` or `Container`.
 12. For `Dependency` edges: source MUST be `Process`; target MUST be `Library`.
-13. No edge of any type may include `System` as source or target.
+13. No edge of any type may include `Root` as source or target.
 14. The projected graph of `Dataflow` edges (Process-to-Process only) MUST be a DAG. `Runtime` edges are exempt from cycle constraints.
 15. The projected graph of `Dependency` edges MUST be a DAG.
 16. All matrix concern keys are declared in concern registry.
-17. All `featureRefs` resolve in `documents.featuresByHash`.
-18. All `specRefs` resolve in `documents.specsByHash`.
-19. All `skillRefs` resolve in `documents.skillsByHash`.
+17. All `documentRefs` resolve in shared document store.
+18. All `skillRefs` resolve in shared document store.
+19. `Prompt` references MUST be attached only via `__system_prompt__` on the system root node.
 20. Shared document hashes MUST match canonical hash algorithm (Section 12).
 21. Baseline concerns MUST exist in registry with exact names.
 22. Artifacts MUST reference an existing node.
@@ -366,9 +377,7 @@ A payload is OpenShip v1 conformant only if all rules pass.
 .
 ├── openship.yaml
 ├── inputs
-│   ├── features
-│   │   └── <hash>.md
-│   ├── specs
+│   ├── documents
 │   │   └── <hash>.md
 │   └── skills
 │       └── <hash>.md
@@ -411,7 +420,7 @@ Each shared input document is Markdown with front matter:
 
 ```markdown
 ---
-kind: Feature
+kind: Document
 hash: sha256:8f...
 title: API auth contract
 language: en
@@ -421,11 +430,20 @@ supersedes: sha256:7a...    # optional
 Document body in Markdown.
 ```
 
+`kind` for regular inputs is `Document` or `Skill`.
+`Prompt` is managed as system prompt metadata and attached to the root node via concern `__system_prompt__`.
+
 Rules:
 
-- Location determines store placement (`features`, `specs`, `skills`) and MUST match the `kind` field.
+- `kind` determines store placement (`documents` or `skills`); `Prompt` is a system-level attachment, not a normal matrix concern cell document entry.
 - Filename MUST equal `<hash>.md`.
 - Front matter `hash` MUST equal filename hash.
+
+### 10.3.1 Prompt Attachment Metadata
+
+- Prompt attachments are root-only, using concern `__system_prompt__`.
+- In a pure JSON/DB model, this is represented as a `Prompt` reference on the system root node.
+- In file exports, represent prompt attachments as implementation-defined sidecar metadata tied to the root manifest/node.
 
 ### 10.4 Node Manifest (`nodes/<nodeId>/node.yaml`)
 
@@ -438,13 +456,11 @@ metadata:
   runtime: node
 matrix:
   Interfaces:
-    featureRefs: [sha256:aaa...]
-    specRefs: [sha256:bbb...]
+    documentRefs: [sha256:aaa...]
     skillRefs: [sha256:ccc...]
   Security:
-    featureRefs: []
-    specRefs: [sha256:ddd...]
-    skillRefs: []
+    documentRefs: []
+    skillRefs: [sha256:ddd...]
 artifacts:
   Summary:
     - a.p.api.interfaces.summary.v1
@@ -513,6 +529,12 @@ edges:
       description: Authentication utility library
 ```
 
+### 10.7 Generated-Spec Requirement
+
+- Generated OpenShip directories must include this specification as a skill artifact: `SKILLS.md`.
+- The file must be included in the generated artifact bundle (for example at bundle root or the standard skill directory used by your exporter).
+- This is a packaging/output requirement only and does **not** require registration in the project skill catalog or runtime skill registry.
+
 ## 11. JSON-Based Canonical Full-System Representation
 
 ### 11.1 Canonical Top-Level Shape
@@ -531,10 +553,21 @@ edges:
     "Implementation",
     "Deployment"
   ],
-  "documents": {
-    "featuresByHash": {},
-    "specsByHash": {},
-    "skillsByHash": {}
+  "documentsByHash": {
+    "sha256:1111111111111111111111111111111111111111111111111111111111111111": {
+      "kind": "Document",
+      "hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "title": "User login",
+      "language": "en",
+      "text": "Users can authenticate via OIDC."
+    },
+    "sha256:2222222222222222222222222222222222222222222222222222222222222222": {
+      "kind": "Prompt",
+      "hash": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+      "title": "System prompt",
+      "language": "en",
+      "text": "You are a systems design assistant."
+    }
   },
   "nodes": [],
   "edges": [],
@@ -542,6 +575,7 @@ edges:
 }
 ```
 
+`documentsByHash` stores shared documents for all `DocKind` values; an implementation MAY keep a dedicated `skillsByHash` structure, but all entries are equivalent in canonical semantics when keyed by hash and `kind`.
 In the JSON representation, `Code` artifacts include file content inline as `filePath` + `fileContent` pairs. When converting from the file-based representation, tooling reads each real file and populates `fileContent`. When converting to the file-based representation, tooling writes each `fileContent` to its corresponding file path on disk.
 
 ### 11.2 Canonical Ordering for Deterministic Exports
@@ -554,27 +588,19 @@ For deterministic serialization, tools SHOULD sort: concerns by declared order i
 
 Given a shared document, compute its hash from the following canonical payload:
 
-```json
-{
-  "kind": "Feature|Spec|Skill",
-  "language": "en",
-  "text": "...",
-  "title": "..."
-}
+```text
+kind + "\\n" + title + "\\n" + language + "\\n" + text
 ```
 
 Procedure:
 
-1. Construct the canonical hash payload containing exactly the four fields: `kind`, `language`, `text`, `title`.
-2. Serialize as JSON with lexicographically sorted keys (`kind`, `language`, `text`, `title`).
-3. Encode as UTF-8 bytes without BOM.
-4. Compute SHA-256 digest.
-5. Encode as lowercase hex.
-6. Prefix with `sha256:` to form the document hash.
+1. Construct the payload string by concatenating `kind`, `title`, `language`, and `text` with newline separators.
+2. Encode as UTF-8 bytes without BOM.
+3. Compute SHA-256 digest.
+4. Encode as lowercase hex.
+5. Prefix with `sha256:` to form the document hash.
 
-The `supersedes` field, if present, is NOT included in hash computation. This means a document's hash is determined solely by its content identity (`kind` + `title` + `language` + `text`).
-
-Consequence: identical content filed as a `Feature` and as a `Spec` will produce different hashes because `kind` differs. This is intentional — the document's classification is part of its identity.
+The `supersedes` field, if present, is NOT included in hash computation. This means a document's hash is determined solely by its content identity (`kind`, `title`, `language`, `text`).
 
 ### 12.2 Artifact Identity
 
@@ -629,29 +655,24 @@ Implementations MAY impose stricter limits and SHOULD document them.
     "Data Model", "Interfaces", "Connectivity",
     "Security", "Implementation", "Deployment"
   ],
-  "documents": {
-    "featuresByHash": {
-      "sha256:1111111111111111111111111111111111111111111111111111111111111111": {
-        "kind": "Feature",
-        "hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
-        "title": "User login",
-        "language": "en",
-        "text": "Users can authenticate via OIDC."
-      }
-    },
-    "specsByHash": {},
-    "skillsByHash": {}
+  "documentsByHash": {
+    "sha256:1111111111111111111111111111111111111111111111111111111111111111": {
+      "kind": "Document",
+      "hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "title": "User login",
+      "language": "en",
+      "text": "Users can authenticate via OIDC."
+    }
   },
   "nodes": [
     {
       "id": "sys.main",
-      "kind": "System",
+      "kind": "Root",
       "name": "Example System",
       "metadata": {},
       "matrix": {
         "Features": {
-          "featureRefs": ["sha256:1111111111111111111111111111111111111111111111111111111111111111"],
-          "specRefs": [],
+          "documentRefs": ["sha256:1111111111111111111111111111111111111111111111111111111111111111"],
           "skillRefs": []
         }
       }
@@ -728,6 +749,8 @@ Implementations MAY impose stricter limits and SHOULD document them.
 }
 ```
 
+This example stores a `Prompt` document in the shared document store; tool output must still attach it via root concern `__system_prompt__` as `Prompt` metadata, not as a normal concern cell reference.
+
 ### 14.2 File-Based Example
 
 Given the JSON above, the file-based representation would be:
@@ -736,7 +759,7 @@ Given the JSON above, the file-based representation would be:
 .
 ├── openship.yaml
 ├── inputs
-│   └── features
+│   └── documents
 │       └── sha256:1111...1111.md
 ├── nodes
 │   ├── sys.main
@@ -753,7 +776,7 @@ Given the JSON above, the file-based representation would be:
 │   │               └── routes
 │   │                   └── auth.ts        ← real file
 │   ├── p.worker
-│   │   └── node.yaml
+│       └── node.yaml
 │   └── lib.auth
 │       └── node.yaml
 └── edges
@@ -764,7 +787,7 @@ The `auth.ts` file contains the actual source code, not a YAML wrapper. The `nod
 
 ### 14.3 Reuse and Supersession Example
 
-One `Spec` hash may appear in multiple cells across multiple nodes. When a spec is revised, the new document may reference the old via `supersedes`, enabling tooling to track revision history while all matrix cells continue to reference the appropriate version by hash.
+One `Document` hash may appear in multiple cells across multiple nodes. When a document is revised, the new document may reference the old via `supersedes`, enabling tooling to track revision history while all matrix cells continue to reference the appropriate version by hash.
 
 ### 14.4 Round-Trip Requirement
 
@@ -776,21 +799,24 @@ A producer/consumer is OpenShip v1 conformant when it satisfies all of the follo
 
 - Parses and emits `specVersion: openship/v1`.
 - Supports baseline concern names exactly.
+- Validates `kind` for nodes against `NodeKind`.
 - Preserves unknown concerns and metadata fields.
 - Validates node containment and edge endpoint rules per edge type.
+- Validates matrix reference kinds against `MatrixRefKind` (`Document`, `Skill`, `Prompt`) with `Prompt` constrained to system prompt rules.
 - Validates DAG constraint for `Dataflow` and `Dependency` edges only (not `Runtime` edges).
 - Validates shared document hash references and hash format.
-- Validates that `kind` in stored documents matches the store they appear in.
-- Supports reusable shared input docs with optional `supersedes`.
+- Validates that `kind` in stored documents matches the documented kinds (`Document`, `Skill`, `Prompt`).
+- Supports reusable shared docs with optional `supersedes`.
+- Enforces system prompt constraints (root node attachment + `__system_prompt__`, local source).
 - Enforces node-local artifact ownership (no cross-node artifact sharing).
 - Stores `Code` artifact files as real files on disk in the file-based representation.
 - Reads `Code` artifact file content inline in the JSON representation.
 - Supports file-based canonical representation.
 - Supports JSON-based canonical representation.
 - Preserves semantics across round-trip conversion.
+- Requires generated directories to include `SKILLS.md` as the OpenShip specification artifact.
 - Rejects IDs not matching the normative regex pattern.
 
 ---
 
 *— End of OpenShip v1 Specification —*
-
