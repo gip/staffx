@@ -234,6 +234,22 @@ function applyTopologyPositions(
   };
 }
 
+function mergeThreadStateFromRun(
+  detail: ThreadDetailPayload,
+  threadState?: ThreadDetailPayload,
+): ThreadDetailPayload {
+  if (!threadState) return detail;
+  return {
+    ...detail,
+    systemId: threadState.systemId,
+    topology: threadState.topology,
+    matrix: threadState.matrix,
+    systemPrompt: threadState.systemPrompt,
+    systemPromptTitle: threadState.systemPromptTitle,
+    systemPrompts: threadState.systemPrompts,
+  };
+}
+
 async function readError(res: Response, fallback: string) {
   const body = await res.json().catch(() => ({}));
   if (typeof body.code === "string" && body.code === "INTEGRATION_RECONNECT") {
@@ -1146,10 +1162,33 @@ function ThreadRoute() {
           return { error: await readError(res, "Failed to run assistant") };
         }
         const data = (await res.json()) as AssistantRunResponse;
+        const refreshThread = async () => {
+          const threadRes = await apiFetch(
+            `/projects/${encodeURIComponent(handle!)}/${encodeURIComponent(projectName!)}/thread/${encodeURIComponent(threadId!)}`,
+          );
+          if (!threadRes.ok) {
+            return null;
+          }
+          return (await threadRes.json()) as ThreadDetailPayload;
+        };
+
+        let threadState = data.threadState;
+        if (
+          payload.mode === "direct"
+          && !threadState
+          && typeof data.changesCount === "number"
+          && data.changesCount > 0
+        ) {
+          const refreshed = await refreshThread();
+          if (refreshed) {
+            threadState = refreshed;
+          }
+        }
+
         setDetail((prev) => (
           prev
             ? {
-                ...prev,
+                ...mergeThreadStateFromRun(prev, threadState),
                 systemId: data.systemId,
                 chat: {
                   ...prev.chat,

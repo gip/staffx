@@ -1,4 +1,4 @@
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -42,6 +42,57 @@ interface AssistantRunCompleteRequest {
   }>;
   error?: string;
   runnerId: string;
+  openShipBundleFiles?: OpenShipBundleFile[];
+}
+
+interface AssistantRunResultResponse {
+  runId?: string;
+  status?: string;
+  filesChanged?: Array<{
+    kind: "Create" | "Update" | "Delete";
+    path: string;
+    fromHash?: string;
+    toHash?: string;
+  }>;
+  summary?: { status: "success" | "failed"; messages: string[] };
+  messages?: Array<{
+    id: string;
+    actionId: string;
+    role: "User" | "Assistant" | "System";
+    actionType: string;
+    actionPosition: number;
+    content: string;
+    createdAt: string;
+  }>;
+  threadState?: unknown;
+}
+
+async function collectOpenShipBundleFiles(bundleDir: string): Promise<OpenShipBundleFile[]> {
+  const entries = await readdir(bundleDir, { withFileTypes: true });
+  const files: OpenShipBundleFile[] = [];
+
+  for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
+    const childPath = join(bundleDir, entry.name);
+
+    if (entry.isDirectory()) {
+      const nested = await collectOpenShipBundleFiles(childPath);
+      for (const nestedFile of nested) {
+        const nextPath = `${entry.name}/${nestedFile.path}`.replace(/\\+/g, "/");
+        files.push({ path: nextPath, content: nestedFile.content });
+      }
+      continue;
+    }
+
+    if (!entry.isFile()) continue;
+
+    const content = await readFile(childPath, "utf8");
+    files.push({
+      path: entry.name,
+      content,
+    });
+  }
+
+  return files;
 }
 
 function sanitizeComponent(value: string): string {
@@ -148,26 +199,7 @@ async function completeRun(
     },
   );
 
-  return await apiRequest<{
-    runId?: string;
-    status?: string;
-    filesChanged?: Array<{
-      kind: "Create" | "Update" | "Delete";
-      path: string;
-      fromHash?: string;
-      toHash?: string;
-    }>;
-    summary?: { status: "success" | "failed"; messages: string[] };
-    messages?: Array<{
-      id: string;
-      actionId: string;
-      role: "User" | "Assistant" | "System";
-      actionType: string;
-      actionPosition: number;
-      content: string;
-      createdAt: string;
-    }>;
-  }>(
+  return await apiRequest<AssistantRunResultResponse>(
     token,
     `/projects/${encodeURIComponent(handle)}/${encodeURIComponent(projectName)}/thread/${encodeURIComponent(threadId)}/assistant/run/${encodeURIComponent(runId)}`,
     { method: "GET" },
@@ -280,12 +312,29 @@ export async function startAssistantRunLocal(payload: {
     });
   }
 
+  let openShipBundleFiles: OpenShipBundleFile[] | undefined;
+  if (runResult.status === "success" && fileChanges.length > 0) {
+    try {
+      openShipBundleFiles = await collectOpenShipBundleFiles(bundleDir);
+    } catch (snapshotError: unknown) {
+      const snapshotFailure = `OpenShip reconciliation snapshot failed: ${toError(snapshotError)}`;
+      return await completeRun(token, payload.handle, payload.projectName, payload.threadId, payload.runId, {
+        status: "failed",
+        messages: [...messages, snapshotFailure],
+        changes,
+        error: toError(snapshotError),
+        runnerId,
+      });
+    }
+  }
+
   try {
     return await completeRun(token, payload.handle, payload.projectName, payload.threadId, payload.runId, {
       status: runResult.status,
       messages,
       changes,
       error: runResult.error,
+      ...(openShipBundleFiles ? { openShipBundleFiles } : {}),
       runnerId,
     });
   } catch (error: unknown) {

@@ -147,6 +147,7 @@ export interface AssistantRunResponse {
   changesCount: number;
   messages: ChatMessage[];
   systemId: string;
+  threadState?: ThreadDetailPayload;
 }
 
 export interface ThreadDetail {
@@ -3202,7 +3203,10 @@ export function ThreadPage({
                           </div>
                           <span>{formatDateTime(message.createdAt)}</span>
                         </header>
-                        <p>{formatChatMessageContent(message.content)}</p>
+                        <div
+                          className="thread-chat-message-body"
+                          dangerouslySetInnerHTML={{ __html: renderMarkdown(formatChatMessageContent(message.content)) }}
+                        />
                       </>
                     )}
                   </article>

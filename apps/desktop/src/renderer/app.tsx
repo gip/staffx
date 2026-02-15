@@ -68,6 +68,7 @@ interface AssistantRunResultResponse {
     content: string;
     createdAt: string;
   }>;
+  threadState?: ThreadDetailPayload;
   systemIdPrompt?: string;
 }
 
@@ -290,6 +291,22 @@ function applyTopologyPositions(
         return { ...node, layoutX: position.x, layoutY: position.y };
       }),
     },
+  };
+}
+
+function mergeThreadStateFromRun(
+  detail: ThreadDetailPayload,
+  threadState?: ThreadDetailPayload,
+): ThreadDetailPayload {
+  if (!threadState) return detail;
+  return {
+    ...detail,
+    systemId: threadState.systemId,
+    topology: threadState.topology,
+    matrix: threadState.matrix,
+    systemPrompt: threadState.systemPrompt,
+    systemPromptTitle: threadState.systemPromptTitle,
+    systemPrompts: threadState.systemPrompts,
   };
 }
 
@@ -1234,9 +1251,12 @@ function ThreadRoute({ isAuthenticated }: { isAuthenticated: boolean }) {
               return localRun;
             }
             let localResult = localRun as AssistantRunResponse;
+            let localThreadState = localResult.threadState;
+            let messageRefreshThread: ThreadDetailPayload | null = null;
             if (!localResult.messages || localResult.messages.length === 0) {
               const refreshed = await resolveRunResult(runStartResponse.runId);
               if (refreshed && !("error" in refreshed) && refreshed.messages && refreshed.messages.length > 0) {
+                localThreadState = refreshed.threadState ?? localThreadState;
                 localResult = {
                   ...localResult,
                   ...refreshed,
@@ -1252,7 +1272,7 @@ function ThreadRoute({ isAuthenticated }: { isAuthenticated: boolean }) {
               } else {
                 const refreshedThread = await refreshThread();
                 if (refreshedThread) {
-                  setDetail(refreshedThread);
+                  messageRefreshThread = refreshedThread;
                   const assistantMessages = [...refreshedThread.chat.messages]
                     .filter((message) => message.role === "Assistant")
                     .sort((a, b) => {
@@ -1269,10 +1289,26 @@ function ThreadRoute({ isAuthenticated }: { isAuthenticated: boolean }) {
               }
             }
 
+            if (
+              requestPayload.executor === "desktop"
+              && requestPayload.mode === "direct"
+              && !localThreadState
+              && typeof localResult.changesCount === "number"
+              && localResult.changesCount > 0
+            ) {
+              localThreadState = messageRefreshThread;
+              if (!localThreadState) {
+                const refreshedThread = await refreshThread();
+                if (refreshedThread) {
+                  localThreadState = refreshedThread;
+                }
+              }
+            }
+
             setDetail((prev) => (
               prev
                 ? {
-                    ...prev,
+                    ...mergeThreadStateFromRun(prev, localThreadState),
                     systemId: localResult.systemId,
                     chat: {
                       ...prev.chat,
@@ -1285,10 +1321,24 @@ function ThreadRoute({ isAuthenticated }: { isAuthenticated: boolean }) {
           }
         }
         const finalResult = data as AssistantRunResponse;
+        let finalThreadState = finalResult.threadState;
+        if (
+          requestPayload.mode === "direct"
+          && !finalThreadState
+          && typeof finalResult.changesCount === "number"
+          && finalResult.changesCount > 0
+        ) {
+          const threadRes = await apiFetch(
+            `/projects/${encodeURIComponent(handle!)}/${encodeURIComponent(projectName!)}/thread/${encodeURIComponent(threadId!)}`,
+          );
+          if (threadRes.ok) {
+            finalThreadState = await threadRes.json() as ThreadDetailPayload;
+          }
+        }
         setDetail((prev) => (
           prev
             ? {
-                ...prev,
+                ...mergeThreadStateFromRun(prev, finalThreadState),
                 systemId: finalResult.systemId,
                 chat: {
                   ...prev.chat,
