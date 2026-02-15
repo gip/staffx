@@ -137,6 +137,115 @@ function parseScalar(input: string): YamlValue {
   return value;
 }
 
+function stripInlineComment(input: string): string {
+  let inSingle = false;
+  let inDouble = false;
+  let result = "";
+
+  for (let index = 0; index < input.length; index += 1) {
+    const char = input[index];
+    const next = input[index + 1];
+
+    if (inSingle) {
+      if (char === "'" && next === "'") {
+        result += "''";
+        index += 1;
+        continue;
+      }
+      if (char === "'") {
+        inSingle = false;
+      }
+      result += char;
+      continue;
+    }
+
+    if (inDouble) {
+      if (char === "\\" && next !== undefined) {
+        result += char + next;
+        index += 1;
+        continue;
+      }
+      if (char === "\"") {
+        inDouble = false;
+      }
+      result += char;
+      continue;
+    }
+
+    if (char === "#") {
+      break;
+    }
+
+    if (char === "'") {
+      inSingle = true;
+      result += char;
+      continue;
+    }
+
+    if (char === "\"") {
+      inDouble = true;
+      result += char;
+      continue;
+    }
+
+    result += char;
+  }
+
+  return result.trimEnd();
+}
+
+function findSeparator(text: string): number {
+  let inSingle = false;
+  let inDouble = false;
+
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+    const next = text[index + 1];
+
+    if (inSingle) {
+      if (char === "'" && next === "'") {
+        index += 1;
+        continue;
+      }
+      if (char === "'") {
+        inSingle = false;
+      }
+      continue;
+    }
+
+    if (inDouble) {
+      if (char === "\\" && next !== undefined) {
+        index += 1;
+        continue;
+      }
+      if (char === "\"") {
+        inDouble = false;
+      }
+      continue;
+    }
+
+    if (char === "'") {
+      inSingle = true;
+      continue;
+    }
+    if (char === "\"") {
+      inDouble = true;
+      continue;
+    }
+    if (char === ":" && (index + 1 === text.length || /\s/.test(text[index + 1] ?? ""))) {
+      return index;
+    }
+  }
+
+  return -1;
+}
+
+function sequenceItemContent(trimmed: string): string {
+  const match = /^-\s*(.*?)\s*$/.exec(trimmed);
+  if (!match) return "";
+  return match[1] ?? "";
+}
+
 function splitFrontMatter(
   raw: string,
   filePath: string,
@@ -188,14 +297,15 @@ function formatYamlParseError(
 
 function parseYamlDocument(input: string, context?: YamlParseContext): YamlValue {
   const lines = input.split(/\r?\n/);
-  const root: Record<string, YamlValue> = {};
+  let root: YamlValue = {};
+  const rootObject: Record<string, YamlValue> = {};
   const stack: Array<{ indent: number; kind: "object" | "array"; value: Record<string, YamlValue> | YamlValue[] }> = [
-    { indent: -1, kind: "object", value: root },
+    { indent: -1, kind: "object", value: rootObject },
   ];
 
   const nextSignificant = (start: number): { index: number; line: string; indent: number; trimmed: string } | null => {
     for (let i = start; i < lines.length; i += 1) {
-      const line = lines[i];
+      const line = stripInlineComment(lines[i] ?? "");
       if (!line || line.trim() === "" || line.trim().startsWith("#")) continue;
       const indent = line.match(/^ */)?.[0].length ?? 0;
       const trimmed = line.trim();
@@ -206,24 +316,25 @@ function parseYamlDocument(input: string, context?: YamlParseContext): YamlValue
   };
 
   for (let index = 0; index < lines.length; index += 1) {
-    const line = lines[index];
+    const line = stripInlineComment(lines[index] ?? "");
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith("#") || trimmed === "---" || trimmed === "...") continue;
 
     const indent = line.match(/^ */)?.[0].length ?? 0;
-    const current = nextSignificant(index);
+    const rawSequenceValue = sequenceItemContent(trimmed);
+    const isSequenceItem = /^-\s*$/.test(trimmed) || trimmed.startsWith("- ");
+
     while (stack.length > 1 && indent <= stack[stack.length - 1].indent) {
       stack.pop();
     }
     const frame = stack[stack.length - 1];
     const peek = nextSignificant(index + 1);
-
-    if (!trimmed.startsWith("- ")) {
+    if (!isSequenceItem) {
       if (frame.kind !== "object") {
         throw new Error(formatYamlParseError("Unexpected mapping under a sequence.", input, context, index + 1, line));
       }
 
-      const separator = trimmed.indexOf(":");
+      const separator = findSeparator(trimmed);
       if (separator < 0) {
         throw new Error(formatYamlParseError(`Invalid YAML mapping line: ${trimmed}`, input, context, index + 1, line));
       }
@@ -234,11 +345,12 @@ function parseYamlDocument(input: string, context?: YamlParseContext): YamlValue
       if (rawValue === "") {
         const hasChildren = peek !== null && peek.indent > indent;
         if (hasChildren) {
-          const nextValue = peek.trimmed.startsWith("- ") ? [] as YamlValue[] : {} as Record<string, YamlValue>;
+          const isChildSequence = /^-\s/.test(peek.trimmed) || peek.trimmed === "-";
+          const nextValue = isChildSequence ? [] as YamlValue[] : {} as Record<string, YamlValue>;
           frame.value[key] = nextValue;
           stack.push({ indent, kind: Array.isArray(nextValue) ? "array" : "object", value: nextValue });
-        } else if (peek && peek.indent <= indent) {
-          frame.value[key] = {};
+        } else {
+          frame.value[key] = null;
         }
       } else {
         frame.value[key] = parseScalar(rawValue);
@@ -247,22 +359,28 @@ function parseYamlDocument(input: string, context?: YamlParseContext): YamlValue
     }
 
     if (frame.kind !== "array") {
-      throw new Error(formatYamlParseError("Unexpected sequence item under a mapping.", input, context, index + 1, line));
+      if (stack.length === 1 && frame.value === rootObject && frame.indent === -1) {
+        const rootArray: YamlValue[] = [];
+        root = rootArray;
+        stack[0] = { indent: -1, kind: "array", value: rootArray };
+      } else {
+        throw new Error(formatYamlParseError("Unexpected sequence item under a mapping.", input, context, index + 1, line));
+      }
     }
 
-    const rawItem = trimmed.slice(2).trim();
+    const rawItem = rawSequenceValue;
 
     if (!rawItem) {
       const item: Record<string, YamlValue> = {};
-      frame.value.push(item);
+      (frame.value as YamlValue[]).push(item);
       if (peek !== null && peek.indent > indent) {
         stack.push({ indent, kind: "object", value: item });
       }
       continue;
     }
 
-    if (rawItem.includes(":")) {
-      const separator = rawItem.indexOf(":");
+    if (findSeparator(rawItem) >= 0) {
+      const separator = findSeparator(rawItem);
       const rawKey = rawItem.slice(0, separator);
       const rawValue = rawItem.slice(separator + 1).trim();
       const key = String(parseScalar(rawKey));
@@ -271,17 +389,18 @@ function parseYamlDocument(input: string, context?: YamlParseContext): YamlValue
       if (rawValue === "") {
         const hasChildren = peek !== null && peek.indent > indent;
         if (hasChildren) {
-          const itemValue = peek.trimmed.startsWith("- ") ? [] as YamlValue[] : {} as Record<string, YamlValue>;
+          const itemIsSequence = /^-\s/.test(peek.trimmed) || peek.trimmed === "-";
+          const itemValue = itemIsSequence ? [] as YamlValue[] : {} as Record<string, YamlValue>;
           item[key] = itemValue;
-          frame.value.push(item);
+          (frame.value as YamlValue[]).push(item);
           stack.push({ indent, kind: Array.isArray(itemValue) ? "array" : "object", value: itemValue });
         } else {
           item[key] = {};
-          frame.value.push(item);
+          (frame.value as YamlValue[]).push(item);
         }
       } else {
         item[key] = parseScalar(rawValue);
-        frame.value.push(item);
+        (frame.value as YamlValue[]).push(item);
         if (peek !== null && peek.indent > indent && peek.trimmed.includes(":")) {
           const hasChildren = peek !== null && peek.indent > indent;
           if (hasChildren) {
@@ -292,7 +411,7 @@ function parseYamlDocument(input: string, context?: YamlParseContext): YamlValue
       continue;
     }
 
-    frame.value.push(parseScalar(rawItem));
+    (frame.value as YamlValue[]).push(parseScalar(rawItem));
   }
 
   return root;
