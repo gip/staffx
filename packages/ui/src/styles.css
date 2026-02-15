@@ -44,6 +44,9 @@ body {
 }
 
 .header {
+  position: sticky;
+  top: 0;
+  z-index: 100;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -71,7 +74,7 @@ a.header-logo {
 
 .header--desktop {
   -webkit-app-region: drag;
-  position: relative;
+  position: sticky;
   background: var(--bg);
   border-bottom: none;
 }
