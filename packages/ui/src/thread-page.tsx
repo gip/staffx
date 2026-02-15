@@ -919,8 +919,6 @@ function buildFlowNodes(
   systemPromptTitle: string | null,
   systemPrompts: SystemPromptMeta[],
 ): Node[] {
-  if (model.visibleNodes.length === 0) return [];
-
   const children = new Map<string, TopologyNode[]>();
   for (const node of model.visibleNodes) {
     const parentId = model.visibleParentById.get(node.id);
@@ -1060,7 +1058,35 @@ function buildRootGroupNode(
   systemPromptTitle: string | null,
   systemPrompts: SystemPromptMeta[],
 ): Node | null {
-  if (childNodes.length === 0) return null;
+  if (childNodes.length === 0) {
+    const w = 400;
+    const h = 200;
+    return {
+      id: ROOT_GROUP_ID,
+      type: "rootGroup",
+      position: { x: 0, y: 0 },
+      data: {
+        name: rootNode.name,
+        nodeId: rootNode.id,
+        documents,
+        artifacts,
+        canEdit,
+        onOpenDocPicker,
+        onOpenSystemPrompt,
+        onEditDoc,
+        systemPrompt,
+        systemPromptTitle,
+        systemPrompts,
+      },
+      draggable: false,
+      selectable: false,
+      connectable: false,
+      width: w,
+      height: h,
+      style: { width: w, height: h, pointerEvents: "none" as const },
+      zIndex: 0,
+    };
+  }
 
   let minX = Infinity;
   let minY = Infinity;
