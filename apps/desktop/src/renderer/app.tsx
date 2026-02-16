@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { Route, Routes, useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { Route, Routes, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
   AuthContext,
   useAuth,
@@ -1392,6 +1392,23 @@ function ThreadRoute({ isAuthenticated }: { isAuthenticated: boolean }) {
   );
 }
 
+function ProjectHeader() {
+  const location = useLocation();
+  const segments = location.pathname.replace(/^\//, "").split("/").filter(Boolean);
+  const isProjectRoute =
+    segments.length >= 2 && segments[0] !== "settings";
+  const handle = isProjectRoute ? segments[0] : undefined;
+  const projectName = isProjectRoute ? segments[1] : undefined;
+
+  return (
+    <Header
+      variant="desktop"
+      projectLabel={handle && projectName ? `${handle} / ${projectName}` : undefined}
+      projectHref={handle && projectName ? `/${handle}/${projectName}` : undefined}
+    />
+  );
+}
+
 export function App() {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
@@ -1459,7 +1476,7 @@ export function App() {
       }}
     >
       <NavigateSync />
-      <Header variant="desktop" />
+      <ProjectHeader />
       <Routes>
         <Route path="/" element={<HomeRoute projects={projects} setProjects={setProjects} />} />
         <Route path="/:handle/:project" element={<ProjectRoute isAuthenticated={isAuthenticated} />} />

@@ -5,7 +5,15 @@ import { useTheme } from "./theme";
 import { Link } from "./link";
 import { Logo } from "./logo";
 
-export function Header({ variant = "web" }: { variant?: "web" | "desktop" }) {
+export function Header({
+  variant = "web",
+  projectLabel,
+  projectHref,
+}: {
+  variant?: "web" | "desktop";
+  projectLabel?: string;
+  projectHref?: string;
+}) {
   const { isAuthenticated, isLoading, user, login, logout } = useAuth();
   const { theme, toggle } = useTheme();
   const [menuOpen, setMenuOpen] = useState(false);
@@ -31,6 +39,11 @@ export function Header({ variant = "web" }: { variant?: "web" | "desktop" }) {
           <Link to="/" className="header-logo">
             <Logo />
             StaffX
+          </Link>
+        )}
+        {isDesktop && projectLabel && (
+          <Link to={projectHref ?? "/"} className="header-project-label header-no-drag">
+            {projectLabel}
           </Link>
         )}
       </div>
