@@ -81,6 +81,8 @@ a.header-logo {
 
 .header--desktop .header-left {
   min-width: 78px;
+  flex: 1;
+  justify-content: center;
 }
 
 .header-center {
@@ -95,10 +97,28 @@ a.header-logo {
   -webkit-app-region: no-drag;
 }
 
+a.header-project-label {
+  font-size: 14px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  text-decoration: none;
+  color: var(--fg-muted);
+  transition: color 0.15s;
+}
+
+a.header-project-label:hover {
+  color: var(--fg);
+}
+
 .header-right {
   display: flex;
   align-items: center;
   gap: 12px;
+}
+
+.header--desktop .header-right {
+  flex: 1;
+  justify-content: flex-end;
 }
 
 .btn {
