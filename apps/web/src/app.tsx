@@ -1,6 +1,14 @@
 import { useEffect, useState, useCallback } from "react";
 import { useAuth0 } from "@auth0/auth0-react";
-import { BrowserRouter, Routes, Route, useParams, useNavigate, useSearchParams } from "react-router-dom";
+import {
+  BrowserRouter,
+  Link,
+  Route,
+  Routes,
+  useNavigate,
+  useParams,
+  useSearchParams,
+} from "react-router-dom";
 import {
   AuthContext,
   useAuth,
@@ -318,6 +326,20 @@ function NavigateSync() {
     setNavigate((to) => navigate(to));
   }, [navigate]);
   return null;
+}
+
+function NotFoundRoute() {
+  return (
+    <main className="main">
+      <div className="page">
+        <h1>404</h1>
+        <p className="status-text">Page not found.</p>
+        <p className="page-description">
+          <Link to="/">Back to home</Link>
+        </p>
+      </div>
+    </main>
+  );
 }
 
 function HomePage({
@@ -1335,6 +1357,7 @@ export function App() {
           <Route path="/:handle/:project/settings" element={<SettingsRoute />} />
           <Route path="/:handle" element={<ProfileRoute />} />
           <Route path="/:handle/:project/thread/:threadId" element={<ThreadRoute />} />
+          <Route path="*" element={<NotFoundRoute />} />
         </Routes>
         <footer className="site-footer">
           Built by <a href="https://x.com/wutheringsf" target="_blank" rel="noreferrer">@wutheringsf</a>
