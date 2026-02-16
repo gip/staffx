@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import { Plus } from "lucide-react";
 import { useAuth } from "./auth-context";
 import { Link } from "./link";
+import { NodeGraph } from "./node-graph";
 
 export type ThreadStatus = "open" | "closed" | "committed";
 export type ProjectVisibility = "public" | "private";
@@ -213,11 +214,14 @@ export function Home({ projects, onCreateProject, onCheckProjectName }: HomeProp
 
   if (!isAuthenticated) {
     return (
-      <main className="hero">
-        <h1 className="hero-tagline">Staff-level reasoning, on demand.</h1>
-        <button className="btn hero-cta" onClick={login}>Log In</button>
-        <p><i>StaffX amplifies engineering judgment by exploring architectural tradeoffs and autonomously optimizing both system design and agent configuration.</i></p>
-      </main>
+      <div className="hero-wrapper">
+        <NodeGraph />
+        <main className="hero">
+          <h1 className="hero-tagline hero-enter hero-enter-1">Staff-level reasoning, on demand.</h1>
+          <button className="btn hero-cta hero-enter hero-enter-2" onClick={login}>Log In</button>
+          <p className="hero-enter hero-enter-3"><i>StaffX amplifies engineering judgment by exploring architectural tradeoffs and autonomously optimizing both system design and agent configuration.</i></p>
+        </main>
+      </div>
     );
   }
 
