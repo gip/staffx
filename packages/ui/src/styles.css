@@ -1806,6 +1806,21 @@ a.project-card {
   padding: 8px 10px;
   border: 1px dashed var(--border);
   border-radius: 8px;
+  margin-top: 8px;
+}
+
+.thread-chat-run-summary--success {
+  border-color: #1f9d55;
+  background: transparent;
+}
+
+.thread-chat-run-summary--failed {
+  border-color: #d64545;
+  background: transparent;
+}
+
+.thread-chat-run-summary--neutral {
+  border-color: var(--border);
 }
 
 .thread-chat-platform-note {
@@ -1989,6 +2004,10 @@ a.project-card {
 
 .thread-chat-message--assistant {
   background: rgba(128, 128, 128, 0.08);
+}
+
+.thread-chat-message--assistant-failed {
+  border-color: #d64545;
 }
 
 .thread-chat-message--user {
