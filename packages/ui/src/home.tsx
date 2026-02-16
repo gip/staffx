@@ -216,7 +216,7 @@ export function Home({ projects, onCreateProject, onCheckProjectName }: HomeProp
       <main className="hero">
         <h1 className="hero-tagline">Staff-level reasoning, on demand.</h1>
         <button className="btn hero-cta" onClick={login}>Log In</button>
-        <p>StaffX amplifies engineering judgment by exploring architectural tradeoffs and autonomously optimizing both system design and agent configuration.</p>
+        <p><i>StaffX amplifies engineering judgment by exploring architectural tradeoffs and autonomously optimizing both system design and agent configuration.</i></p>
       </main>
     );
   }
