@@ -297,8 +297,8 @@ function formatYamlParseError(
 
 function parseYamlDocument(input: string, context?: YamlParseContext): YamlValue {
   const lines = input.split(/\r?\n/);
-  let root: YamlValue = {};
   const rootObject: Record<string, YamlValue> = {};
+  let root: YamlValue = rootObject;
   const stack: Array<{ indent: number; kind: "object" | "array"; value: Record<string, YamlValue> | YamlValue[] }> = [
     { indent: -1, kind: "object", value: rootObject },
   ];
