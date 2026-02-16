@@ -55,15 +55,15 @@ export function Header({
           </Link>
         </div>
       )}
-      <div className="header-right header-no-drag">
-        <button className="btn-icon btn-icon-theme" onClick={toggle} aria-label="Toggle theme">
+      <div className="header-right">
+        <button className="btn-icon btn-icon-theme header-no-drag" onClick={toggle} aria-label="Toggle theme">
           {theme === "light" ? <Moon size={16} /> : <Sun size={16} />}
         </button>
         {isLoading ? null : !isAuthenticated ? (
-          <button className="btn" onClick={login}>Log In</button>
+          <button className="btn header-no-drag" onClick={login}>Log In</button>
         ) : (
-          <div className="avatar-menu" ref={menuRef}>
-            <button className="avatar-btn" onClick={() => setMenuOpen((v) => !v)}>
+          <div className="avatar-menu header-no-drag" ref={menuRef}>
+            <button className="avatar-btn header-no-drag" onClick={() => setMenuOpen((v) => !v)}>
               {user?.picture ? (
                 <img className="avatar-img" src={user.picture} alt="" />
               ) : (
@@ -73,24 +73,24 @@ export function Header({
               )}
             </button>
             {menuOpen && (
-              <div className="dropdown">
+              <div className="dropdown header-no-drag">
                 <div className="dropdown-user">
                   <span className="dropdown-handle">{user?.handle}</span>
                   {user?.email && <span className="dropdown-email">{user.email}</span>}
                 </div>
                 <div className="dropdown-divider" />
-                <Link to="/" className="dropdown-item" onClick={() => setMenuOpen(false)}>
+                <Link to="/" className="dropdown-item header-no-drag" onClick={() => setMenuOpen(false)}>
                   Home Page
                 </Link>
                 {user?.handle && (
-                  <Link to={`/${user.handle}`} className="dropdown-item" onClick={() => setMenuOpen(false)}>
+                  <Link to={`/${user.handle}`} className="dropdown-item header-no-drag" onClick={() => setMenuOpen(false)}>
                     Profile
                   </Link>
                 )}
-                <Link to="/settings" className="dropdown-item" onClick={() => setMenuOpen(false)}>
+                <Link to="/settings" className="dropdown-item header-no-drag" onClick={() => setMenuOpen(false)}>
                   Settings
                 </Link>
-                <button className="dropdown-item" onClick={() => { setMenuOpen(false); logout(); }}>
+                <button className="dropdown-item header-no-drag" onClick={() => { setMenuOpen(false); logout(); }}>
                   Log Out
                 </button>
               </div>

@@ -217,6 +217,7 @@ interface ProjectAccessRow {
   owner_id: string;
   visibility: ProjectVisibility;
   collaborator_role: AccessRole | null;
+  is_archived: boolean;
 }
 
 function getAuthUser(req: FastifyRequest): AuthUser | null {
@@ -255,21 +256,24 @@ async function resolveProject(
   projectName: string,
   viewerUserId: string | null,
 ): Promise<ResolvedProject | null> {
+  const normalizedHandle = handle.trim();
   const result = await query<ProjectAccessRow>(
-    `SELECT
+      `SELECT
        p.id,
-       p.owner_id,
-       p.visibility::text AS visibility,
-       pc.role::text AS collaborator_role
-     FROM projects p
-     JOIN users owner ON owner.id = p.owner_id
-     LEFT JOIN project_collaborators pc
-       ON pc.project_id = p.id
-      AND pc.user_id = CAST($3 AS uuid)
-     WHERE owner.handle = $1
+        p.owner_id,
+        p.visibility::text AS visibility,
+        pc.role::text AS collaborator_role,
+        p.is_archived
+      FROM projects p
+      JOIN users owner ON owner.id = p.owner_id
+      LEFT JOIN project_collaborators pc
+      ON pc.project_id = p.id
+       AND pc.user_id = CAST($3 AS uuid)
+     WHERE lower(owner.handle) = lower($1)
        AND p.name = $2
-     LIMIT 1`,
-    [handle, projectName, viewerUserId],
+       AND p.is_archived = false
+      LIMIT 1`,
+    [normalizedHandle, projectName, viewerUserId],
   );
   if (result.rowCount === 0) return null;
   const row = result.rows[0];
@@ -341,9 +345,12 @@ export async function projectRoutes(app: FastifyInstance) {
            FROM projects p
            JOIN users owner ON owner.id = p.owner_id
            LEFT JOIN project_collaborators pc ON pc.project_id = p.id AND pc.user_id = $1
-           WHERE p.visibility = 'public'
-              OR p.owner_id = $1
-              OR pc.user_id IS NOT NULL
+           WHERE (
+             p.visibility = 'public'
+             OR p.owner_id = $1
+             OR pc.user_id IS NOT NULL
+           )
+           AND p.is_archived = false
            ORDER BY p.created_at DESC`,
           [viewerUserId],
         )
@@ -372,6 +379,7 @@ export async function projectRoutes(app: FastifyInstance) {
            FROM projects p
            JOIN users owner ON owner.id = p.owner_id
            WHERE p.visibility = 'public'
+             AND p.is_archived = false
            ORDER BY p.created_at DESC`,
         )
       ).rows;
@@ -639,6 +647,26 @@ export async function projectRoutes(app: FastifyInstance) {
       };
     },
   );
+
+  app.post<{
+    Params: { handle: string; projectName: string };
+  }>("/projects/:handle/:projectName/archive", async (req, reply) => {
+    const viewerUserId = await getOptionalViewerUserId(req, reply);
+    if (typeof viewerUserId === "undefined") return;
+
+    const project = await resolveProject(req.params.handle, req.params.projectName, viewerUserId);
+    if (!project) return reply.code(404).send({ error: "Project not found" });
+    if (project.accessRole !== "Owner") {
+      return reply.code(403).send({ error: "Only the owner can archive this repo" });
+    }
+
+    await query(
+      "UPDATE projects SET is_archived = true WHERE id = $1",
+      [project.projectId],
+    );
+
+    return reply.code(204).send();
+  });
 
   // ── Collaborators ────────────────────────────────────────────
 

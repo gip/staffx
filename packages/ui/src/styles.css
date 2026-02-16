@@ -284,6 +284,23 @@ a.header-project-label:hover {
   opacity: 1;
 }
 
+/* Danger button */
+
+.btn-danger {
+  background: #a51212;
+  color: #ffffff;
+  border-color: #7f0f0f;
+}
+
+.btn-danger:hover {
+  background: #8a0f0f;
+  opacity: 1;
+}
+
+.btn-danger:disabled {
+  opacity: 0.65;
+}
+
 /* Modal */
 
 .modal-overlay {
@@ -544,6 +561,12 @@ select.field-input {
 
 .thread-section {
   margin-top: 8px;
+}
+
+.project-settings .thread-section + .thread-section {
+  margin-top: 24px;
+  padding-top: 24px;
+  border-top: 1px solid var(--border);
 }
 
 .thread-section-title {

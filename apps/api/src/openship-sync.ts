@@ -526,6 +526,46 @@ function appendSystemPromptRefs(
   return Array.from(refs);
 }
 
+function validateMatrixRefTargets(parsed: ParsedOpenShipBundle): void {
+  const documentHashes = new Set(
+    parsed.documents
+      .filter((document) => document.kind === "Document")
+      .map((document) => document.hash),
+  );
+  const skillHashes = new Set(
+    parsed.documents
+      .filter((document) => document.kind === "Skill")
+      .map((document) => document.hash),
+  );
+
+  const missingRefs: string[] = [];
+  for (const node of parsed.nodes) {
+    for (const [concern, refs] of Object.entries(node.matrix)) {
+      if (!concern || concern === SYSTEM_PROMPT_CONCERN) continue;
+
+      for (const hash of refs.documentRefs) {
+        if (!documentHashes.has(hash)) {
+          missingRefs.push(`node=${node.id} concern=${concern} ref_type=Document hash=${hash}`);
+        }
+      }
+
+      for (const hash of refs.skillRefs) {
+        if (!skillHashes.has(hash)) {
+          missingRefs.push(`node=${node.id} concern=${concern} ref_type=Skill hash=${hash}`);
+        }
+      }
+    }
+  }
+
+  if (missingRefs.length === 0) {
+    return;
+  }
+
+  const preview = missingRefs.slice(0, 10).join("; ");
+  const suffix = missingRefs.length > 10 ? `; +${missingRefs.length - 10} more` : "";
+  throw new Error(`OpenShip matrix references missing documents: ${preview}${suffix}`);
+}
+
 function resolveOpenShipRootNodeId(manifestRootNodeId: string, nodeLookup: Map<string, ParsedNodeManifest>): string {
   if (manifestRootNodeId === OPENSHIP_ROOT_NODE_ID) {
     if (!nodeLookup.has(OPENSHIP_ROOT_NODE_ID)) {
@@ -677,6 +717,7 @@ export async function applyOpenShipBundleToThreadSystemWithClient(
   { threadId, bundleFiles }: ApplyOpenShipSyncInput,
 ): Promise<string> {
   const parsed = extractBundleContent(bundleFiles);
+  validateMatrixRefTargets(parsed);
   const baseSystemResult = await client.query<{ system_id: string }>(
     `SELECT thread_current_system($1) AS system_id`,
     [threadId],
@@ -781,13 +822,6 @@ export async function applyOpenShipBundleToThreadSystemWithClient(
       [node.id, systemId, node.kind, node.name, node.parentId ?? null, node.metadata],
     );
 
-    for (const concern of Object.keys(node.matrix)) {
-      if (!concern || concern === SYSTEM_PROMPT_CONCERN) {
-        continue;
-      }
-      await upsertMatrixRefs(client, systemId, node, concern);
-    }
-
     for (const artifactId of node.summaryArtifactIds) {
       const summary = parsed.summaryArtifacts.find((entry) => entry.id === artifactId);
       if (!summary) {
@@ -855,6 +889,15 @@ export async function applyOpenShipBundleToThreadSystemWithClient(
              supersedes = EXCLUDED.supersedes`,
       [document.hash, systemId, document.kind, document.title, document.language, document.text, document.supersedes],
     );
+  }
+
+  for (const node of parsed.nodes) {
+    for (const concern of Object.keys(node.matrix)) {
+      if (!concern || concern === SYSTEM_PROMPT_CONCERN) {
+        continue;
+      }
+      await upsertMatrixRefs(client, systemId, node, concern);
+    }
   }
 
   const rootPromptRefs = appendSystemPromptRefs(parsed.nodes, parsed.manifest, resolvedSystemNodeId);

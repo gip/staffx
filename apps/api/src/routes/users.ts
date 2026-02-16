@@ -57,10 +57,12 @@ export async function userRoutes(app: FastifyInstance) {
       const viewerUserId = getAuthUser(req)?.id ?? null;
       const { handle } = req.params;
 
+      const normalizedHandle = handle.trim();
       const userResult = await query<UserRow>(
         `SELECT id, handle, name, picture, github_handle, created_at
-         FROM users WHERE handle = $1`,
-        [handle],
+         FROM users
+         WHERE lower(handle) = lower($1)`,
+        [normalizedHandle],
       );
 
       if (userResult.rowCount === 0) {
@@ -84,6 +86,7 @@ export async function userRoutes(app: FastifyInstance) {
            ON viewer_pc.project_id = p.id
           AND viewer_pc.user_id = CAST($2 AS uuid)
          WHERE target_up.user_id = $1
+           AND p.is_archived = false
            AND (
              p.visibility = 'public'
              OR p.owner_id = CAST($2 AS uuid)
