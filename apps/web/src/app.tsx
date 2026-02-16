@@ -898,6 +898,7 @@ function ThreadRoute() {
     <ThreadPage
       detail={detail}
       integrationStatuses={integrationStatuses}
+      disableChatInputs
       onUpdateThread={async (payload) => {
         try {
           const res = await apiFetch(

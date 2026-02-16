@@ -32,7 +32,7 @@ export const templateWebserverPostgresAuth0GoogleVercel: TemplateDefinition = {
       parentKey: "root",
       layout: {
         x: 300,
-        y: 0,
+        y: -100,
       },
     },
     {
@@ -42,7 +42,7 @@ export const templateWebserverPostgresAuth0GoogleVercel: TemplateDefinition = {
       parentKey: "vercel_host",
       layout: {
         x: 380,
-        y: -10,
+        y: -110,
       },
     },
     {

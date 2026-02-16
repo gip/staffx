@@ -17,6 +17,17 @@
 - `./skills/openship-specs-v1/SKILL.md`: OpenShip specification instructions (authoritative).
 - `./SKILLS.md`: legacy OpenShip specification artifact copy (kept for compatibility).
 
+## Node ID convention (typed schemes)
+
+- In typed-id systems, node IDs follow `<type>.<key>`:
+  - `s.root` for `Root`
+  - `h.<key>` for `Host`
+  - `c.<key>` for `Container`
+  - `p.<key>` for `Process`
+  - `l.<key>` for `Library`
+- `<key>` is kebab-case (`[a-z0-9]+(?:-[a-z0-9]+)*`) and is stored in `metadata.openshipKey`.
+- For typed-id systems, node kind changes are not allowed once a node exists (ID/kind pairing is immutable).
+
 ## How to change the system description and topology
 
 - Treat `./openship` as the authoritative in-place edit surface for system topology.
