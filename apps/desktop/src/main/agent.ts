@@ -2,7 +2,12 @@ import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { diffOpenShipSnapshots, runClaudeAgent, snapshotOpenShipBundle } from "@staffx/agent-runtime";
+import {
+  diffOpenShipSnapshots,
+  runClaudeAgent,
+  snapshotOpenShipBundle,
+  type SDKMessage,
+} from "@staffx/agent-runtime";
 import { getAccessToken } from "./auth.js";
 
 const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:3001";
@@ -105,6 +110,96 @@ function resolveWorkspace(handle: string, projectName: string, threadId: string)
     : join(homedir(), ".staffx", "projects");
 
   return join(projectsRoot, "desktop", sanitizeComponent(handle), sanitizeComponent(projectName), sanitizeComponent(threadId));
+}
+
+function extractReadableText(value: unknown, depth = 0): string[] {
+  if (depth > 8 || value === null || value === undefined) return [];
+
+  if (typeof value === "string") {
+    return [value];
+  }
+
+  if (Array.isArray(value)) {
+    return value.flatMap((item) => extractReadableText(item, depth + 1));
+  }
+
+  if (typeof value === "object") {
+    const typed = value as Record<string, unknown>;
+
+    if (typeof typed.text === "string") {
+      return [typed.text];
+    }
+
+    if (typeof typed.content === "string") {
+      return [typed.content];
+    }
+
+    if (typeof typed.message === "string") {
+      return [typed.message];
+    }
+
+    if (typed.response !== undefined) {
+      return extractReadableText(typed.response, depth + 1);
+    }
+
+    if (typed.message !== undefined) {
+      return extractReadableText(typed.message, depth + 1);
+    }
+
+    if (typed.content !== undefined) {
+      return extractReadableText(typed.content, depth + 1);
+    }
+
+    if (typed.text !== undefined) {
+      return extractReadableText(typed.text, depth + 1);
+    }
+
+    return [];
+  }
+
+  return [];
+}
+
+function summarizeSdkMessage(message: SDKMessage): { text: string; isAnomaly: boolean } {
+  try {
+    const typed = message as {
+      content?: unknown;
+      message?: unknown;
+      response?: unknown;
+      text?: unknown;
+    };
+    const text = [
+      ...extractReadableText(typed.content),
+      ...extractReadableText(typed.text),
+      ...extractReadableText(typed.message),
+      ...extractReadableText(typed.response),
+    ]
+      .flatMap((line) => line.split("\n"))
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0)
+      .join(" ");
+
+    if (text.length > 0) {
+      return { text, isAnomaly: false };
+    }
+
+    const payload = JSON.stringify(message);
+    return { text: payload ?? "[unserializable-sdk-message]", isAnomaly: true };
+  } catch (error: unknown) {
+    const reason = error instanceof Error ? error.message : "unknown serialization error";
+    return { text: reason, isAnomaly: true };
+  }
+}
+
+function truncateForLog(value: string, maxLength: number): string {
+  if (value.length <= maxLength) return value;
+  return `${value.slice(0, maxLength - 1)}…`;
+}
+
+function getMessageType(message: SDKMessage): string {
+  return typeof (message as { type?: unknown }).type === "string"
+    ? String((message as { type?: string }).type)
+    : "unknown";
 }
 
 async function getWorkspaceAccessToken(): Promise<string> {
@@ -273,6 +368,28 @@ export async function startAssistantRunLocal(payload: {
   await writeOpenShipBundle(workspace, descriptor.files);
   const bundleDir = join(workspace, "openship");
   const before = await snapshotOpenShipBundle(bundleDir);
+  let turnIndex = 0;
+  const logTurn = (message: SDKMessage): void => {
+    const sequence = ++turnIndex;
+    try {
+      const { text, isAnomaly } = summarizeSdkMessage(message);
+      const messageType = getMessageType(message);
+      const prefix = `[desktop-agent][turn] runId=${payload.runId} threadId=${payload.threadId} seq=${sequence} type=${messageType}`;
+      const safeText = truncateForLog(text, 1200);
+
+      if (isAnomaly) {
+        console.warn(`${prefix} parse_anomaly ${safeText}`);
+        return;
+      }
+
+      console.info(`${prefix} ${safeText}`);
+    } catch (error: unknown) {
+      const warnMessage = error instanceof Error ? error.message : "Unable to log turn";
+      console.warn(
+        `[desktop-agent][turn] runId=${payload.runId} threadId=${payload.threadId} seq=${sequence} type=unknown parse_failure ${warnMessage}`,
+      );
+    }
+  };
 
   console.info("[desktop-agent] invoking Claude agent", {
     runId: payload.runId,
@@ -286,6 +403,7 @@ export async function startAssistantRunLocal(payload: {
     cwd: workspace,
     systemPrompt: claimPayload.systemPrompt ?? undefined,
     allowedTools: ["Read", "Grep", "Glob", "Bash", "Edit", "Write"],
+    onMessage: logTurn,
   });
 
   const after = await snapshotOpenShipBundle(bundleDir);

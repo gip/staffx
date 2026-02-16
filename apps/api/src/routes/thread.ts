@@ -38,8 +38,8 @@ const DEFAULT_SYSTEM_PROMPT =
   "Start by reading AGENTS.md. " + 
   "You will update the system description and implementation in ./openship (or not if there is no update) " +
   "and add to a file called SUMMARY.md a description of the plan executed, use Markdown. " +
-  "Check that the updated ./openship directory is fully compliant with the OpenShip description and write that you checked that in the summary. " +
-  "Check that the YAML files that were modified or created are correct. " +
+  "If changes were made during the run, check that the updated ./openship directory is fully compliant with the OpenShip description and write that you checked that in the summary. " +
+  "If changes are to be made, keep the changes to a minimum. In particular do not update name if existing objects like node or names unless it is absolutely necessary. "
   "Send back the summary as the response to the user as well.";
 
 function extractAgentRunMessageText(value: unknown, depth = 0): string[] {
