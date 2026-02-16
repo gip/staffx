@@ -1041,8 +1041,10 @@ function buildFlowNodes(
 }
 
 const ROOT_GROUP_ID = "__root_group__";
-const ROOT_GROUP_PADDING = 80;
+const ROOT_GROUP_PADDING_LEFT = 200;
+const ROOT_GROUP_PADDING_RIGHT = 80;
 const ROOT_GROUP_TOP_PADDING = 112;
+const ROOT_GROUP_PADDING_BOTTOM = 80;
 const ESTIMATED_NODE_WIDTH = 240;
 const ESTIMATED_NODE_HEIGHT = 120;
 
@@ -1103,13 +1105,13 @@ function buildRootGroupNode(
     maxY = Math.max(maxY, node.position.y + h);
   }
 
-  const w = maxX - minX + ROOT_GROUP_PADDING * 2;
-  const h = maxY - minY + ROOT_GROUP_TOP_PADDING + ROOT_GROUP_PADDING;
+  const w = maxX - minX + ROOT_GROUP_PADDING_LEFT + ROOT_GROUP_PADDING_RIGHT;
+  const h = maxY - minY + ROOT_GROUP_TOP_PADDING + ROOT_GROUP_PADDING_BOTTOM;
 
   return {
     id: ROOT_GROUP_ID,
     type: "rootGroup",
-    position: { x: minX - ROOT_GROUP_PADDING, y: minY - ROOT_GROUP_TOP_PADDING },
+    position: { x: minX - ROOT_GROUP_PADDING_LEFT, y: minY - ROOT_GROUP_TOP_PADDING },
     data: {
       name: rootNode.name,
       nodeId: rootNode.id,
