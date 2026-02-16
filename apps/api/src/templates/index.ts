@@ -28,11 +28,17 @@ export type TemplateEdgeType = "Runtime" | "Dataflow" | "Dependency";
 export type TemplateDocKind = "Document" | "Skill";
 export type TemplateRefType = "Document" | "Skill";
 
+export interface TemplateNodeLayout {
+  x: number;
+  y: number;
+}
+
 export interface TemplateNode {
   key: string;
   name: string;
   kind: TemplateNodeKind;
   parentKey?: string;
+  layout?: TemplateNodeLayout;
 }
 
 export interface TemplateEdge {

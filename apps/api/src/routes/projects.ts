@@ -81,9 +81,16 @@ async function seedSystemTemplate(
     }
 
     await client.query(
-      `INSERT INTO nodes (id, system_id, kind, name, parent_id)
-       VALUES ($1, $2, $3::node_kind, $4, $5)`,
-      [nodeId, systemId, node.kind, node.name, parentNodeId],
+      `INSERT INTO nodes (id, system_id, kind, name, parent_id, metadata)
+       VALUES ($1, $2, $3::node_kind, $4, $5, $6::jsonb)`,
+      [
+        nodeId,
+        systemId,
+        node.kind,
+        node.name,
+        parentNodeId,
+        node.layout ? JSON.stringify({ layout: node.layout }) : "{}",
+      ],
     );
   }
 

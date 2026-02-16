@@ -10,60 +10,100 @@ export const templateWebserverPostgresAuth0GoogleVercel: TemplateDefinition = {
       name: "Browser",
       kind: "Host",
       parentKey: "root",
+      layout: {
+        x: 0,
+        y: 0,
+      },
     },
     {
       key: "react_frontend",
       name: "React App",
       kind: "Process",
       parentKey: "browser_host",
+      layout: {
+        x: 80,
+        y: -10,
+      },
     },
     {
       key: "vercel_host",
       name: "Vercel",
       kind: "Host",
       parentKey: "root",
+      layout: {
+        x: 300,
+        y: 0,
+      },
     },
     {
       key: "webserver_process",
       name: "Webserver",
       kind: "Process",
       parentKey: "vercel_host",
+      layout: {
+        x: 380,
+        y: -10,
+      },
     },
     {
       key: "postgres_host",
       name: "Postgres Host",
       kind: "Host",
       parentKey: "root",
+      layout: {
+        x: 620,
+        y: 240,
+      },
     },
     {
       key: "postgres_process",
       name: "Postgres",
       kind: "Process",
       parentKey: "postgres_host",
+      layout: {
+        x: 700,
+        y: 250,
+      },
     },
     {
       key: "auth0_host",
       name: "Auth0 Identity",
       kind: "Host",
       parentKey: "root",
+      layout: {
+        x: 620,
+        y: 0,
+      },
     },
     {
       key: "auth0_process",
       name: "Auth0 Service",
       kind: "Process",
       parentKey: "auth0_host",
+      layout: {
+        x: 700,
+        y: -10,
+      },
     },
     {
       key: "google_host",
       name: "Google Identity",
       kind: "Host",
       parentKey: "root",
+      layout: {
+        x: 900,
+        y: 0,
+      },
     },
     {
       key: "google_oauth_process",
       name: "Google OAuth",
       kind: "Process",
       parentKey: "google_host",
+      layout: {
+        x: 980,
+        y: -10,
+      },
     },
   ],
   edges: [
