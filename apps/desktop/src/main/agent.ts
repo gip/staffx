@@ -196,6 +196,42 @@ function truncateForLog(value: string, maxLength: number): string {
   return `${value.slice(0, maxLength - 1)}…`;
 }
 
+function summarizeFailureReason(messages: string[] | undefined): string | null {
+  if (!messages || messages.length === 0) return null;
+  const joined = messages
+    .map((message) => message.trim())
+    .filter((message) => message.length > 0)
+    .join(" | ");
+  return joined.length > 0 ? truncateForLog(joined, 1200) : null;
+}
+
+function logRunOutcome(payload: {
+  runId: string;
+  threadId: string;
+  stage: string;
+  status: "success" | "failed";
+  reason?: string | null;
+}): void {
+  const reason = payload.reason?.trim() || null;
+  if (payload.status === "failed") {
+    console.warn("[desktop-agent] run outcome", {
+      runId: payload.runId,
+      threadId: payload.threadId,
+      stage: payload.stage,
+      status: payload.status,
+      reason: reason ?? "Unknown failure.",
+    });
+    return;
+  }
+
+  console.info("[desktop-agent] run outcome", {
+    runId: payload.runId,
+    threadId: payload.threadId,
+    stage: payload.stage,
+    status: payload.status,
+  });
+}
+
 function getMessageType(message: SDKMessage): string {
   return typeof (message as { type?: unknown }).type === "string"
     ? String((message as { type?: string }).type)
@@ -332,9 +368,23 @@ export async function startAssistantRunLocal(payload: {
           { method: "GET" },
         );
       } catch (readError: unknown) {
+        logRunOutcome({
+          runId: payload.runId,
+          threadId: payload.threadId,
+          stage: "claim",
+          status: "failed",
+          reason: toError(readError),
+        });
         return { error: toError(readError) };
       }
     }
+    logRunOutcome({
+      runId: payload.runId,
+      threadId: payload.threadId,
+      stage: "claim",
+      status: "failed",
+      reason: toError(error),
+    });
     return { error: toError(error) };
   }
 
@@ -361,6 +411,13 @@ export async function startAssistantRunLocal(payload: {
       },
     );
   } catch (error: unknown) {
+    logRunOutcome({
+      runId: payload.runId,
+      threadId: payload.threadId,
+      stage: "bundle_fetch",
+      status: "failed",
+      reason: toError(error),
+    });
     return { error: toError(error) };
   }
 
@@ -405,6 +462,15 @@ export async function startAssistantRunLocal(payload: {
     allowedTools: ["Read", "Grep", "Glob", "Bash", "Edit", "Write"],
     onMessage: logTurn,
   });
+  logRunOutcome({
+    runId: payload.runId,
+    threadId: payload.threadId,
+    stage: "agent_run",
+    status: runResult.status,
+    reason: runResult.status === "failed"
+      ? runResult.error ?? summarizeFailureReason(runResult.messages)
+      : null,
+  });
 
   const after = await snapshotOpenShipBundle(bundleDir);
   const fileChanges = diffOpenShipSnapshots(before, after);
@@ -436,6 +502,13 @@ export async function startAssistantRunLocal(payload: {
       openShipBundleFiles = await collectOpenShipBundleFiles(bundleDir);
     } catch (snapshotError: unknown) {
       const snapshotFailure = `OpenShip reconciliation snapshot failed: ${toError(snapshotError)}`;
+      logRunOutcome({
+        runId: payload.runId,
+        threadId: payload.threadId,
+        stage: "snapshot",
+        status: "failed",
+        reason: snapshotFailure,
+      });
       return await completeRun(token, payload.handle, payload.projectName, payload.threadId, payload.runId, {
         status: "failed",
         messages: [...messages, snapshotFailure],
@@ -447,7 +520,7 @@ export async function startAssistantRunLocal(payload: {
   }
 
   try {
-    return await completeRun(token, payload.handle, payload.projectName, payload.threadId, payload.runId, {
+    const completionResult = await completeRun(token, payload.handle, payload.projectName, payload.threadId, payload.runId, {
       status: runResult.status,
       messages,
       changes,
@@ -455,7 +528,25 @@ export async function startAssistantRunLocal(payload: {
       ...(openShipBundleFiles ? { openShipBundleFiles } : {}),
       runnerId,
     });
+    const completionStatus = completionResult.summary?.status ?? runResult.status;
+    logRunOutcome({
+      runId: payload.runId,
+      threadId: payload.threadId,
+      stage: "completion",
+      status: completionStatus,
+      reason: completionStatus === "failed"
+        ? summarizeFailureReason(completionResult.summary?.messages) ?? runResult.error ?? null
+        : null,
+    });
+    return completionResult;
   } catch (error: unknown) {
+    logRunOutcome({
+      runId: payload.runId,
+      threadId: payload.threadId,
+      stage: "completion",
+      status: "failed",
+      reason: toError(error),
+    });
     return { error: toError(error) };
   }
 }

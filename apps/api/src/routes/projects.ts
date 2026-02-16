@@ -35,6 +35,38 @@ interface ThreadRow {
 
 type AccessRole = "Owner" | "Editor" | "Viewer";
 type ProjectVisibility = "public" | "private";
+type OpenShipNodeKind = "Root" | "Host" | "Container" | "Process" | "Library";
+
+const OPENSHIP_ROOT_NODE_ID = "s.root";
+const TYPED_NODE_ID_SCHEME = "typed_key_v1";
+const OPENSHIP_KEY_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+
+function kindToPrefix(kind: OpenShipNodeKind): string {
+  if (kind === "Root") return "s";
+  if (kind === "Host") return "h";
+  if (kind === "Container") return "c";
+  if (kind === "Process") return "p";
+  return "l";
+}
+
+function normalizeOpenShipKey(raw: string): string {
+  const normalized = raw
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "");
+
+  if (!OPENSHIP_KEY_PATTERN.test(normalized)) {
+    throw new Error(`Invalid OpenShip key "${raw}".`);
+  }
+  return normalized;
+}
+
+function buildTypedNodeId(kind: OpenShipNodeKind, key: string): string {
+  if (kind === "Root") return OPENSHIP_ROOT_NODE_ID;
+  return `${kindToPrefix(kind)}.${key}`;
+}
 
 function computeDocumentHash(document: Pick<TemplateDocument, "kind" | "title" | "language" | "text">) {
   const payload = [document.kind, document.title, document.language, document.text].join("\n");
@@ -63,22 +95,41 @@ async function seedSystemTemplate(
   template: TemplateDefinition,
 ) {
   const nodeIds = new Map<string, string>([["root", rootNodeId]]);
+  const nodeOpenShipKeys = new Map<string, string>();
+  const nodeIdToTemplateKey = new Map<string, string>();
   for (const node of template.nodes) {
     if (nodeIds.has(node.key)) {
       throw new Error(`Template "${template.id}" has duplicate node key "${node.key}"`);
     }
-    nodeIds.set(node.key, randomUUID());
+    const openShipKey = normalizeOpenShipKey(node.key);
+    const typedNodeId = buildTypedNodeId(node.kind, openShipKey);
+    const existingTemplateKey = nodeIdToTemplateKey.get(typedNodeId);
+    if (existingTemplateKey) {
+      throw new Error(
+        `Template "${template.id}" has node id collision after normalization: ` +
+        `"${existingTemplateKey}" and "${node.key}" both map to "${typedNodeId}"`,
+      );
+    }
+    nodeIds.set(node.key, typedNodeId);
+    nodeOpenShipKeys.set(node.key, openShipKey);
+    nodeIdToTemplateKey.set(typedNodeId, node.key);
   }
 
   for (const node of template.nodes) {
     const nodeId = nodeIds.get(node.key);
+    const openShipKey = nodeOpenShipKeys.get(node.key);
     const parentKey = node.parentKey ?? "root";
     const parentNodeId = nodeIds.get(parentKey);
-    if (!nodeId || !parentNodeId) {
+    if (!nodeId || !parentNodeId || !openShipKey) {
       throw new Error(
         `Template "${template.id}" references unknown parent "${parentKey}" for node "${node.key}"`,
       );
     }
+
+    const nodeMetadata = {
+      ...(node.layout ? { layout: node.layout } : {}),
+      openshipKey: openShipKey,
+    };
 
     await client.query(
       `INSERT INTO nodes (id, system_id, kind, name, parent_id, metadata)
@@ -89,7 +140,7 @@ async function seedSystemTemplate(
         node.kind,
         node.name,
         parentNodeId,
-        node.layout ? JSON.stringify({ layout: node.layout }) : "{}",
+        JSON.stringify(nodeMetadata),
       ],
     );
   }
@@ -450,16 +501,16 @@ export async function projectRoutes(app: FastifyInstance) {
         );
 
         const systemId = randomUUID();
-        const rootNodeId = randomUUID();
+        const rootNodeId = OPENSHIP_ROOT_NODE_ID;
         await client.query(
-          `INSERT INTO systems (id, name, root_node_id)
-           VALUES ($1, $2, $3)`,
-          [systemId, trimmed, rootNodeId],
+          `INSERT INTO systems (id, name, root_node_id, metadata)
+           VALUES ($1, $2, $3, $4::jsonb)`,
+          [systemId, trimmed, rootNodeId, JSON.stringify({ nodeIdScheme: TYPED_NODE_ID_SCHEME })],
         );
         await client.query(
-          `INSERT INTO nodes (id, system_id, kind, name, parent_id)
-           VALUES ($1, $2, 'Root'::node_kind, $3, NULL)`,
-          [rootNodeId, systemId, trimmed],
+          `INSERT INTO nodes (id, system_id, kind, name, parent_id, metadata)
+           VALUES ($1, $2, 'Root'::node_kind, $3, NULL, $4::jsonb)`,
+          [rootNodeId, systemId, trimmed, JSON.stringify({ openshipKey: "root" })],
         );
 
         if (selectedTemplate) {

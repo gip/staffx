@@ -289,6 +289,7 @@ interface ThreadPageProps {
   onCommitThread?: () => Promise<MutationResult<{ thread: ThreadDetail }>>;
   onCloneThread?: (payload: { title: string; description: string }) => Promise<MutationResult<{ thread: ThreadDetail }>>;
   integrationStatuses?: IntegrationStatusRecord;
+  disableChatInputs?: boolean;
 }
 
 const AGENT_OPTIONS = ["Opus 4.6"] as const;
@@ -1195,6 +1196,7 @@ function buildFlowEdges(edges: TopologyEdge[], model: FlowLayoutModel): Edge[] {
 
 export function ThreadPage({
   detail,
+  disableChatInputs = false,
   onUpdateThread,
   onSaveTopologyLayout,
   onAddMatrixDoc,
@@ -1230,9 +1232,10 @@ export function ThreadPage({
   const [chatError, setChatError] = useState("");
   const [isSendingChat, setIsSendingChat] = useState(false);
   const [assistantError, setAssistantError] = useState("");
-  const [assistantSummary, setAssistantSummary] = useState("");
+  const [assistantSummaryStatus, setAssistantSummaryStatus] = useState<"success" | "failed" | null>(null);
   const [selectedAgentModel, setSelectedAgentModel] = useState<string>(AGENT_OPTIONS[0]);
   const [isRunningAssistant, setIsRunningAssistant] = useState(false);
+  const isChatInputsDisabled = disableChatInputs;
   const isAssistantRunEnabled = onRunAssistant && !assistantRunDisabledMessage;
   const [isClosingThread, setIsClosingThread] = useState(false);
   const [isCommittingThread, setIsCommittingThread] = useState(false);
@@ -1268,35 +1271,37 @@ export function ThreadPage({
   const [documentModalError, setDocumentModalError] = useState("");
   const { user } = useAuth();
 
-  const formatChangedFilesSummary = (payload: AssistantRunResponse): string => {
-    const lines = (payload.filesChanged ?? []).map((entry) => {
-      const prefix = entry.kind === "Create" ? "A" : entry.kind === "Update" ? "M" : "D";
-      const hashSummary = entry.fromHash && entry.toHash
-        ? ` (${entry.fromHash} -> ${entry.toHash})`
-        : entry.fromHash
-        ? ` (from ${entry.fromHash})`
-        : entry.toHash
-        ? ` (to ${entry.toHash})`
-        : "";
+  const sanitizeAssistantResponseText = (input: string) => {
+    const noisePatterns = [
+      /(?:^|\s*\|\s*)OpenShip reconciliation failed:[^\n|]*/gi,
+      /(?:^|\s*\|\s*)insert or update on table "matrix_refs"[^\n|]*/gi,
+      /(?:^|\s*\|\s*)violates foreign key constraint "matrix_refs_system_id_doc_hash_fkey"[^\n|]*/gi,
+    ];
 
-      return `${prefix} ${entry.path}${hashSummary}`;
-    });
+    let sanitized = input;
+    for (const pattern of noisePatterns) {
+      sanitized = sanitized.replace(pattern, "");
+    }
 
-    return lines.length > 0 ? lines.join(", ") : "No files changed.";
+    return sanitized
+      .replace(/\s*\|\s*\|\s*/g, " | ")
+      .replace(/(^|\n)\s*\|\s*/g, "$1")
+      .replace(/\s*\|\s*($|\n)/g, "$1")
+      .replace(/[ \t]+\n/g, "\n")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
   };
 
   const setAssistantRunSummary = (payload: AssistantRunResponse) => {
-    const responseText = (payload.summary.messages ?? []).join(" ");
-    const filesSummary = formatChangedFilesSummary(payload);
-    setAssistantSummary(`${responseText}\n${filesSummary}`);
+    setAssistantSummaryStatus(payload.summary.status);
   };
 
   const updateAssistantSummary = (payload: AssistantRunResponse) => {
-    if (payload.messages?.length) {
-      setAssistantSummary("");
-      return;
-    }
     setAssistantRunSummary(payload);
+  };
+
+  const clearAssistantSummary = () => {
+    setAssistantSummaryStatus(null);
   };
 
   const isThreadOpen = detail.thread.status === "open";
@@ -1438,6 +1443,10 @@ export function ThreadPage({
       return a.id.localeCompare(b.id);
     });
   }, [detail.chat.messages]);
+
+  const visibleChatMessages = useMemo(() => {
+    return orderedChatMessages.filter((message) => message.role !== "System");
+  }, [orderedChatMessages]);
 
   const resetDocumentModal = useCallback(() => {
     setDocumentModal(null);
@@ -2282,10 +2291,10 @@ export function ThreadPage({
   }
 
   async function handleSendChat() {
-    if (!onSendChatMessage || !effectiveCanEdit || !chatInput.trim()) return;
+    if (!onSendChatMessage || !effectiveCanEdit || !chatInput.trim() || isChatInputsDisabled) return;
     setChatError("");
     setAssistantError("");
-    setAssistantSummary("");
+    clearAssistantSummary();
     const prompt = chatInput.trim();
 
     setIsSendingChat(true);
@@ -2321,17 +2330,20 @@ export function ThreadPage({
       const runError = getErrorMessage(runResult);
       if (runError) {
         setAssistantError(runError);
+        setAssistantSummaryStatus(null);
         return;
       }
 
       if (!runResult) {
         setAssistantError("No response from assistant endpoint.");
+        setAssistantSummaryStatus(null);
         return;
       }
 
       updateAssistantSummary(runResult as AssistantRunResponse);
     } catch (error: unknown) {
       setAssistantError(error instanceof Error ? error.message : "Failed to send chat message and execute assistant.");
+      setAssistantSummaryStatus(null);
     } finally {
       setIsSendingChat(false);
       setIsRunningAssistant(false);
@@ -2339,11 +2351,11 @@ export function ThreadPage({
   }
 
   async function handleRunAssistant(mode: AssistantRunMode, planActionId: string | null = null) {
-    if (!onRunAssistant || !effectiveCanEdit || !isAssistantRunEnabled) return;
+    if (!onRunAssistant || !effectiveCanEdit || !isAssistantRunEnabled || isChatInputsDisabled) return;
 
     setIsRunningAssistant(true);
     setAssistantError("");
-    setAssistantSummary("");
+    clearAssistantSummary();
 
     try {
       const result = await onRunAssistant({
@@ -2355,11 +2367,13 @@ export function ThreadPage({
       const error = getErrorMessage(result);
       if (error) {
         setAssistantError(error);
+        setAssistantSummaryStatus(null);
         return;
       }
 
       if (!result) {
         setAssistantError("No response from assistant endpoint.");
+        setAssistantSummaryStatus(null);
         return;
       }
 
@@ -2374,7 +2388,7 @@ export function ThreadPage({
         return;
       }
 
-      setAssistantSummary(payload.summary.messages.join(" "));
+      setAssistantSummaryStatus(payload.summary.status);
     } finally {
       setIsRunningAssistant(false);
     }
@@ -3160,19 +3174,19 @@ export function ThreadPage({
 
         const formatChatMessageContent = (content: string) => {
           const trimmed = content.trim();
-          if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) return content;
+          if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) return sanitizeAssistantResponseText(content);
 
           try {
             const parsed = JSON.parse(trimmed);
             const texts = extractMessageTextFromUnknown(parsed);
             if (texts.length > 0) {
-              return texts.join("\n");
+              return sanitizeAssistantResponseText(texts.join("\n"));
             }
           } catch {
-            return content;
+            return sanitizeAssistantResponseText(content);
           }
 
-          return content;
+          return sanitizeAssistantResponseText(content);
         };
 
         const getChatSenderName = (role: "User" | "Assistant" | "System") => {
@@ -3181,36 +3195,37 @@ export function ThreadPage({
           return role;
         };
 
+        const latestAssistantMessageId = [...visibleChatMessages]
+          .reverse()
+          .find((message) => message.role === "Assistant")?.id ?? null;
+
         const renderChatBody = () => (
           <div>
             <div className="thread-chat-history">
-              {orderedChatMessages.length === 0 ? (
+              {visibleChatMessages.length === 0 ? (
                 <p className="matrix-empty">No messages yet</p>
               ) : (
-                orderedChatMessages.map((message) => (
+                visibleChatMessages.map((message) => (
                   <article
                     key={message.id}
-                    className={`thread-chat-message thread-chat-message--${message.role.toLowerCase()}`}
+                    className={`thread-chat-message thread-chat-message--${message.role.toLowerCase()}${
+                      message.role === "Assistant"
+                      && message.id === latestAssistantMessageId
+                      && assistantSummaryStatus === "failed"
+                        ? " thread-chat-message--assistant-failed"
+                        : ""
+                    }`}
                   >
-                    {message.role === "System" ? (
-                      <header>
-                        <span className="thread-chat-system-content">{message.content}</span>
-                        <span>{formatDateTime(message.createdAt)}</span>
-                      </header>
-                    ) : (
-                      <>
-                        <header>
-                          <div className="thread-chat-message-header-left">
-                            <strong>{getChatSenderName(message.role)}</strong>
-                          </div>
-                          <span>{formatDateTime(message.createdAt)}</span>
-                        </header>
-                        <div
-                          className="thread-chat-message-body"
-                          dangerouslySetInnerHTML={{ __html: renderMarkdown(formatChatMessageContent(message.content)) }}
-                        />
-                      </>
-                    )}
+                    <header>
+                      <div className="thread-chat-message-header-left">
+                        <strong>{getChatSenderName(message.role)}</strong>
+                      </div>
+                      <span>{formatDateTime(message.createdAt)}</span>
+                    </header>
+                    <div
+                      className="thread-chat-message-body"
+                      dangerouslySetInnerHTML={{ __html: renderMarkdown(formatChatMessageContent(message.content)) }}
+                    />
                   </article>
                 ))
               )}
@@ -3225,69 +3240,21 @@ export function ThreadPage({
                     placeholder="Ask Ideating anything"
                     value={chatInput}
                     onChange={(event) => setChatInput(event.target.value)}
-                    disabled={isSendingChat}
+                    disabled={isSendingChat || isChatInputsDisabled}
                   />
                   <button
                     className="thread-chat-send"
                     type="button"
                     onClick={handleSendChat}
-                    disabled={isSendingChat || !chatInput.trim()}
+                    disabled={isSendingChat || !chatInput.trim() || isChatInputsDisabled}
                     aria-label="Send message"
                   >
                     <Send size={14} />
                   </button>
                 </div>
-                {assistantRunDisabledMessage ? <p className="thread-chat-platform-note">{assistantRunDisabledMessage}</p> : null}
-                {onRunAssistant ? (
-                  <div className="thread-chat-run-actions">
-                    <select
-                      className="field-input thread-chat-agent-select"
-                      value={selectedAgentModel}
-                      disabled={isRunningAssistant || !isAssistantRunEnabled}
-                      onChange={(event) => setSelectedAgentModel(event.target.value)}
-                      aria-label="Select agent model"
-                    >
-                      {AGENT_OPTIONS.map((model) => (
-                        <option key={model} value={model}>
-                          {model}
-                        </option>
-                      ))}
-                    </select>
-                    <button
-                      className="btn thread-chat-run-action"
-                      type="button"
-                      onClick={() => handleRunAssistant("direct")}
-                      disabled={isRunningAssistant || !isAssistantRunEnabled}
-                    >
-                      Run
-                    </button>
-                    <button
-                      className="btn thread-chat-run-action"
-                      type="button"
-                      onClick={() => handleRunAssistant("plan")}
-                      disabled={isRunningAssistant || !isAssistantRunEnabled}
-                    >
-                      Plan
-                    </button>
-                    {pendingPlanActionId && (
-                      <button
-                        className="btn thread-chat-run-action"
-                        type="button"
-                        onClick={() => handleRunAssistant("direct", pendingPlanActionId)}
-                        disabled={isRunningAssistant || !isAssistantRunEnabled}
-                      >
-                        Apply plan
-                      </button>
-                    )}
-                  </div>
-                ) : null}
-                {assistantSummary && <p className="thread-chat-run-summary">{assistantSummary}</p>}
-                {chatError && <p className="field-error">{chatError}</p>}
-                {assistantError && <p className="field-error">{assistantError}</p>}
-                {isRunningAssistant && <p>Agent running…</p>}
               </div>
             ) : (
-              <p className="thread-chat-disabled-copy">Only owners and editors can send messages.</p>
+              <p className="thread-chat-disabled-copy">Only owners and editors can use the chat.</p>
             )}
           </div>
         );
@@ -3296,7 +3263,7 @@ export function ThreadPage({
           <>
             <section className="thread-card thread-collapsible">
               <div className="thread-card-header" onClick={() => setIsTopologyCollapsed((current) => !current)}>
-                <h3>Topology View</h3>
+                <h3>Topology</h3>
                 <div className="thread-card-actions">
                   <button
                     className="btn-icon thread-card-action"
@@ -3321,7 +3288,7 @@ export function ThreadPage({
 
             <section className="thread-card thread-collapsible">
               <div className="thread-card-header" onClick={() => setIsMatrixCollapsed((current) => !current)}>
-                <h3>Matrix View</h3>
+                <h3>Matrix</h3>
                 <div className="thread-card-actions">
                   <button
                     className="btn-icon thread-card-action"
@@ -3346,7 +3313,7 @@ export function ThreadPage({
 
             <section className="thread-card thread-collapsible">
               <div className="thread-card-header" onClick={() => setIsChatCollapsed((current) => !current)}>
-                <h3>History</h3>
+                <h3>Chat</h3>
                 <div className="thread-card-actions">
                   <button
                     className="btn-icon thread-card-action"
@@ -3443,7 +3410,7 @@ export function ThreadPage({
                     className={`thread-fullscreen-tab${fullscreenTab === "chat" ? " thread-fullscreen-tab--active" : ""}`}
                     onClick={() => setFullscreenTab("chat")}
                   >
-                    History
+                    Chat
                   </button>
                 </div>
                 <button

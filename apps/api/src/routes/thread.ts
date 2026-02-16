@@ -39,8 +39,9 @@ const DEFAULT_SYSTEM_PROMPT =
   "You will update the system description and implementation in ./openship (or not if there is no update) " +
   "and add to a file called SUMMARY.md a description of the plan executed, use Markdown. " +
   "If changes were made during the run, check that the updated ./openship directory is fully compliant with the OpenShip description and write that you checked that in the summary. " +
-  "If changes are to be made, keep the changes to a minimum. In particular do not update name if existing objects like node or names unless it is absolutely necessary. "
-  "Send back the summary as the response to the user as well.";
+  "If changes are to be made, keep the changes to a minimum. In particular do not update name if existing objects like node or names unless it is absolutely necessary. " +
+  "Node IDs and directory names should not be changed " +
+  "Your response should be a summary of everything that has been done. No need to include checks and validation made.";
 
 function extractAgentRunMessageText(value: unknown, depth = 0): string[] {
   if (depth > 8 || value === null || value === undefined) return [];
@@ -111,6 +112,28 @@ function normalizeAgentRunMessages(messages: string[]): string[] {
   }
 
   return normalized.length > 0 ? normalized : ["Execution completed."];
+}
+
+const RECONCILIATION_MESSAGE_PREFIX = "openship reconciliation failed:";
+const MATRIX_REFS_CONSTRAINT_FRAGMENT = "violates foreign key constraint \"matrix_refs_system_id_doc_hash_fkey\"";
+
+function isReconciliationNoiseMessage(message: string): boolean {
+  const lowered = message.toLowerCase();
+  return lowered.startsWith(RECONCILIATION_MESSAGE_PREFIX)
+    || lowered.includes("insert or update on table \"matrix_refs\"")
+    || lowered.includes(MATRIX_REFS_CONSTRAINT_FRAGMENT);
+}
+
+function sanitizeAgentRunMessages(messages: string[]): string[] {
+  return normalizeAgentRunMessages(messages)
+    .map((message) => message.trim())
+    .filter((message) => message.length > 0)
+    .filter((message) => !isReconciliationNoiseMessage(message));
+}
+
+function summarizeRunMessages(status: "success" | "failed", messages: string[]): string[] {
+  const sanitized = sanitizeAgentRunMessages(messages);
+  return sanitized.length > 0 ? sanitized : [status === "failed" ? "Execution failed." : "Execution completed."];
 }
 
 type AssistantExecutor = "backend" | "desktop";
@@ -857,8 +880,12 @@ function mapAgentRunRowToResponse(row: {
 
   const status = row.threadStatus === "cancelled" ? "failed" : row.runResultStatus ?? row.threadStatus;
   const messages = row.runResultMessages && row.runResultMessages.length > 0
-    ? row.runResultMessages
-    : [row.runError ?? "No execution output."];
+    ? sanitizeAgentRunMessages(row.runResultMessages)
+    : [];
+  const fallbackMessages = row.runError ? sanitizeAgentRunMessages([row.runError]) : [];
+  const summaryMessages = messages.length > 0
+    ? messages
+    : (fallbackMessages.length > 0 ? fallbackMessages : ["No execution output."]);
   const changes = row.runResultChanges ?? [];
   return {
     planActionId: null,
@@ -867,7 +894,7 @@ function mapAgentRunRowToResponse(row: {
     executeResponseActionId: null,
     updateActionId: null,
     filesChanged: extractAssistantRunChangedFiles(changes),
-    summary: assistantRunSummary(status, messages),
+    summary: assistantRunSummary(status, summaryMessages),
     changesCount: status === "success" ? changes.length : 0,
     messages: row.messages ? mapAssistantRunMessages(row.messages) : [],
     systemId: row.systemId,
@@ -893,12 +920,11 @@ async function persistDesktopAgentRunCompletionMessage(
   payload: AssistantRunCompleteRequestBody,
   runResultStatus: "success" | "failed",
 ): Promise<AssistantRunCompletionRecord | null> {
-  if (payload.messages.length === 0) return null;
-
   const responseActionId = randomUUID();
-  const normalizedMessages = normalizeAgentRunMessages(payload.messages)
+  const normalizedMessages = sanitizeAgentRunMessages(payload.messages)
     .filter((message) => !message.startsWith("OpenShip changes:"));
-  const responseMessage = `${runResultStatus.toUpperCase()}: ${normalizedMessages.join(" | ")}`;
+  if (normalizedMessages.length === 0) return null;
+  const responseMessage = normalizedMessages.join(" | ");
   await client.query(
     `SELECT begin_action($1, $2, $3::action_type, $4) AS output_system_id`,
     [threadId, responseActionId, "ExecuteResponse", "Agent execution response"],
@@ -3386,6 +3412,8 @@ export async function threadRoutes(app: FastifyInstance) {
         const executeResponseActionClient = await pool.connect();
         let responseInTransaction = false;
         try {
+          const executionResponseMessages = summarizeRunMessages(execution.status, execution.messages);
+          const executionResponseContent = executionResponseMessages.join(" | ");
           await executeResponseActionClient.query("BEGIN");
           responseInTransaction = true;
 
@@ -3400,12 +3428,7 @@ export async function threadRoutes(app: FastifyInstance) {
           await executeResponseActionClient.query(
             `INSERT INTO messages (id, thread_id, action_id, role, content, position)
              VALUES ($1, $2, $3, 'Assistant'::message_role, $4, 1)`,
-            [
-              executeResponseMessageId,
-              context.threadId,
-              executeResponseActionId,
-              `${execution.status.toUpperCase()}: ${execution.messages.join(" | ")}`,
-            ],
+            [executeResponseMessageId, context.threadId, executeResponseActionId, executionResponseContent],
           );
 
           await executeResponseActionClient.query("COMMIT");
@@ -3578,7 +3601,7 @@ export async function threadRoutes(app: FastifyInstance) {
       }
 
       const summary = parsedBody.mode === "direct"
-        ? assistantRunSummary(execution.status, execution.messages.length > 0 ? execution.messages : ["Execution completed."])
+        ? assistantRunSummary(execution.status, summarizeRunMessages(execution.status, execution.messages))
         : assistantRunSummary("success", ["Plan generated."]);
       const filesChanged = parsedBody.mode === "direct" && execution.status === "success"
         ? extractAssistantRunChangedFiles(execution.changes)
@@ -3732,7 +3755,7 @@ export async function threadRoutes(app: FastifyInstance) {
           completionStatus,
           {
             status: completionStatus,
-            messages: completionMessages,
+            messages: sanitizeAgentRunMessages(completionMessages),
             changes: parsed.changes,
             error: completionError,
           },
@@ -3747,7 +3770,7 @@ export async function threadRoutes(app: FastifyInstance) {
             context.threadId,
             {
               status: normalizedCompletionStatus,
-              messages: completionMessages,
+              messages: sanitizeAgentRunMessages(completionMessages),
               changes: parsed.changes,
               error: completionError,
             },

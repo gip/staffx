@@ -7,6 +7,8 @@ import pool, { query } from "./db.js";
 
 const SYSTEM_PROMPT_CONCERN = "__system_prompt__";
 const OPENSHIP_ROOT_NODE_ID = "s.root";
+const TYPED_NODE_ID_SCHEME = "typed_key_v1";
+const TYPED_NODE_ID_PATTERN = /^([hcpl])\.([a-z0-9]+(?:-[a-z0-9]+)*)$/;
 
 type YamlScalar = string | number | boolean | null;
 type YamlValue = YamlScalar | YamlValue[] | Record<string, YamlValue>;
@@ -539,6 +541,67 @@ function resolveOpenShipRootNodeId(manifestRootNodeId: string, nodeLookup: Map<s
   return manifestRootNodeId;
 }
 
+function resolveNodeIdScheme(metadata: unknown): string | null {
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return null;
+  const value = (metadata as Record<string, unknown>).nodeIdScheme;
+  return typeof value === "string" ? value : null;
+}
+
+function validateTypedNodeScheme(
+  parsed: ParsedOpenShipBundle,
+  resolvedSystemNodeId: string,
+  baseNodeKinds: Map<string, ParsedNodeManifest["kind"]>,
+): void {
+  const kindPrefix = (kind: ParsedNodeManifest["kind"]): string => {
+    if (kind === "Host") return "h";
+    if (kind === "Container") return "c";
+    if (kind === "Process") return "p";
+    if (kind === "Library") return "l";
+    return "s";
+  };
+
+  if (resolvedSystemNodeId !== OPENSHIP_ROOT_NODE_ID) {
+    throw new Error(`Typed node ID scheme requires root node id ${OPENSHIP_ROOT_NODE_ID}.`);
+  }
+
+  for (const node of parsed.nodes) {
+    if (node.id === OPENSHIP_ROOT_NODE_ID) {
+      if (node.kind !== "Root") {
+        throw new Error(`Root node ${OPENSHIP_ROOT_NODE_ID} must have kind Root.`);
+      }
+      continue;
+    }
+
+    const idMatch = TYPED_NODE_ID_PATTERN.exec(node.id);
+    if (!idMatch) {
+      throw new Error(`Invalid node id "${node.id}" for typed node ID scheme.`);
+    }
+
+    const expectedPrefix = kindPrefix(node.kind);
+    if (idMatch[1] !== expectedPrefix) {
+      throw new Error(
+        `Node "${node.id}" kind "${node.kind}" does not match expected prefix "${expectedPrefix}".`,
+      );
+    }
+
+    const expectedKey = idMatch[2];
+    const openShipKey = typeof node.metadata.openshipKey === "string" ? node.metadata.openshipKey : null;
+    if (!openShipKey) {
+      throw new Error(`Missing metadata.openshipKey for node "${node.id}" in typed node ID scheme.`);
+    }
+    if (openShipKey !== expectedKey) {
+      throw new Error(
+        `Node "${node.id}" has metadata.openshipKey="${openShipKey}" but expected "${expectedKey}".`,
+      );
+    }
+
+    const baseKind = baseNodeKinds.get(node.id);
+    if (baseKind && baseKind !== node.kind) {
+      throw new Error(`Node "${node.id}" kind change is not allowed (${baseKind} -> ${node.kind}).`);
+    }
+  }
+}
+
 async function ensurePromptDocsExist(
   client: PoolClient,
   systemId: string,
@@ -623,6 +686,27 @@ export async function applyOpenShipBundleToThreadSystemWithClient(
     throw new Error("Unable to resolve thread system.");
   }
 
+  const baseSystemMetadataResult = await client.query<{ metadata: Record<string, unknown> | null }>(
+    `SELECT metadata FROM systems WHERE id = $1`,
+    [baseSystemId],
+  );
+  const baseSystemMetadata = baseSystemMetadataResult.rows[0]?.metadata ?? null;
+  const nodeIdScheme = resolveNodeIdScheme(baseSystemMetadata);
+  const typedNodeSchemeEnabled = nodeIdScheme === TYPED_NODE_ID_SCHEME;
+
+  const baseNodeKinds = new Map<string, ParsedNodeManifest["kind"]>();
+  if (typedNodeSchemeEnabled) {
+    const baseNodesResult = await client.query<{ id: string; kind: ParsedNodeManifest["kind"] }>(
+      `SELECT id, kind::text AS kind
+       FROM nodes
+       WHERE system_id = $1`,
+      [baseSystemId],
+    );
+    for (const row of baseNodesResult.rows) {
+      baseNodeKinds.set(row.id, row.kind);
+    }
+  }
+
   const updateActionId = randomUUID();
   const action = await client.query<{ output_system_id: string }>(
     `SELECT begin_action($1, $2, $3::action_type, $4) AS output_system_id`,
@@ -652,6 +736,9 @@ export async function applyOpenShipBundleToThreadSystemWithClient(
 
   const nodeLookup = new Map<string, ParsedNodeManifest>(parsed.nodes.map((node) => [node.id, node]));
   const resolvedSystemNodeId = resolveOpenShipRootNodeId(manifest.systemNodeId, nodeLookup);
+  if (typedNodeSchemeEnabled) {
+    validateTypedNodeScheme(parsed, resolvedSystemNodeId, baseNodeKinds);
+  }
 
   await client.query(
     `UPDATE systems
