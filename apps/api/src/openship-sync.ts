@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
+import { parse as parseYaml } from "yaml";
 import type { PoolClient } from "pg";
 import pool, { query } from "./db.js";
 
@@ -111,141 +112,6 @@ function normalizePath(value: string): string {
   return value.replace(/\\+/g, "/");
 }
 
-function parseScalar(input: string): YamlValue {
-  const value = input.trim();
-
-  if (!value) return null;
-  if (value === "{}"){return {};} 
-  if (value === "[]") return [];
-  if (value === "null") return null;
-  if (value === "true") return true;
-  if (value === "false") return false;
-
-  const asNumber = Number(value);
-  if (!Number.isNaN(asNumber) && String(asNumber) === value) {
-    return asNumber;
-  }
-
-  if ((value.startsWith("\"") && value.endsWith("\"")) || (value.startsWith("'") && value.endsWith("'"))) {
-    try {
-      return JSON.parse(value);
-    } catch {
-      return value;
-    }
-  }
-
-  return value;
-}
-
-function stripInlineComment(input: string): string {
-  let inSingle = false;
-  let inDouble = false;
-  let result = "";
-
-  for (let index = 0; index < input.length; index += 1) {
-    const char = input[index];
-    const next = input[index + 1];
-
-    if (inSingle) {
-      if (char === "'" && next === "'") {
-        result += "''";
-        index += 1;
-        continue;
-      }
-      if (char === "'") {
-        inSingle = false;
-      }
-      result += char;
-      continue;
-    }
-
-    if (inDouble) {
-      if (char === "\\" && next !== undefined) {
-        result += char + next;
-        index += 1;
-        continue;
-      }
-      if (char === "\"") {
-        inDouble = false;
-      }
-      result += char;
-      continue;
-    }
-
-    if (char === "#") {
-      break;
-    }
-
-    if (char === "'") {
-      inSingle = true;
-      result += char;
-      continue;
-    }
-
-    if (char === "\"") {
-      inDouble = true;
-      result += char;
-      continue;
-    }
-
-    result += char;
-  }
-
-  return result.trimEnd();
-}
-
-function findSeparator(text: string): number {
-  let inSingle = false;
-  let inDouble = false;
-
-  for (let index = 0; index < text.length; index += 1) {
-    const char = text[index];
-    const next = text[index + 1];
-
-    if (inSingle) {
-      if (char === "'" && next === "'") {
-        index += 1;
-        continue;
-      }
-      if (char === "'") {
-        inSingle = false;
-      }
-      continue;
-    }
-
-    if (inDouble) {
-      if (char === "\\" && next !== undefined) {
-        index += 1;
-        continue;
-      }
-      if (char === "\"") {
-        inDouble = false;
-      }
-      continue;
-    }
-
-    if (char === "'") {
-      inSingle = true;
-      continue;
-    }
-    if (char === "\"") {
-      inDouble = true;
-      continue;
-    }
-    if (char === ":" && (index + 1 === text.length || /\s/.test(text[index + 1] ?? ""))) {
-      return index;
-    }
-  }
-
-  return -1;
-}
-
-function sequenceItemContent(trimmed: string): string {
-  const match = /^-\s*(.*?)\s*$/.exec(trimmed);
-  if (!match) return "";
-  return match[1] ?? "";
-}
-
 function splitFrontMatter(
   raw: string,
   filePath: string,
@@ -296,125 +162,19 @@ function formatYamlParseError(
 }
 
 function parseYamlDocument(input: string, context?: YamlParseContext): YamlValue {
-  const lines = input.split(/\r?\n/);
-  const rootObject: Record<string, YamlValue> = {};
-  let root: YamlValue = rootObject;
-  const stack: Array<{ indent: number; kind: "object" | "array"; value: Record<string, YamlValue> | YamlValue[] }> = [
-    { indent: -1, kind: "object", value: rootObject },
-  ];
-
-  const nextSignificant = (start: number): { index: number; line: string; indent: number; trimmed: string } | null => {
-    for (let i = start; i < lines.length; i += 1) {
-      const line = stripInlineComment(lines[i] ?? "");
-      if (!line || line.trim() === "" || line.trim().startsWith("#")) continue;
-      const indent = line.match(/^ */)?.[0].length ?? 0;
-      const trimmed = line.trim();
-      if (trimmed === "---" || trimmed === "...") continue;
-      return { index: i, line, indent, trimmed };
-    }
-    return null;
-  };
-
-  for (let index = 0; index < lines.length; index += 1) {
-    const line = stripInlineComment(lines[index] ?? "");
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith("#") || trimmed === "---" || trimmed === "...") continue;
-
-    const indent = line.match(/^ */)?.[0].length ?? 0;
-    const rawSequenceValue = sequenceItemContent(trimmed);
-    const isSequenceItem = /^-\s*$/.test(trimmed) || trimmed.startsWith("- ");
-
-    while (stack.length > 1 && indent <= stack[stack.length - 1].indent) {
-      stack.pop();
-    }
-    const frame = stack[stack.length - 1];
-    const peek = nextSignificant(index + 1);
-    if (!isSequenceItem) {
-      if (frame.kind !== "object") {
-        throw new Error(formatYamlParseError("Unexpected mapping under a sequence.", input, context, index + 1, line));
-      }
-
-      const separator = findSeparator(trimmed);
-      if (separator < 0) {
-        throw new Error(formatYamlParseError(`Invalid YAML mapping line: ${trimmed}`, input, context, index + 1, line));
-      }
-      const rawKey = trimmed.slice(0, separator);
-      const rawValue = trimmed.slice(separator + 1).trim();
-      const key = String(parseScalar(rawKey));
-
-      if (rawValue === "") {
-        const hasChildren = peek !== null && peek.indent > indent;
-        if (hasChildren) {
-          const isChildSequence = /^-\s/.test(peek.trimmed) || peek.trimmed === "-";
-          const nextValue = isChildSequence ? [] as YamlValue[] : {} as Record<string, YamlValue>;
-          frame.value[key] = nextValue;
-          stack.push({ indent, kind: Array.isArray(nextValue) ? "array" : "object", value: nextValue });
-        } else {
-          frame.value[key] = null;
-        }
-      } else {
-        frame.value[key] = parseScalar(rawValue);
-      }
-      continue;
-    }
-
-    if (frame.kind !== "array") {
-      if (stack.length === 1 && frame.value === rootObject && frame.indent === -1) {
-        const rootArray: YamlValue[] = [];
-        root = rootArray;
-        stack[0] = { indent: -1, kind: "array", value: rootArray };
-      } else {
-        throw new Error(formatYamlParseError("Unexpected sequence item under a mapping.", input, context, index + 1, line));
-      }
-    }
-
-    const rawItem = rawSequenceValue;
-
-    if (!rawItem) {
-      const item: Record<string, YamlValue> = {};
-      (frame.value as YamlValue[]).push(item);
-      if (peek !== null && peek.indent > indent) {
-        stack.push({ indent, kind: "object", value: item });
-      }
-      continue;
-    }
-
-    if (findSeparator(rawItem) >= 0) {
-      const separator = findSeparator(rawItem);
-      const rawKey = rawItem.slice(0, separator);
-      const rawValue = rawItem.slice(separator + 1).trim();
-      const key = String(parseScalar(rawKey));
-      const item: Record<string, YamlValue> = {};
-
-      if (rawValue === "") {
-        const hasChildren = peek !== null && peek.indent > indent;
-        if (hasChildren) {
-          const itemIsSequence = /^-\s/.test(peek.trimmed) || peek.trimmed === "-";
-          const itemValue = itemIsSequence ? [] as YamlValue[] : {} as Record<string, YamlValue>;
-          item[key] = itemValue;
-          (frame.value as YamlValue[]).push(item);
-          stack.push({ indent, kind: Array.isArray(itemValue) ? "array" : "object", value: itemValue });
-        } else {
-          item[key] = {};
-          (frame.value as YamlValue[]).push(item);
-        }
-      } else {
-        item[key] = parseScalar(rawValue);
-        (frame.value as YamlValue[]).push(item);
-        if (peek !== null && peek.indent > indent && peek.trimmed.includes(":")) {
-          const hasChildren = peek !== null && peek.indent > indent;
-          if (hasChildren) {
-            stack.push({ indent, kind: "object", value: item });
-          }
-        }
-      }
-      continue;
-    }
-
-    (frame.value as YamlValue[]).push(parseScalar(rawItem));
+  try {
+    const parsed = parseYaml(input);
+    return parsed === null || typeof parsed === "undefined" ? {} : parsed as YamlValue;
+  } catch (error: unknown) {
+    const line = typeof error === "object" && error !== null && "line" in error
+      ? Number((error as { line?: number }).line)
+      : undefined;
+    const lineText = typeof line === "number" && line >= 1
+      ? (input.split(/\r?\n/)[line - 1] ?? "")
+      : undefined;
+    const details = error instanceof Error ? error.message : String(error);
+    throw new Error(formatYamlParseError(details, input, context, Number.isFinite(line ?? Number.NaN) ? line : undefined, lineText));
   }
-
-  return root;
 }
 
 function asString(value: YamlValue, label: string): string {
