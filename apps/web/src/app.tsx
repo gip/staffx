@@ -795,6 +795,17 @@ function SettingsRoute() {
           return { error: body.error ?? "Failed to update visibility" };
         }
       }}
+      onArchiveProject={async () => {
+        const res = await apiFetch(
+          `/projects/${encodeURIComponent(handle!)}/${encodeURIComponent(projectName!)}/archive`,
+          { method: "POST" },
+        );
+        if (!res.ok && res.status !== 204) {
+          const body = await res.json().catch(() => ({}));
+          return { error: body.error ?? "Failed to archive project" };
+        }
+        window.location.assign("/");
+      }}
     />
   );
 }

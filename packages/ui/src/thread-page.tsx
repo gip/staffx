@@ -3237,7 +3237,7 @@ export function ThreadPage({
                   <textarea
                     className="field-input thread-chat-input"
                     rows={4}
-                    placeholder="Ask Ideating anything"
+                    placeholder="Ask StaffX anything"
                     value={chatInput}
                     onChange={(event) => setChatInput(event.target.value)}
                     disabled={isSendingChat || isChatInputsDisabled}

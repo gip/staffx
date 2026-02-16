@@ -39,6 +39,7 @@ interface ProjectSettingsPageProps {
   onDeleteConcern: (name: string) => Promise<{ error?: string } | void>;
   onUpdateMemberRoles: (handle: string, projectRoles: string[]) => Promise<{ error?: string } | void>;
   onUpdateVisibility: (visibility: "public" | "private") => Promise<{ error?: string } | void>;
+  onArchiveProject: () => Promise<{ error?: string } | void>;
 }
 
 export function ProjectSettingsPage({
@@ -58,6 +59,7 @@ export function ProjectSettingsPage({
   onDeleteConcern,
   onUpdateMemberRoles,
   onUpdateVisibility,
+  onArchiveProject,
 }: ProjectSettingsPageProps) {
   const [collaborators, setCollaborators] = useState(initial);
   const [projectRoles, setProjectRoles] = useState(initialRoles);
@@ -75,6 +77,9 @@ export function ProjectSettingsPage({
   const [visibilityDraft, setVisibilityDraft] = useState<"public" | "private">(visibility);
   const [visibilityError, setVisibilityError] = useState<string | null>(null);
   const [isSavingVisibility, setIsSavingVisibility] = useState(false);
+  const [isArchiving, setIsArchiving] = useState(false);
+  const [archiveError, setArchiveError] = useState<string | null>(null);
+  const [showArchiveModal, setShowArchiveModal] = useState(false);
   const isOwner = accessRole === "Owner";
 
   useEffect(() => {
@@ -184,8 +189,31 @@ export function ProjectSettingsPage({
     setIsSavingVisibility(false);
   }, [currentVisibility, onUpdateVisibility, visibilityDraft]);
 
+  const handleArchive = useCallback(async () => {
+    if (!isOwner) return;
+    setIsArchiving(true);
+    setArchiveError(null);
+    const result = await onArchiveProject();
+    if (result?.error) {
+      setArchiveError(result.error);
+    } else {
+      setShowArchiveModal(false);
+    }
+    setIsArchiving(false);
+  }, [isOwner, onArchiveProject]);
+
+  const openArchiveModal = useCallback(() => {
+    setArchiveError(null);
+    setShowArchiveModal(true);
+  }, []);
+
+  const closeArchiveModal = useCallback(() => {
+    setShowArchiveModal(false);
+    setArchiveError(null);
+  }, []);
+
   return (
-    <main className="page">
+    <main className="page project-settings">
       <div className="page-header">
         <Link to={`/${projectOwnerHandle}/${projectName}`} className="page-back">
           &larr;
@@ -302,6 +330,20 @@ export function ProjectSettingsPage({
         {concernError && <p className="field-error">{concernError}</p>}
       </section>
 
+      {isOwner && (
+        <section className="thread-section">
+          <h3 className="thread-section-title">Archive</h3>
+          <button
+            className="btn btn-danger"
+            type="button"
+            onClick={openArchiveModal}
+            disabled={isArchiving}
+          >
+            {isArchiving ? "Archiving…" : "Archive"}
+          </button>
+        </section>
+      )}
+
       {/* Contributors section */}
       <section className="thread-section">
         <div className="collab-section-header">
@@ -371,6 +413,15 @@ export function ProjectSettingsPage({
           projectRoles={projectRoles}
           onSave={handleUpdateMemberRoles}
           onClose={() => setEditingMember(null)}
+        />
+      )}
+
+      {showArchiveModal && (
+        <ArchiveProjectModal
+          onClose={closeArchiveModal}
+          onArchive={handleArchive}
+          isLoading={isArchiving}
+          error={archiveError}
         />
       )}
     </main>
@@ -614,6 +665,38 @@ function EditMemberRolesModal({
             onClick={handleSave}
           >
             {submitting ? "Saving…" : "Save"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ArchiveProjectModal({
+  onClose,
+  onArchive,
+  isLoading,
+  error,
+}: {
+  onClose: () => void;
+  onArchive: () => Promise<void>;
+  isLoading: boolean;
+  error: string | null;
+}) {
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal" onClick={(e) => e.stopPropagation()}>
+        <h3 className="modal-title">Archive repository?</h3>
+        <p>This repo will be hidden from your project lists.</p>
+
+        {error && <p className="field-error">{error}</p>}
+
+        <div className="modal-actions">
+          <button className="btn btn-secondary" type="button" onClick={onClose} disabled={isLoading}>
+            Cancel
+          </button>
+          <button className="btn btn-danger" type="button" onClick={onArchive} disabled={isLoading}>
+            {isLoading ? "Archiving…" : "Archive"}
           </button>
         </div>
       </div>
