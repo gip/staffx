@@ -701,10 +701,18 @@ function parseAssistantRunRequest(body: unknown): AssistantRunRequestBody | null
     mode,
     chatMessageId,
     planActionId,
-    executor,
+    executor: executor ?? undefined,
     model: model ?? DEFAULT_ASSISTANT_MODEL,
     wait,
   };
+}
+
+function parseAssistantRunModel(value: AssistantRunRequestBody["model"]): AssistantModel {
+  return value ?? DEFAULT_ASSISTANT_MODEL;
+}
+
+function isAgentExecutionMode(value: string | null | undefined): value is AgentExecutionMode {
+  return value === "desktop" || value === "backend" || value === "both";
 }
 
 function resolveExecutorForPolicy(
@@ -715,14 +723,17 @@ function resolveExecutorForPolicy(
     return { ok: true, executor: requestedExecutor ?? "backend" };
   }
 
-  if (policy === "desktop" && requestedExecutor && requestedExecutor !== "desktop") {
-    return { ok: false, error: "executor must be desktop for this project" };
-  }
-  if (policy === "backend" && requestedExecutor && requestedExecutor !== "backend") {
-    return { ok: false, error: "executor must be backend for this project" };
+  if (policy === "desktop") {
+    if (requestedExecutor && requestedExecutor !== "desktop") {
+      return { ok: false, error: "executor must be desktop for this project" };
+    }
+    return { ok: true, executor: "desktop" };
   }
 
-  return { ok: true, executor: policy };
+  return {
+    ok: true,
+    executor: "backend",
+  };
 }
 
 async function getAssistantRunTriggerMessage(threadId: string, chatMessageId: string | null): Promise<AssistantRunMessageLookupRow | null> {
@@ -942,7 +953,7 @@ function mapAgentRunRowToResponse(row: {
     return {
       runId: row.runId,
       status: row.threadStatus,
-      message: "Run has not completed yet.",
+      message: "Run queued for desktop execution",
       systemId: row.systemId,
     };
   }
@@ -1452,6 +1463,7 @@ async function resolveThreadContext(
 
   const row = result.rows[0];
   if (!row.access_role) return null;
+  const agentExecutionMode = isAgentExecutionMode(row.agent_execution_mode) ? row.agent_execution_mode : "both";
   return {
     threadId: row.thread_id,
     projectThreadId: row.project_thread_id,
@@ -1464,7 +1476,7 @@ async function resolveThreadContext(
     projectName: row.project_name,
     ownerHandle: row.owner_handle,
     accessRole: row.access_role,
-    agentExecutionMode: row.agent_execution_mode,
+    agentExecutionMode,
   };
 }
 
@@ -1953,18 +1965,20 @@ async function buildThreadStatePayload(context: ThreadContext): Promise<ThreadDe
       concerns,
       nodes,
       cells: Array.from(cellsByKey.values()),
-      documents: documentsResult.rows.map((row) => ({
-        hash: row.hash,
-        kind: row.kind,
-        title: row.title,
-        language: row.language,
-        text: row.text,
-        sourceType: row.source_type,
-        sourceUrl: row.source_url,
-        sourceExternalId: row.source_external_id,
-        sourceMetadata: row.source_metadata,
-        sourceConnectedUserId: row.source_connected_user_id,
-      })),
+      documents: documentsResult.rows
+        .filter((row): row is MatrixDocumentRow & { kind: "Document" | "Skill" } => row.kind !== "Prompt")
+        .map((row) => ({
+          hash: row.hash,
+          kind: row.kind,
+          title: row.title,
+          language: row.language,
+          text: row.text,
+          sourceType: row.source_type,
+          sourceUrl: row.source_url,
+          sourceExternalId: row.source_external_id,
+          sourceMetadata: row.source_metadata,
+          sourceConnectedUserId: row.source_connected_user_id,
+        })),
     },
     systemPrompt: systemPromptMetadataResult.text,
     systemPromptTitle: systemPromptMetadataResult.title,
@@ -2467,7 +2481,13 @@ export async function threadRoutes(app: FastifyInstance) {
             inTransaction = false;
             return reply.code(400).send({ error: validation.error });
           }
-          payload = validation.payload;
+          payload = {
+            ...payload,
+            nodeId: validation.payload.nodeId,
+            concern: validation.payload.concern,
+            concerns: validation.payload.concerns,
+            refType: validation.payload.refType,
+          };
           concerns = validation.payload.concerns;
         }
 
@@ -3134,7 +3154,13 @@ export async function threadRoutes(app: FastifyInstance) {
             inTransaction = false;
             return reply.code(400).send({ error: validation.error });
           }
-          payload = validation.payload;
+          payload = {
+            ...payload,
+            nodeId: validation.payload.nodeId,
+            concern: validation.payload.concern,
+            concerns: validation.payload.concerns,
+            refType: validation.payload.refType,
+          };
         }
 
         let changed = 0;
@@ -3295,12 +3321,13 @@ export async function threadRoutes(app: FastifyInstance) {
 
       const context = await requireContext(reply, getViewerUserId(req), handle, projectName, threadId);
       if (!context) return;
+      const model = parseAssistantRunModel(parsedBody.model);
 
       if (!canEdit(context.accessRole)) {
         return reply.code(403).send({ error: "Forbidden" });
       }
 
-      if (!isEnabledAssistantModel(parsedBody.model)) {
+      if (!isEnabledAssistantModel(model)) {
         return reply.code(400).send({ error: "Model is not available on this server" });
       }
 
@@ -3347,7 +3374,7 @@ export async function threadRoutes(app: FastifyInstance) {
           planActionId: null,
           chatMessageId: parsedBody.chatMessageId,
           executor: resolvedExecutor.executor,
-          model: parsedBody.model,
+          model,
           prompt: runPrompt,
           systemPrompt: resolvedSystemPrompt,
         }, AGENT_RUN_SLOT_WAIT_MS, AGENT_RUN_ENQUEUE_POLL_MS);
@@ -3467,7 +3494,7 @@ export async function threadRoutes(app: FastifyInstance) {
             requestedByUserId: getViewerUserId(req),
             mode: "direct",
             executor: resolvedExecutor.executor,
-            model: parsedBody.model,
+            model,
             planActionId,
             chatMessageId: parsedBody.chatMessageId,
             prompt: runPrompt,

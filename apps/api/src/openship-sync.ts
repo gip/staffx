@@ -11,7 +11,10 @@ const TYPED_NODE_ID_SCHEME = "typed_key_v1";
 const TYPED_NODE_ID_PATTERN = /^([hcpl])\.([a-z0-9]+(?:-[a-z0-9]+)*)$/;
 
 type YamlScalar = string | number | boolean | null;
-type YamlValue = YamlScalar | YamlValue[] | Record<string, YamlValue>;
+interface YamlObject {
+  [key: string]: YamlValue;
+}
+type YamlValue = YamlScalar | YamlValue[] | YamlObject;
 
 export interface OpenShipBundleFile {
   path: string;
@@ -285,7 +288,17 @@ function parseOpenShipEdges(raw: string): ParsedOpenShipEdge[] {
     );
   }
 
-  return edgesList.map((entry, index) => {
+  const parsedEdges = Array.isArray(edgesList) ? edgesList : null;
+  if (!parsedEdges) {
+    edgesError(
+      `topLevelKeys=${topLevelKeys.join(", ") || "<empty>"}, edges value=${describeYamlValue(
+        edgesPayload,
+      )}; rawPreview="${previewYaml(raw)}"`,
+    );
+  }
+
+  const normalizedEdges = parsedEdges ?? [];
+  return normalizedEdges.map((entry: YamlValue, index: number) => {
     if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
       edgesError(
         `Invalid edge entry at index ${index} in ${filePath}; value=${describeYamlValue(entry as YamlValue | undefined)}; ` +
@@ -294,13 +307,17 @@ function parseOpenShipEdges(raw: string): ParsedOpenShipEdge[] {
     }
 
     const edge = entry as Record<string, YamlValue>;
-    let from: string;
-    let to: string;
-    let type: ParsedOpenShipEdge["type"];
+    let from = "";
+    let to = "";
+    let type: ParsedOpenShipEdge["type"] = "Runtime";
     try {
       from = asString(edge.fromNodeId, `edge ${index} in ${filePath} fromNodeId`);
       to = asString(edge.toNodeId, `edge ${index} in ${filePath} toNodeId`);
-      type = asString(edge.type, `edge ${index} in ${filePath} type`) as ParsedOpenShipEdge["type"];
+      const parsedType = asString(edge.type, `edge ${index} in ${filePath} type`);
+      if (parsedType !== "Runtime" && parsedType !== "Dataflow" && parsedType !== "Dependency") {
+        edgesError(`edge ${index} in ${filePath} has invalid type ${parsedType}.`);
+      }
+      type = parsedType as ParsedOpenShipEdge["type"];
     } catch (error: unknown) {
       edgesError(
         `edge ${index} in ${filePath} has invalid fields; source=${describeYamlValue(entry as YamlValue)}; ` +

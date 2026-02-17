@@ -706,7 +706,7 @@ interface RunClaudeAgentResult {
   messages: string[];
   changes: AgentRunPlanChange[];
   error?: string;
-  openShipBundleFiles?: OpenShipBundleFile[];
+  openShipBundleFiles: OpenShipBundleFile[];
 }
 
 async function runClaudeAgentWithBundleDiff(
@@ -731,6 +731,7 @@ async function runClaudeAgentWithBundleDiff(
       status: "failed",
       messages: [`OpenShip pre-run generation failed: ${message}`],
       changes: [],
+      openShipBundleFiles: [],
       error: message,
     };
   }
@@ -746,7 +747,12 @@ async function runClaudeAgentWithBundleDiff(
       openShipBundleDir: preRunDir,
     });
   }
-  let runResult: AgentRunResult;
+  let runResult: RunClaudeAgentResult = {
+    status: "failed",
+    messages: [],
+    changes: [],
+    openShipBundleFiles: [],
+  };
   try {
     console.info("[agent-runner] invoking Claude agent", {
       threadId,
@@ -754,18 +760,23 @@ async function runClaudeAgentWithBundleDiff(
       workspace,
       systemPrompt,
     });
-    runResult = await runClaudeAgent({
+    const claudeResult = await runClaudeAgent({
       prompt: runPrompt,
       cwd: workspace,
       model,
       systemPrompt: systemPrompt ?? undefined,
       allowedTools: ["Read", "Grep", "Glob", "Bash", "Edit", "Write"],
     });
+    runResult = {
+      ...claudeResult,
+      openShipBundleFiles: [],
+    };
   } catch (error: unknown) {
     runResult = {
       status: "failed" as QueueStatus,
       messages: [`Execution failed: ${error instanceof Error ? error.message : String(error)}`],
       changes: [],
+      openShipBundleFiles: [],
       error: error instanceof Error ? error.message : String(error),
     };
   }
@@ -810,6 +821,7 @@ async function runClaudeAgentWithBundleDiff(
         status: "failed",
         messages: [...runResult.messages, `OpenShip reconciliation snapshot failed: ${runSummaryError(error)}`],
         changes: runResult.changes,
+        openShipBundleFiles: [],
         error: runSummaryError(error),
       };
     }
@@ -839,6 +851,7 @@ async function applyOpenShipBundleResult(
       status: "failed",
       messages: [...result.messages, `OpenShip reconciliation failed: ${runSummaryError(error)}`],
       changes: result.changes,
+      openShipBundleFiles: [],
       error: runSummaryError(error),
     };
   }
