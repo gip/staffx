@@ -1252,9 +1252,11 @@ export function ThreadPage({
   const isChatInputsDisabled = disableChatInputs;
   const isAssistantRunEnabled = onRunAssistant && !assistantRunDisabledMessage;
   const isExecutorSelectable = detail.thread.agentExecutionMode === "both";
-  const normalizedExecutor = isExecutorSelectable
+  const normalizedExecutor: AssistantExecutor = isExecutorSelectable
     ? selectedAgentExecutor
-    : detail.thread.agentExecutionMode;
+    : detail.thread.agentExecutionMode === "desktop"
+      ? "desktop" as const
+      : "backend" as const;
   const availableExecutorOptions = isExecutorSelectable
     ? AGENT_EXECUTOR_OPTIONS
     : AGENT_EXECUTOR_OPTIONS.filter((option) => option.value === normalizedExecutor);
