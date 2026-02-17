@@ -301,13 +301,15 @@ export async function runClaudeAgent(input: RunClaudeAgentInput): Promise<AgentR
   const allowedTools = input.allowedTools ?? Array.from(DEFAULT_TOOLS);
   const messages: string[] = [];
 
+  const selectedModel = input.model?.trim() || DEFAULT_CLAUDE_MODEL;
+
   const q = query({
     prompt: input.prompt,
     options: {
       permissionMode: "bypassPermissions",
       allowDangerouslySkipPermissions: true,
       allowedTools,
-      model: DEFAULT_CLAUDE_MODEL,
+      model: selectedModel,
       cwd,
       ...(input.systemPrompt ? { systemPrompt: input.systemPrompt } : {}),
     },

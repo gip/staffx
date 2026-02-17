@@ -17,6 +17,7 @@ interface ProjectRow {
   name: string;
   description: string | null;
   access_role: string;
+  agent_execution_mode: "desktop" | "backend" | "both";
   visibility: ProjectVisibility;
   created_at: Date;
 }
@@ -35,6 +36,7 @@ interface ThreadRow {
 
 type AccessRole = "Owner" | "Editor" | "Viewer";
 type ProjectVisibility = "public" | "private";
+type AgentExecutionMode = "desktop" | "backend" | "both";
 type OpenShipNodeKind = "Root" | "Host" | "Container" | "Process" | "Library";
 
 const OPENSHIP_ROOT_NODE_ID = "s.root";
@@ -61,6 +63,15 @@ function normalizeOpenShipKey(raw: string): string {
     throw new Error(`Invalid OpenShip key "${raw}".`);
   }
   return normalized;
+}
+
+function parseAgentExecutionMode(value: unknown): AgentExecutionMode | null {
+  if (value === "desktop" || value === "backend" || value === "both") return value;
+  return null;
+}
+
+function normalizeAgentExecutionMode(value: string | null | undefined): AgentExecutionMode {
+  return parseAgentExecutionMode(value) ?? "both";
 }
 
 function buildTypedNodeId(kind: OpenShipNodeKind, key: string): string {
@@ -210,11 +221,13 @@ interface ResolvedProject {
   accessRole: AccessRole;
   ownerId: string;
   visibility: ProjectVisibility;
+  agentExecutionMode: AgentExecutionMode;
 }
 
 interface ProjectAccessRow {
   id: string;
   owner_id: string;
+  agent_execution_mode: AgentExecutionMode;
   visibility: ProjectVisibility;
   collaborator_role: AccessRole | null;
   is_archived: boolean;
@@ -261,6 +274,7 @@ async function resolveProject(
       `SELECT
        p.id,
         p.owner_id,
+       COALESCE(p.agent_execution_mode, 'both') AS agent_execution_mode,
         p.visibility::text AS visibility,
         pc.role::text AS collaborator_role,
         p.is_archived
@@ -279,7 +293,13 @@ async function resolveProject(
   const row = result.rows[0];
   const accessRole = resolveAccessRole(row.owner_id, viewerUserId, row.visibility, row.collaborator_role);
   if (!accessRole) return null;
-  return { projectId: row.id, accessRole, ownerId: row.owner_id, visibility: row.visibility };
+  return {
+    projectId: row.id,
+    accessRole,
+    ownerId: row.owner_id,
+    visibility: row.visibility,
+    agentExecutionMode: normalizeAgentExecutionMode(row.agent_execution_mode),
+  };
 }
 
 async function resolveProjectSystemId(projectId: string): Promise<string | null> {
@@ -323,6 +343,7 @@ export async function projectRoutes(app: FastifyInstance) {
              p.id,
              p.name,
              p.description,
+             p.agent_execution_mode::text AS agent_execution_mode,
              p.visibility::text AS visibility,
              CASE
                WHEN p.owner_id = $1 THEN 'Owner'
@@ -361,6 +382,7 @@ export async function projectRoutes(app: FastifyInstance) {
              p.id,
              p.name,
              p.description,
+             p.agent_execution_mode::text AS agent_execution_mode,
              p.visibility::text AS visibility,
              'Viewer' AS access_role,
              p.created_at,
@@ -389,6 +411,7 @@ export async function projectRoutes(app: FastifyInstance) {
       name: row.name,
       description: row.description,
       accessRole: row.access_role,
+      agentExecutionMode: normalizeAgentExecutionMode(row.agent_execution_mode),
       visibility: row.visibility,
       ownerHandle: row.owner_handle,
       createdAt: row.created_at,
@@ -418,6 +441,7 @@ export async function projectRoutes(app: FastifyInstance) {
            p.id,
            p.name,
            p.description,
+           p.agent_execution_mode::text AS agent_execution_mode,
            p.visibility::text AS visibility,
            p.created_at,
            u.handle AS owner_handle,
@@ -447,6 +471,7 @@ export async function projectRoutes(app: FastifyInstance) {
         name: row.name,
         description: row.description,
         accessRole: project.accessRole,
+        agentExecutionMode: normalizeAgentExecutionMode(row.agent_execution_mode),
         visibility: row.visibility,
         ownerHandle: row.owner_handle,
         createdAt: row.created_at,
@@ -504,7 +529,7 @@ export async function projectRoutes(app: FastifyInstance) {
         const result = await client.query<ProjectRow>(
           `INSERT INTO projects (id, name, description, visibility, owner_id)
            VALUES ($1, $2, $3, $4, $5)
-           RETURNING id, name, description, visibility::text AS visibility, created_at`,
+           RETURNING id, name, description, visibility::text AS visibility, agent_execution_mode::text AS agent_execution_mode, created_at`,
           [id, trimmed, description?.trim() || null, visibility, authUser.id],
         );
 
@@ -578,6 +603,7 @@ export async function projectRoutes(app: FastifyInstance) {
           description: row.description,
           accessRole: "Owner",
           visibility: row.visibility,
+          agentExecutionMode: row.agent_execution_mode ?? "both",
           ownerHandle: handleResult.rows[0].handle,
           createdAt: row.created_at,
           threads: createdThreads.map((t) => ({
@@ -644,6 +670,41 @@ export async function projectRoutes(app: FastifyInstance) {
 
       return {
         visibility: result.rows[0].visibility,
+      };
+    },
+  );
+
+  app.patch<{
+    Params: { handle: string; projectName: string };
+    Body: { agentExecutionMode?: AgentExecutionMode };
+  }>(
+    "/projects/:handle/:projectName/execution-mode",
+    async (req, reply) => {
+      const viewerUserId = await getOptionalViewerUserId(req, reply);
+      if (typeof viewerUserId === "undefined") return;
+
+      const project = await resolveProject(req.params.handle, req.params.projectName, viewerUserId);
+      if (!project) return reply.code(404).send({ error: "Project not found" });
+      if (project.accessRole !== "Owner") {
+        return reply.code(403).send({ error: "Only the owner can update execution mode" });
+      }
+
+      const agentExecutionMode = parseAgentExecutionMode(req.body?.agentExecutionMode);
+      if (!agentExecutionMode) {
+        return reply.code(400).send({ error: "agentExecutionMode must be desktop, backend, or both" });
+      }
+
+      const result = await query<{ agent_execution_mode: AgentExecutionMode }>(
+        `UPDATE projects
+         SET agent_execution_mode = $1::text
+         WHERE id = $2
+         RETURNING agent_execution_mode::text AS agent_execution_mode`,
+        [agentExecutionMode, project.projectId],
+      );
+      if (result.rowCount === 0) return reply.code(404).send({ error: "Project not found" });
+
+      return {
+        agentExecutionMode: normalizeAgentExecutionMode(result.rows[0].agent_execution_mode),
       };
     },
   );
@@ -725,6 +786,7 @@ export async function projectRoutes(app: FastifyInstance) {
       return {
         accessRole: project.accessRole,
         visibility: project.visibility,
+        agentExecutionMode: project.agentExecutionMode,
         projectRoles: rolesResult.rows.map((r) => r.name),
         concerns: concernsResult.rows.map((r) => ({
           name: r.name,

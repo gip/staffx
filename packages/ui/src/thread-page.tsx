@@ -28,7 +28,7 @@ import ReactFlow, {
 import "reactflow/dist/style.css";
 import { Link } from "./link";
 import { useAuth } from "./auth-context";
-import { isFinalizedThreadStatus, type ThreadStatus } from "./home";
+import { isFinalizedThreadStatus, type AgentExecutionMode, type ThreadStatus } from "./home";
 
 type DocKind = "Document" | "Skill";
 type MessageRole = "User" | "Assistant" | "System";
@@ -119,12 +119,14 @@ export interface ChatMessage {
 export type AssistantRunMode = "direct" | "plan";
 
 export type AssistantExecutor = "backend" | "desktop";
+export type AssistantModel = "claude-opus-4.6" | "gpt-5.3-codex";
 
 export interface AssistantRunRequest {
   chatMessageId: string | null;
   mode: AssistantRunMode;
   planActionId: string | null;
   executor?: AssistantExecutor;
+  model?: AssistantModel;
   wait?: boolean;
 }
 
@@ -160,6 +162,7 @@ export interface ThreadDetail {
   createdByHandle: string;
   ownerHandle: string;
   projectName: string;
+  agentExecutionMode: AgentExecutionMode;
   accessRole: string;
 }
 
@@ -292,7 +295,15 @@ interface ThreadPageProps {
   disableChatInputs?: boolean;
 }
 
-const AGENT_OPTIONS = ["Opus 4.6"] as const;
+const AGENT_MODEL_OPTIONS = [
+  { value: "claude-opus-4.6" as const, label: "Opus 4.6" },
+  { value: "gpt-5.3-codex" as const, label: "GPT-5.3 Codex (coming soon)" },
+] as const;
+const AGENT_EXECUTOR_OPTIONS = [
+  { value: "backend" as const, label: "Backend" },
+  { value: "desktop" as const, label: "Desktop" },
+] as const;
+const DEFAULT_AGENT_MODEL = AGENT_MODEL_OPTIONS[0]!.value;
 const SYSTEM_PROMPT_CONCERN = "__system_prompt__";
 const DOC_TYPES: DocKind[] = ["Document", "Skill"];
 const SOURCE_TYPE_TO_PROVIDER: Record<Exclude<DocSourceType, "local">, IntegrationProvider> = {
@@ -1233,10 +1244,31 @@ export function ThreadPage({
   const [isSendingChat, setIsSendingChat] = useState(false);
   const [assistantError, setAssistantError] = useState("");
   const [assistantSummaryStatus, setAssistantSummaryStatus] = useState<"success" | "failed" | null>(null);
-  const [selectedAgentModel, setSelectedAgentModel] = useState<string>(AGENT_OPTIONS[0]);
+  const [selectedAgentModel, setSelectedAgentModel] = useState<AssistantModel>(DEFAULT_AGENT_MODEL);
+  const [selectedAgentExecutor, setSelectedAgentExecutor] = useState<AssistantExecutor>(
+    detail.thread.agentExecutionMode === "desktop" ? "desktop" : "backend",
+  );
   const [isRunningAssistant, setIsRunningAssistant] = useState(false);
   const isChatInputsDisabled = disableChatInputs;
   const isAssistantRunEnabled = onRunAssistant && !assistantRunDisabledMessage;
+  const isExecutorSelectable = detail.thread.agentExecutionMode === "both";
+  const normalizedExecutor = isExecutorSelectable
+    ? selectedAgentExecutor
+    : detail.thread.agentExecutionMode;
+  const availableExecutorOptions = isExecutorSelectable
+    ? AGENT_EXECUTOR_OPTIONS
+    : AGENT_EXECUTOR_OPTIONS.filter((option) => option.value === normalizedExecutor);
+
+  useEffect(() => {
+    const policyExecutor = detail.thread.agentExecutionMode === "backend" || detail.thread.agentExecutionMode === "desktop"
+      ? detail.thread.agentExecutionMode
+      : selectedAgentExecutor;
+    if (!isExecutorSelectable) {
+      if (selectedAgentExecutor !== policyExecutor) {
+        setSelectedAgentExecutor(policyExecutor);
+      }
+    }
+  }, [detail.thread.agentExecutionMode, isExecutorSelectable, selectedAgentExecutor]);
   const [isClosingThread, setIsClosingThread] = useState(false);
   const [isCommittingThread, setIsCommittingThread] = useState(false);
   const [isCloningThread, setIsCloningThread] = useState(false);
@@ -2325,6 +2357,8 @@ export function ThreadPage({
         chatMessageId: userMessageId,
         mode: "direct",
         planActionId: null,
+        executor: normalizedExecutor,
+        model: selectedAgentModel,
       });
 
       const runError = getErrorMessage(runResult);
@@ -2362,6 +2396,8 @@ export function ThreadPage({
         chatMessageId: null,
         mode,
         planActionId: mode === "direct" ? (planActionId ?? null) : null,
+        executor: normalizedExecutor,
+        model: selectedAgentModel,
       });
 
       const error = getErrorMessage(result);
@@ -3251,6 +3287,36 @@ export function ThreadPage({
                   >
                     <Send size={14} />
                   </button>
+                </div>
+                <div className="thread-chat-controls">
+                  <select
+                    className="field-input"
+                    value={selectedAgentModel}
+                    disabled={isSendingChat || isChatInputsDisabled}
+                    onChange={(event) => setSelectedAgentModel(event.target.value as AssistantModel)}
+                    aria-label="Select model"
+                  >
+                    {AGENT_MODEL_OPTIONS.map((option) => (
+                      <option
+                        key={option.value}
+                        value={option.value}
+                        disabled={option.value === "gpt-5.3-codex"}
+                      >
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                  <select
+                    className="field-input"
+                    value={normalizedExecutor}
+                    disabled={!isExecutorSelectable || isSendingChat || isChatInputsDisabled}
+                    onChange={(event) => setSelectedAgentExecutor(event.target.value as AssistantExecutor)}
+                    aria-label="Select execution target"
+                  >
+                    {availableExecutorOptions.map((option) => (
+                      <option key={option.value} value={option.value}>{option.label}</option>
+                    ))}
+                  </select>
                 </div>
               </div>
             ) : (

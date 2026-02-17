@@ -5,6 +5,7 @@ import { Link } from "./link";
 
 export type ThreadStatus = "open" | "closed" | "committed";
 export type ProjectVisibility = "public" | "private";
+export type AgentExecutionMode = "desktop" | "backend" | "both";
 
 export const isFinalizedThreadStatus = (status: ThreadStatus): boolean =>
   status === "closed" || status === "committed";
@@ -26,6 +27,7 @@ export interface Project {
   name: string;
   description: string | null;
   accessRole: string;
+  agentExecutionMode: AgentExecutionMode;
   visibility: ProjectVisibility;
   ownerHandle: string;
   createdAt: string;

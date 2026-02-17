@@ -688,6 +688,7 @@ function SettingsRoute({ isAuthenticated }: { isAuthenticated: boolean }) {
     collaborators: Collaborator[];
     projectRoles: string[];
     concerns: Concern[];
+    agentExecutionMode: "desktop" | "backend" | "both";
   } | null>(null);
   const [notFound, setNotFound] = useState(false);
 
@@ -727,6 +728,7 @@ function SettingsRoute({ isAuthenticated }: { isAuthenticated: boolean }) {
       projectName={projectName!}
       accessRole={data.accessRole}
       visibility={data.visibility}
+      agentExecutionMode={data.agentExecutionMode}
       collaborators={data.collaborators}
       projectRoles={data.projectRoles}
       concerns={data.concerns}
@@ -834,6 +836,31 @@ function SettingsRoute({ isAuthenticated }: { isAuthenticated: boolean }) {
           const body = await res.json().catch(() => ({}));
           return { error: body.error ?? "Failed to update visibility" };
         }
+      }}
+      onUpdateExecutionMode={async (agentExecutionMode) => {
+        const res = await apiFetch(
+          `/projects/${encodeURIComponent(handle!)}/${encodeURIComponent(projectName!)}/execution-mode`,
+          {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ agentExecutionMode }),
+          },
+        );
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}));
+          return { error: body.error ?? "Failed to update execution mode" };
+        }
+      }}
+      onArchiveProject={async () => {
+        const res = await apiFetch(
+          `/projects/${encodeURIComponent(handle!)}/${encodeURIComponent(projectName!)}/archive`,
+          { method: "POST" },
+        );
+        if (!res.ok && res.status !== 204) {
+          const body = await res.json().catch(() => ({}));
+          return { error: body.error ?? "Failed to archive project" };
+        }
+        window.location.assign("/");
       }}
     />
   );
@@ -1186,7 +1213,7 @@ function ThreadRoute({ isAuthenticated }: { isAuthenticated: boolean }) {
       onRunAssistant={async (payload) => {
         const requestPayload = {
           ...payload,
-          executor: payload.mode === "direct" ? "desktop" : payload.executor ?? "backend",
+          executor: payload.executor,
           wait: payload.mode === "direct" ? false : payload.wait ?? true,
         };
         const resolveRunResult = async (runId: string) => {

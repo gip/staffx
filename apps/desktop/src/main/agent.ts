@@ -21,6 +21,7 @@ interface AssistantRunClaimResponse {
   systemId: string;
   prompt?: string;
   systemPrompt?: string | null;
+  model?: string | null;
 }
 
 interface OpenShipBundleFile {
@@ -460,6 +461,7 @@ export async function startAssistantRunLocal(payload: {
     cwd: workspace,
     systemPrompt: claimPayload.systemPrompt ?? undefined,
     allowedTools: ["Read", "Grep", "Glob", "Bash", "Edit", "Write"],
+    model: claimPayload.model?.trim(),
     onMessage: logTurn,
   });
   logRunOutcome({

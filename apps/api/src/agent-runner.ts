@@ -714,6 +714,7 @@ async function runClaudeAgentWithBundleDiff(
   systemPrompt: string | null,
   workspace: string,
   threadId: string,
+  model: string,
 ): Promise<RunClaudeAgentResult> {
   const openShipBundleDir = join(workspace, OPENSHIP_BUNDLE_DIR_NAME);
   console.info("[agent-runner] bundle generation start", {
@@ -756,6 +757,7 @@ async function runClaudeAgentWithBundleDiff(
     runResult = await runClaudeAgent({
       prompt: runPrompt,
       cwd: workspace,
+      model,
       systemPrompt: systemPrompt ?? undefined,
       allowedTools: ["Read", "Grep", "Glob", "Bash", "Edit", "Write"],
     });
@@ -848,8 +850,9 @@ async function runAgentAndApplyResult(
   systemPrompt: string | null,
   workspace: string,
   threadId: string,
+  model: string,
 ): Promise<RunClaudeAgentResult> {
-  const runResult = await runClaudeAgentWithBundleDiff(runPrompt, systemPrompt, workspace, threadId);
+  const runResult = await runClaudeAgentWithBundleDiff(runPrompt, systemPrompt, workspace, threadId, model);
   const reconciled = await applyOpenShipBundleResult(threadId, runResult);
   return reconciled;
 }
@@ -899,6 +902,7 @@ export function startAgentRunner(options: AgentRunnerOptions = {}): () => void {
         run.system_prompt ?? null,
         workspace,
         run.thread_id,
+        run.model,
       );
 
       await updateAgentRunResult(

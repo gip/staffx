@@ -668,6 +668,7 @@ function SettingsRoute() {
     collaborators: Collaborator[];
     projectRoles: string[];
     concerns: Concern[];
+    agentExecutionMode: "desktop" | "backend" | "both";
   } | null>(null);
   const [notFound, setNotFound] = useState(false);
 
@@ -709,6 +710,7 @@ function SettingsRoute() {
       projectName={projectName!}
       accessRole={data.accessRole}
       visibility={data.visibility}
+      agentExecutionMode={data.agentExecutionMode}
       collaborators={data.collaborators}
       projectRoles={data.projectRoles}
       concerns={data.concerns}
@@ -815,6 +817,20 @@ function SettingsRoute() {
         if (!res.ok) {
           const body = await res.json().catch(() => ({}));
           return { error: body.error ?? "Failed to update visibility" };
+        }
+      }}
+      onUpdateExecutionMode={async (agentExecutionMode) => {
+        const res = await apiFetch(
+          `/projects/${encodeURIComponent(handle!)}/${encodeURIComponent(projectName!)}/execution-mode`,
+          {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ agentExecutionMode }),
+          },
+        );
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}));
+          return { error: body.error ?? "Failed to update execution mode" };
         }
       }}
       onArchiveProject={async () => {

@@ -137,6 +137,43 @@ function summarizeRunMessages(status: "success" | "failed", messages: string[]):
 }
 
 type AssistantExecutor = "backend" | "desktop";
+type AssistantModel = "claude-opus-4-6" | "gpt-5.3-codex";
+type AgentExecutionMode = "desktop" | "backend" | "both";
+const DEFAULT_ASSISTANT_MODEL: AssistantModel = "claude-opus-4-6";
+const SUPPORTED_ASSISTANT_MODELS: readonly AssistantModel[] = ["claude-opus-4-6", "gpt-5.3-codex"] as const;
+const ENABLED_ASSISTANT_MODELS: Record<AssistantModel, boolean> = {
+  "claude-opus-4-6": true,
+  "gpt-5.3-codex": false,
+};
+
+function isSupportedAssistantModel(value: unknown): value is AssistantModel {
+  return typeof value === "string" && (SUPPORTED_ASSISTANT_MODELS as readonly string[]).includes(value);
+}
+
+function parseAssistantModel(value: unknown): AssistantModel | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+
+  if (trimmed === "claude-opus-4.6") return "claude-opus-4-6";
+  if (trimmed === "claude-opus-4-6") return "claude-opus-4-6";
+  if (trimmed === "gpt-5.3-codex") return "gpt-5.3-codex";
+  return null;
+}
+
+function isEnabledAssistantModel(value: AssistantModel): boolean {
+  return ENABLED_ASSISTANT_MODELS[value];
+}
+
+function parseAssistantExecutor(value: unknown): AssistantExecutor | null {
+  if (value === undefined) return null;
+  return value === "backend" || value === "desktop" ? value : null;
+}
+
+function normalizeAssistantModel(value: unknown): AssistantModel {
+  const parsed = parseAssistantModel(value);
+  return parsed ?? DEFAULT_ASSISTANT_MODEL;
+}
 
 type ThreadStatus = "open" | "closed" | "committed";
 
@@ -152,6 +189,7 @@ interface ThreadContextRow {
   project_name: string;
   owner_handle: string;
   access_role: string | null;
+  agent_execution_mode: AgentExecutionMode | null;
 }
 
 interface SystemRow {
@@ -329,7 +367,8 @@ interface AssistantRunRequestBody {
   chatMessageId: string | null;
   mode: "direct" | "plan";
   planActionId: string | null;
-  executor: AssistantExecutor;
+  executor?: AssistantExecutor;
+  model?: AssistantModel;
   wait: boolean;
 }
 
@@ -374,6 +413,8 @@ interface AssistantRunRow {
   run_result_messages: string[] | null;
   run_result_changes: AssistantRunPlanChange[] | null;
   run_error: string | null;
+  executor: AssistantExecutor;
+  model: AssistantModel;
 }
 
 interface BeginActionRow {
@@ -420,6 +461,7 @@ interface ThreadContext {
   projectName: string;
   ownerHandle: string;
   accessRole: string;
+  agentExecutionMode: AgentExecutionMode;
 }
 
 function getAuthUser(req: FastifyRequest): AuthUser | null {
@@ -641,6 +683,7 @@ function parseAssistantRunRequest(body: unknown): AssistantRunRequestBody | null
     mode: unknown;
     planActionId: unknown;
     executor: unknown;
+    model: unknown;
     wait: unknown;
   }>;
   const mode = parseAssistantRunMode(payload.mode);
@@ -648,12 +691,38 @@ function parseAssistantRunRequest(body: unknown): AssistantRunRequestBody | null
 
   const chatMessageId = parseOptionalUuid(payload.chatMessageId);
   const planActionId = parseOptionalUuid(payload.planActionId);
-  const executorRaw = typeof payload.executor === "string" ? payload.executor : "backend";
+  const executor = parseAssistantExecutor(payload.executor);
+  const model = isSupportedAssistantModel(payload.model) ? payload.model : null;
   if (payload.wait !== undefined && payload.wait !== true && payload.wait !== false) return null;
+  if (payload.model !== undefined && model === null) return null;
   const wait = payload.wait === undefined ? true : payload.wait;
-  const executor: AssistantExecutor = executorRaw === "desktop" ? "desktop" : "backend";
 
-  return { mode, chatMessageId, planActionId, executor, wait };
+  return {
+    mode,
+    chatMessageId,
+    planActionId,
+    executor,
+    model: model ?? DEFAULT_ASSISTANT_MODEL,
+    wait,
+  };
+}
+
+function resolveExecutorForPolicy(
+  requestedExecutor: AssistantExecutor | null | undefined,
+  policy: AgentExecutionMode,
+): { ok: true; executor: AssistantExecutor } | { ok: false; error: string } {
+  if (policy === "both") {
+    return { ok: true, executor: requestedExecutor ?? "backend" };
+  }
+
+  if (policy === "desktop" && requestedExecutor && requestedExecutor !== "desktop") {
+    return { ok: false, error: "executor must be desktop for this project" };
+  }
+  if (policy === "backend" && requestedExecutor && requestedExecutor !== "backend") {
+    return { ok: false, error: "executor must be backend for this project" };
+  }
+
+  return { ok: true, executor: policy };
 }
 
 async function getAssistantRunTriggerMessage(threadId: string, chatMessageId: string | null): Promise<AssistantRunMessageLookupRow | null> {
@@ -905,6 +974,7 @@ function mapAgentRunRowToResponse(row: {
 async function getAgentRunByThreadId(threadId: string, runId: string): Promise<AssistantRunRow | null> {
   const result = await query<AssistantRunRow>(
     `SELECT id, thread_id, project_id, requested_by_user_id, mode, plan_action_id, chat_message_id,
+            executor, model,
             prompt, system_prompt, status, runner_id, run_result_status,
             run_result_messages, run_result_changes, run_error
        FROM agent_runs
@@ -1357,12 +1427,13 @@ async function resolveThreadContext(
      creator.handle AS created_by_handle,
      p.name AS project_name,
      owner.handle AS owner_handle,
-     CASE
+      CASE
        WHEN CAST($1 AS uuid) IS NOT NULL AND p.owner_id = CAST($1 AS uuid) THEN 'Owner'
        WHEN pc.role IS NOT NULL THEN pc.role::text
        WHEN p.visibility = 'public' THEN 'Viewer'
        ELSE NULL
      END AS access_role
+     ,COALESCE(p.agent_execution_mode, 'both') AS agent_execution_mode
    FROM projects p
    JOIN users owner ON owner.id = p.owner_id
    JOIN threads t ON t.project_id = p.id
@@ -1393,6 +1464,7 @@ async function resolveThreadContext(
     projectName: row.project_name,
     ownerHandle: row.owner_handle,
     accessRole: row.access_role,
+    agentExecutionMode: row.agent_execution_mode,
   };
 }
 
@@ -1408,6 +1480,7 @@ function buildThreadPayload(context: ThreadContext) {
     ownerHandle: context.ownerHandle,
     projectName: context.projectName,
     accessRole: context.accessRole,
+    agentExecutionMode: context.agentExecutionMode,
   };
 }
 
@@ -3227,6 +3300,15 @@ export async function threadRoutes(app: FastifyInstance) {
         return reply.code(403).send({ error: "Forbidden" });
       }
 
+      if (!isEnabledAssistantModel(parsedBody.model)) {
+        return reply.code(400).send({ error: "Model is not available on this server" });
+      }
+
+      const resolvedExecutor = resolveExecutorForPolicy(parsedBody.executor, context.agentExecutionMode);
+      if (!resolvedExecutor.ok) {
+        return reply.code(400).send({ error: `executor not allowed by project policy: ${resolvedExecutor.error}` });
+      }
+
       const triggerMessage = await getAssistantRunTriggerMessage(context.threadId, parsedBody.chatMessageId);
       const actionIds: string[] = [];
       const runPrompt = triggerMessage ? triggerMessage.content : "";
@@ -3242,7 +3324,7 @@ export async function threadRoutes(app: FastifyInstance) {
         changes: AssistantRunPlanChange[];
       } = { status: "success", messages: ["No execution run yet."], changes: [] };
 
-      if (parsedBody.executor === "desktop" && parsedBody.mode === "direct") {
+      if (resolvedExecutor.executor === "desktop" && parsedBody.mode === "direct") {
         const threadSystemId = await getThreadSystemId(context.threadId);
         if (!threadSystemId) {
           return reply.code(500).send({ error: "Unable to resolve thread system" });
@@ -3264,6 +3346,8 @@ export async function threadRoutes(app: FastifyInstance) {
           mode: "direct",
           planActionId: null,
           chatMessageId: parsedBody.chatMessageId,
+          executor: resolvedExecutor.executor,
+          model: parsedBody.model,
           prompt: runPrompt,
           systemPrompt: resolvedSystemPrompt,
         }, AGENT_RUN_SLOT_WAIT_MS, AGENT_RUN_ENQUEUE_POLL_MS);
@@ -3382,6 +3466,8 @@ export async function threadRoutes(app: FastifyInstance) {
             projectId: context.projectId,
             requestedByUserId: getViewerUserId(req),
             mode: "direct",
+            executor: resolvedExecutor.executor,
+            model: parsedBody.model,
             planActionId,
             chatMessageId: parsedBody.chatMessageId,
             prompt: runPrompt,
@@ -3683,6 +3769,7 @@ export async function threadRoutes(app: FastifyInstance) {
         status: claimed.status,
         prompt: claimed.prompt,
         systemPrompt: claimed.system_prompt,
+        model: claimed.model,
         systemId,
       };
     },

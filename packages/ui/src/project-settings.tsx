@@ -27,6 +27,7 @@ interface ProjectSettingsPageProps {
   projectName: string;
   accessRole: string;
   visibility: "public" | "private";
+  agentExecutionMode: "desktop" | "backend" | "both";
   collaborators: Collaborator[];
   projectRoles: string[];
   concerns: Concern[];
@@ -39,6 +40,9 @@ interface ProjectSettingsPageProps {
   onDeleteConcern: (name: string) => Promise<{ error?: string } | void>;
   onUpdateMemberRoles: (handle: string, projectRoles: string[]) => Promise<{ error?: string } | void>;
   onUpdateVisibility: (visibility: "public" | "private") => Promise<{ error?: string } | void>;
+  onUpdateExecutionMode: (
+    agentExecutionMode: "desktop" | "backend" | "both",
+  ) => Promise<{ error?: string } | void>;
   onArchiveProject: () => Promise<{ error?: string } | void>;
 }
 
@@ -47,6 +51,7 @@ export function ProjectSettingsPage({
   projectName,
   accessRole,
   visibility,
+  agentExecutionMode,
   collaborators: initial,
   projectRoles: initialRoles,
   concerns: initialConcerns,
@@ -59,6 +64,7 @@ export function ProjectSettingsPage({
   onDeleteConcern,
   onUpdateMemberRoles,
   onUpdateVisibility,
+  onUpdateExecutionMode,
   onArchiveProject,
 }: ProjectSettingsPageProps) {
   const [collaborators, setCollaborators] = useState(initial);
@@ -77,6 +83,10 @@ export function ProjectSettingsPage({
   const [visibilityDraft, setVisibilityDraft] = useState<"public" | "private">(visibility);
   const [visibilityError, setVisibilityError] = useState<string | null>(null);
   const [isSavingVisibility, setIsSavingVisibility] = useState(false);
+  const [currentExecutionMode, setCurrentExecutionMode] = useState<"desktop" | "backend" | "both">(agentExecutionMode);
+  const [executionModeDraft, setExecutionModeDraft] = useState<"desktop" | "backend" | "both">(agentExecutionMode);
+  const [executionModeError, setExecutionModeError] = useState<string | null>(null);
+  const [isSavingExecutionMode, setIsSavingExecutionMode] = useState(false);
   const [isArchiving, setIsArchiving] = useState(false);
   const [archiveError, setArchiveError] = useState<string | null>(null);
   const [showArchiveModal, setShowArchiveModal] = useState(false);
@@ -86,6 +96,11 @@ export function ProjectSettingsPage({
     setCurrentVisibility(visibility);
     setVisibilityDraft(visibility);
   }, [visibility]);
+
+  useEffect(() => {
+    setCurrentExecutionMode(agentExecutionMode);
+    setExecutionModeDraft(agentExecutionMode);
+  }, [agentExecutionMode]);
 
   const handleRemove = useCallback(
     async (handle: string) => {
@@ -189,6 +204,19 @@ export function ProjectSettingsPage({
     setIsSavingVisibility(false);
   }, [currentVisibility, onUpdateVisibility, visibilityDraft]);
 
+  const handleSaveExecutionMode = useCallback(async () => {
+    if (executionModeDraft === currentExecutionMode) return;
+    setExecutionModeError(null);
+    setIsSavingExecutionMode(true);
+    const result = await onUpdateExecutionMode(executionModeDraft);
+    if (result?.error) {
+      setExecutionModeError(result.error);
+    } else {
+      setCurrentExecutionMode(executionModeDraft);
+    }
+    setIsSavingExecutionMode(false);
+  }, [currentExecutionMode, onUpdateExecutionMode, executionModeDraft]);
+
   const handleArchive = useCallback(async () => {
     if (!isOwner) return;
     setIsArchiving(true);
@@ -249,6 +277,36 @@ export function ProjectSettingsPage({
           <p className="status-text">{currentVisibility}</p>
         )}
         {visibilityError && <p className="field-error">{visibilityError}</p>}
+      </section>
+
+      <section className="thread-section">
+        <h3 className="thread-section-title">Execution mode</h3>
+        {isOwner ? (
+          <div className="roles-add-form">
+            <select
+              className="field-input roles-add-input"
+              value={executionModeDraft}
+              onChange={(event) =>
+                setExecutionModeDraft(event.target.value as "desktop" | "backend" | "both")
+              }
+            >
+              <option value="backend">Backend</option>
+              <option value="desktop">Desktop</option>
+              <option value="both">Both</option>
+            </select>
+            <button
+              className="btn btn-secondary"
+              type="button"
+              disabled={isSavingExecutionMode || executionModeDraft === currentExecutionMode}
+              onClick={handleSaveExecutionMode}
+            >
+              {isSavingExecutionMode ? "Saving..." : "Save"}
+            </button>
+          </div>
+        ) : (
+          <p className="status-text">{currentExecutionMode}</p>
+        )}
+        {executionModeError && <p className="field-error">{executionModeError}</p>}
       </section>
 
       {/* Roles section */}

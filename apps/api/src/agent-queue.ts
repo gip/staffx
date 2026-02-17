@@ -3,6 +3,8 @@ import pool, { query } from "./db.js";
 import type { AgentRunPlanChange, AgentRunResult } from "@staffx/agent-runtime";
 
 export type AgentRunMode = "direct" | "plan";
+export type AgentRunExecutor = "backend" | "desktop";
+export type AgentRunModel = "claude-opus-4-6" | "gpt-5.3-codex";
 export type AgentRunStatus = "queued" | "running" | "success" | "failed" | "cancelled";
 export type AgentRunResultStatus = AgentRunResult["status"];
 
@@ -18,6 +20,8 @@ export interface AgentRunRow {
   system_prompt: string | null;
   status: AgentRunStatus;
   runner_id: string | null;
+  executor: AgentRunExecutor;
+  model: AgentRunModel;
   run_result_status: AgentRunResultStatus | null;
   run_result_messages: string[] | null;
   run_result_changes: AgentRunPlanChange[] | null;
@@ -37,6 +41,8 @@ export interface EnqueueAgentRunParams {
   chatMessageId: string | null;
   prompt: string;
   systemPrompt?: string | null;
+  executor: AgentRunExecutor;
+  model: AgentRunModel;
 }
 
 const DEFAULT_RUN_SLOT_WAIT_MS = 120000;
@@ -57,18 +63,22 @@ export async function enqueueAgentRun(params: EnqueueAgentRunParams): Promise<st
       project_id,
       requested_by_user_id,
       mode,
+      executor,
+      model,
       plan_action_id,
       chat_message_id,
       prompt,
       system_prompt,
       status
-    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'queued') RETURNING id`,
+    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'queued') RETURNING id`,
     [
       randomUUID(),
       params.threadId,
       params.projectId,
       params.requestedByUserId,
       params.mode,
+      params.executor,
+      params.model,
       params.planActionId,
       params.chatMessageId,
       params.prompt,
@@ -145,6 +155,8 @@ export async function claimNextAgentRun(runnerId: string): Promise<AgentRunRow |
         ar.project_id,
         ar.requested_by_user_id,
         ar.mode,
+        ar.executor,
+        ar.model,
         ar.plan_action_id,
         ar.chat_message_id,
         ar.prompt,
@@ -198,6 +210,8 @@ export async function claimAgentRunById(runId: string, runnerId: string, threadI
         ar.project_id,
         ar.requested_by_user_id,
         ar.mode,
+        ar.executor,
+        ar.model,
         ar.plan_action_id,
         ar.chat_message_id,
         ar.prompt,
@@ -234,6 +248,8 @@ export async function getAgentRunById(runId: string): Promise<AgentRunRow | null
       project_id,
       requested_by_user_id,
       mode,
+      executor,
+      model,
       plan_action_id,
       chat_message_id,
       prompt,
