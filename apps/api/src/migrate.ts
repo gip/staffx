@@ -1,10 +1,11 @@
-import { readdir, readFile } from "node:fs/promises";
-import { join, dirname } from "node:path";
+import { readFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { query, close } from "./db.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const migrationsDir = join(__dirname, "migrations");
+const migrationsDir = join(__dirname, "..", "prisma", "migrations", "0001_init_full_schema");
+const migrationPath = join(migrationsDir, "migration.sql");
 
 async function migrate() {
   // Drop everything — dev only, no migration tracking
@@ -21,7 +22,6 @@ async function migrate() {
     drop table if exists messages cascade;
     drop table if exists actions cascade;
     drop table if exists threads cascade;
-    drop table if exists project_thread_counters cascade;
     drop table if exists project_member_roles cascade;
     drop table if exists project_roles cascade;
     drop table if exists project_collaborators cascade;
@@ -44,8 +44,6 @@ async function migrate() {
     drop function if exists validate_system_root_node cascade;
     drop function if exists fork_system cascade;
     drop function if exists thread_current_system cascade;
-    drop function if exists next_project_thread_id cascade;
-    drop function if exists assign_project_thread_id cascade;
     drop function if exists create_thread cascade;
     drop function if exists clone_thread cascade;
     drop function if exists begin_action cascade;
@@ -67,16 +65,13 @@ async function migrate() {
     drop type if exists action_type cascade;
     drop type if exists message_role cascade;
     drop type if exists change_operation cascade;
+    drop type if exists staffx_event_type cascade;
+    drop table if exists staffx_events cascade;
   `);
 
-  const files = (await readdir(migrationsDir)).filter((f) => f.endsWith(".sql")).sort();
-
-  for (const file of files) {
-    const sql = await readFile(join(migrationsDir, file), "utf-8");
-    console.log(`Running ${file}…`);
-    await query(sql);
-  }
-
+  const sql = await readFile(migrationPath, "utf-8");
+  console.log(`Running 0001_init_full_schema…`);
+  await query(sql);
   console.log("Schema reset complete.");
   await close();
 }

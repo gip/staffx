@@ -13,7 +13,6 @@ export interface Thread {
   id: string;
   title: string | null;
   description: string | null;
-  projectThreadId: number | null;
   status: ThreadStatus;
   sourceThreadId?: string | null;
   createdBy?: string;
@@ -247,7 +246,6 @@ export function Home({ projects, onCreateProject, onCheckProjectName }: HomeProp
                 <ul className="project-card-threads">
                   {p.threads.map((t) => (
                     <li key={t.id}>
-                      {t.projectThreadId != null ? `#${t.projectThreadId} ` : ""}
                       {t.title ?? "Untitled thread"}
                     </li>
                   ))}

@@ -129,30 +129,62 @@ export interface AssistantRunRequest {
 }
 
 export interface AssistantRunResponse {
-  planActionId: string | null;
-  planResponseActionId: string | null;
-  executeActionId: string | null;
-  executeResponseActionId: string | null;
-  updateActionId: string | null;
-  filesChanged: {
+  runId?: string;
+  status?: "queued" | "running" | "success" | "failed" | "cancelled";
+  mode?: AssistantRunMode;
+  threadId?: string;
+  systemId?: string;
+  planActionId?: string | null;
+  planResponseActionId?: string | null;
+  executeActionId?: string | null;
+  executeResponseActionId?: string | null;
+  updateActionId?: string | null;
+  filesChanged?: {
     kind: "Create" | "Update" | "Delete";
     path: string;
     fromHash?: string;
     toHash?: string;
   }[];
-  summary: {
-    status: "success" | "failed";
+  summary?: {
+    status: "success" | "failed" | "cancelled" | "queued" | "running";
     messages: string[];
   };
-  changesCount: number;
-  messages: ChatMessage[];
-  systemId: string;
+  runResultStatus?: "success" | "failed" | null;
+  runResultMessages?: string[];
+  runResultChanges?: unknown[];
+  runError?: string | null;
+  changesCount?: number;
+  messages?: ChatMessage[];
   threadState?: ThreadDetailPayload;
+}
+
+type AssistantRunSummaryStatus = "success" | "failed" | "cancelled" | "queued" | "running";
+
+function getRunSummary(response: AssistantRunResponse): { status: AssistantRunSummaryStatus; messages: string[] } {
+  if (response.summary?.status) {
+    return {
+      status: response.summary.status,
+      messages: response.summary.messages,
+    };
+  }
+
+  const fromStatus = response.status ?? "queued";
+  const mappedStatus: AssistantRunSummaryStatus = (() => {
+    if (fromStatus === "cancelled") return "cancelled";
+    if (fromStatus === "failed") return "failed";
+    if (fromStatus === "success") return "success";
+    if (fromStatus === "running") return "running";
+    return "queued";
+  })();
+
+  return {
+    status: response.runResultStatus === "failed" ? "failed" : mappedStatus,
+    messages: response.runResultMessages ?? [],
+  };
 }
 
 export interface ThreadDetail {
   id: string;
-  projectThreadId: number;
   title: string;
   description: string | null;
   status: ThreadStatus;
@@ -1293,7 +1325,8 @@ export function ThreadPage({
   };
 
   const setAssistantRunSummary = (payload: AssistantRunResponse) => {
-    setAssistantSummaryStatus(payload.summary.status);
+    const summary = getRunSummary(payload);
+    setAssistantSummaryStatus(summary.status);
   };
 
   const updateAssistantSummary = (payload: AssistantRunResponse) => {
@@ -2861,7 +2894,7 @@ export function ThreadPage({
           <>
             <h1 className="thread-view-title">
               {detail.thread.title}{" "}
-              <span className="thread-view-title-number">#{detail.thread.projectThreadId}</span>
+              <span className="thread-view-title-number">#{detail.thread.id.slice(0, 8)}</span>
             </h1>
             {effectiveCanEdit && (
               <button
