@@ -6,8 +6,9 @@ StaffX ships a v1 public API only in this phase.
 
 - There are **no backward-compatibility guarantees** with legacy routes.
 - The entire initial database schema is created from a single migration:
-  - `apps/api/prisma/migrations/0001_init_full_schema/migration.sql`
+  - `apps/api/db/migrations/0001_init_full_schema.sql`
 - Existing non-empty production DB migration paths are out of scope for this phase.
+- Migrations are managed by `node-pg-migrate`.
 
 ## Base URL and auth
 
@@ -141,9 +142,18 @@ curl -N -H "Authorization: Bearer $TOKEN" \
 ## Migration policy
 
 - Single initial migration only:
-  - `apps/api/prisma/migrations/0001_init_full_schema/migration.sql`
+  - `apps/api/db/migrations/0001_init_full_schema.sql` + `apps/api/db/migrations/0001_init_full_schema.js`
 - Bootstrap flow:
   1. Create empty DB
   2. Run schema migration
   3. Seed reference data if needed
 - This phase intentionally has no backward compatibility with prior API versions.
+
+## Migration execution
+
+- Run migration:
+  - `pnpm --filter @staffx/api migrate`
+- Check migration status:
+  - `pnpm --filter @staffx/api migrate:status`
+- Roll back last migration (dev-only fallback):
+  - `pnpm --filter @staffx/api migrate:down:last`
