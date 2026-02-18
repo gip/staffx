@@ -7,7 +7,13 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { query } from "../db.js";
 import { generateOpenShipFileBundle } from "../agent-runner.js";
 import { verifyAuth, type AuthUser } from "../auth.js";
-import { claimAgentRunById, enqueueAgentRunWithWait, getAgentRunById, updateAgentRunResult } from "../agent-queue.js";
+import {
+  claimAgentRunById,
+  enqueueAgentRunWithWait,
+  getAgentRunById,
+  updateAgentRunResult,
+} from "../agent-queue.js";
+import type { AgentRunPlanChange } from "@staffx/agent-runtime";
 import {
   publishEvent,
   queryEvents,
@@ -30,7 +36,7 @@ interface V1ProjectAccessRow {
   visibility: "public" | "private";
   owner_handle: string;
   is_archived: boolean;
-  access_role: AccessRole | null;
+  access_role: AccessRole;
   name: string;
 }
 
@@ -117,7 +123,7 @@ interface V1RunResponse {
   };
   changesCount: number;
   messages: V1RunChatMessage[];
-  threadState?: ThreadDetailPayload;
+  threadState?: Record<string, unknown>;
 }
 
 interface V1OpenShipBundleFile {
@@ -189,11 +195,11 @@ interface V1AgentRunRow {
   system_prompt: string | null;
   run_result_status: "success" | "failed" | null;
   run_result_messages: string[] | null;
-  run_result_changes: unknown[] | null;
+  run_result_changes: AgentRunPlanChange[] | null;
   run_error: string | null;
-  created_at: Date;
-  started_at: Date | null;
-  completed_at: Date | null;
+  created_at: string;
+  started_at: string | null;
+  completed_at: string | null;
 }
 
 interface V1ChatMessageRequest {
@@ -281,13 +287,11 @@ function readEventCursor(raw: CursorLike): CursorLike {
 }
 
 function parsePositiveInt(raw: unknown, fallback: number, min = 1, max = 200): number {
-  if (typeof raw !== "number") {
-    const asNumber = typeof raw === "string" ? Number(raw) : NaN;
-    if (!Number.isFinite(asNumber)) return fallback;
-    raw = asNumber;
-  }
-
-  const value = Math.trunc(raw);
+  const asNumber = typeof raw === "number" || typeof raw === "string"
+    ? Number(raw)
+    : NaN;
+  if (!Number.isFinite(asNumber)) return fallback;
+  const value = Math.trunc(asNumber);
   if (value < min) return fallback;
   return value > max ? max : value;
 }
@@ -306,6 +310,32 @@ function normalizeToplologyPositions(body: V1MatrixPatchBody): Array<{ nodeId: s
       );
     })
     .map((entry) => ({ nodeId: entry.nodeId.trim(), x: entry.x, y: entry.y }));
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function isAgentRunPlanChange(value: unknown): value is AgentRunPlanChange {
+  if (!isRecord(value)) return false;
+  const candidate = value as {
+    target_table?: unknown;
+    operation?: unknown;
+    target_id?: unknown;
+    previous?: unknown;
+    current?: unknown;
+  };
+  if (typeof candidate.target_table !== "string") return false;
+  if (candidate.operation !== "Create" && candidate.operation !== "Update" && candidate.operation !== "Delete") return false;
+  if (!isRecord(candidate.target_id)) return false;
+  if (candidate.previous !== null && !isRecord(candidate.previous)) return false;
+  if (candidate.current !== null && !isRecord(candidate.current)) return false;
+  return true;
+}
+
+function parseRunPlanChanges(raw: unknown): AgentRunPlanChange[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.filter(isAgentRunPlanChange);
 }
 
 function canEdit(role: AccessRole): boolean {
@@ -531,9 +561,9 @@ function mapAssistantRunRow(run: V1AgentRunRow): {
     runResultMessages: run.run_result_messages ?? [],
     runResultChanges: run.run_result_changes ?? [],
     runError: run.run_error,
-    createdAt: run.created_at.toISOString(),
-    startedAt: run.started_at ? run.started_at.toISOString() : null,
-    completedAt: run.completed_at ? run.completed_at.toISOString() : null,
+    createdAt: new Date(run.created_at).toISOString(),
+    startedAt: run.started_at ? new Date(run.started_at).toISOString() : null,
+    completedAt: run.completed_at ? new Date(run.completed_at).toISOString() : null,
   };
 }
 
@@ -638,7 +668,7 @@ export async function v1Routes(app: FastifyInstance) {
         "SELECT 1 FROM projects WHERE owner_id = $1 AND name = $2",
         [user.id, name],
       );
-      if (existing.rowCount > 0) {
+      if ((existing.rowCount ?? 0) > 0) {
         return writeProblem(reply, 409, "Duplicate project", "A project with this name already exists.");
       }
 
@@ -845,7 +875,7 @@ export async function v1Routes(app: FastifyInstance) {
 
       const threadId = randomUUID();
       const resolvedTitle = title && title.length > 0 ? title : `Thread ${Date.now()}`;
-      await query<unknown>(
+      await query<{ id: string }>(
         "SELECT clone_thread($1, $2, $3, $4, $5, $6)",
         [
           threadId,
@@ -1349,7 +1379,7 @@ export async function v1Routes(app: FastifyInstance) {
       );
       const actionPosition = positionResult.rows[0]?.position ?? 1;
 
-      await query<unknown>(
+      await query<{ id: string }>(
         `INSERT INTO actions (id, thread_id, position, type, title)
          VALUES ($1, $2, $3, 'Chat'::action_type, 'Chat message')`,
         [actionId, threadId, actionPosition],
@@ -1393,7 +1423,7 @@ export async function v1Routes(app: FastifyInstance) {
       const user = (req as V1AuthRequest).auth;
       const threadId = req.params.threadId;
       const mode = req.params.assistantType;
-      const chatMessageId = req.body?.chatMessageId?.trim();
+      const chatMessageId = req.body?.chatMessageId?.trim() || null;
       const prompt = req.body?.prompt?.trim();
 
       if (!isUuid(threadId)) {
@@ -1520,7 +1550,9 @@ export async function v1Routes(app: FastifyInstance) {
         },
       });
 
-      return mapAssistantRunRow(await getAgentRunById(runId) as V1AgentRunRow);
+      const completedRun = await getAgentRunById(runId);
+      if (!completedRun) return notFoundProblem(reply, "Run not found");
+      return mapAssistantRunRow(completedRun);
     },
   );
 
@@ -1561,7 +1593,7 @@ export async function v1Routes(app: FastifyInstance) {
         {
           status: success ? "success" : "failed",
           messages,
-          changes: Array.isArray(req.body.changes) ? req.body.changes : [],
+          changes: parseRunPlanChanges(req.body.changes),
           error: req.body.error,
         },
         req.body.error,
@@ -1597,7 +1629,9 @@ export async function v1Routes(app: FastifyInstance) {
         },
       });
 
-      return mapAssistantRunRow((await getAgentRunById(runId)) as V1AgentRunRow);
+      const completedRun = await getAgentRunById(runId);
+      if (!completedRun) return notFoundProblem(reply, "Run not found");
+      return mapAssistantRunRow(completedRun);
     },
   );
 
@@ -1657,7 +1691,7 @@ export async function v1Routes(app: FastifyInstance) {
         },
       });
 
-      return mapAssistantRunRow(canceled.rows[0]);
+      return mapAssistantRunRow(canceled.rows[0] as V1AgentRunRow);
     },
   );
 

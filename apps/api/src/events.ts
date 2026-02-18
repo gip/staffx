@@ -122,7 +122,7 @@ export async function publishEvent(input: PublishEventInput): Promise<StaffXEven
 }
 
 function parseLimit(raw?: number): number {
-  if (!Number.isFinite(raw) || raw <= 0) return 100;
+  if (typeof raw !== "number" || !Number.isFinite(raw)) return 100;
   return Math.min(Math.max(Math.floor(raw), 1), 500);
 }
 

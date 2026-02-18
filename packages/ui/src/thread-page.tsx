@@ -1264,7 +1264,7 @@ export function ThreadPage({
   const [chatError, setChatError] = useState("");
   const [isSendingChat, setIsSendingChat] = useState(false);
   const [assistantError, setAssistantError] = useState("");
-  const [assistantSummaryStatus, setAssistantSummaryStatus] = useState<"success" | "failed" | null>(null);
+  const [assistantSummaryStatus, setAssistantSummaryStatus] = useState<AssistantRunSummaryStatus | null>(null);
   const [selectedAgentModel, setSelectedAgentModel] = useState<string>(AGENT_OPTIONS[0]);
   const [isRunningAssistant, setIsRunningAssistant] = useState(false);
   const isChatInputsDisabled = disableChatInputs;
@@ -2421,7 +2421,7 @@ export function ThreadPage({
         return;
       }
 
-      setAssistantSummaryStatus(payload.summary.status);
+      setAssistantSummaryStatus(getRunSummary(payload).status);
     } finally {
       setIsRunningAssistant(false);
     }

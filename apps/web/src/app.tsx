@@ -197,7 +197,7 @@ function toThreadDetailFromSummary(
     projectName?: string;
     accessRole?: string;
   },
-  project: V1ProjectListItem,
+  project: V1ProjectListItem | { id: string; name: string; ownerHandle: string; accessRole: string; threadCount?: number },
 ): ThreadDetail {
   return {
     id: row.id,
@@ -988,19 +988,24 @@ function ThreadRoute() {
 
   const refreshThreadDebounced = useCallback(() => {
     if (eventRefreshPromiseRef.current) return;
-    const refresh = (async () => {
+    eventRefreshPromiseRef.current = (async () => {
       try {
         await refreshThread();
       } catch (error) {
         console.error("Thread refresh failed:", error);
       } finally {
-        if (eventRefreshPromiseRef.current === refresh) {
+        if (eventRefreshPromiseRef.current) {
           eventRefreshPromiseRef.current = null;
         }
       }
     })();
-    eventRefreshPromiseRef.current = refresh;
   }, [refreshThread]);
+
+  const resolveThreadProjectId = useCallback(async (): Promise<string | null> => {
+    if (!handle || !projectName) return null;
+    const projectRecord = await resolveProject(apiFetch, handle, projectName);
+    return projectRecord?.id ?? null;
+  }, [apiFetch, handle, projectName]);
 
   const handleThreadEvent = useCallback(
     async (event: V1EventItem) => {
@@ -1307,7 +1312,7 @@ function ThreadRoute() {
                 ...prev,
                 chat: {
                   ...prev.chat,
-                  messages: mergeChatMessages(prev.chat.messages, data.messages),
+                  messages: mergeChatMessages(prev.chat.messages, data.messages ?? []),
                 },
               }
             : prev
@@ -1355,10 +1360,10 @@ function ThreadRoute() {
           prev
             ? {
                 ...mergeThreadStateFromRun(prev, threadState),
-                systemId: data.systemId,
+                systemId: data.systemId ?? prev.systemId,
                 chat: {
                   ...prev.chat,
-                  messages: mergeChatMessages(prev.chat.messages, data.messages),
+                  messages: mergeChatMessages(prev.chat.messages, data.messages ?? []),
                 },
               }
             : prev
@@ -1415,8 +1420,9 @@ function ThreadRoute() {
         const title = typeof payload?.title === "string" ? payload.title.trim() : "";
         const description = typeof payload?.description === "string" ? payload.description.trim() : "";
         try {
-          if (!detail?.thread?.projectId) {
-            return { error: "Missing thread project context." };
+          const targetProjectId = await resolveThreadProjectId();
+          if (!targetProjectId) {
+            return { error: "Unable to determine project context." };
           }
           const res = await apiFetch(
             `/threads`,
@@ -1424,7 +1430,7 @@ function ThreadRoute() {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({
-                projectId: detail.thread.projectId,
+                projectId: targetProjectId,
                 sourceThreadId: threadId,
                 title,
                 description,
@@ -1439,7 +1445,7 @@ function ThreadRoute() {
             return { error: "New thread not found" };
           }
           const created = toThreadDetailFromSummary(data, {
-            id: detail.thread.projectId,
+            id: targetProjectId,
             name: detail.thread.projectName ?? "",
             description: null,
             visibility: "private",
