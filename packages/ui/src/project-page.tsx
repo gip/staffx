@@ -12,11 +12,11 @@ type MutationResult<T> = T | MutationError | void;
 
 interface ProjectPageProps {
   project: Project;
-  fromThreadId?: number | null;
-  onCloseThread?: (threadProjectId: number) => Promise<MutationResult<{ thread: ThreadDetail }>>;
-  onCommitThread?: (threadProjectId: number) => Promise<MutationResult<{ thread: ThreadDetail }>>;
+  fromThreadId?: string | null;
+  onCloseThread?: (threadId: string) => Promise<MutationResult<{ thread: ThreadDetail }>>;
+  onCommitThread?: (threadId: string) => Promise<MutationResult<{ thread: ThreadDetail }>>;
   onCloneThread?: (
-    threadProjectId: number,
+    threadId: string,
     payload: {
       title: string;
       description: string;
@@ -38,7 +38,7 @@ function getErrorMessage<T>(result: MutationResult<T>): string | null {
   return null;
 }
 
-function flattenThreadTree(threads: Thread[], fromProjectThreadId?: number | null): Array<{ thread: Thread; depth: number }> {
+function flattenThreadTree(threads: Thread[], fromProjectThreadId?: string | null): Array<{ thread: Thread; depth: number }> {
   const threadIds = new Set(threads.map((t) => t.id));
   const childrenMap = new Map<string, Thread[]>();
   const roots: Thread[] = [];
@@ -63,7 +63,7 @@ function flattenThreadTree(threads: Thread[], fromProjectThreadId?: number | nul
   }
 
   if (fromProjectThreadId != null) {
-    const startThread = threads.find((t) => t.projectThreadId === fromProjectThreadId);
+    const startThread = threads.find((t) => t.id === fromProjectThreadId);
     if (startThread) {
       walk([startThread], 0);
       return result;
@@ -124,12 +124,12 @@ export function ProjectPage({ project, fromThreadId, onCloseThread, onCommitThre
                 {flatThreads.map(({ thread: t, depth }) => (
               <Link
                 key={t.id}
-                to={`/${project.ownerHandle}/${project.name}/thread/${t.projectThreadId}`}
+                to={`/${project.ownerHandle}/${project.name}/thread/${t.id}`}
                 className={`thread-row${depth > 0 ? " thread-row--nested" : ""}`}
                 style={depth > 0 ? { paddingLeft: `${16 + depth * 24}px` } : undefined}
               >
                 <span className="thread-row-main">
-                  <span className="thread-row-id">#{t.projectThreadId}</span>
+                  <span className="thread-row-id">#{t.id.slice(0, 8)}</span>
                   <span className="thread-row-title">{t.title ?? "Untitled"}</span>
                   {(project.accessRole === "Owner" || project.accessRole === "Editor") && t.status === "open" && onCloseThread && onCommitThread && (
                     <>
@@ -140,8 +140,7 @@ export function ProjectPage({ project, fromThreadId, onCloseThread, onCommitThre
                         onClick={(event) => {
                           event.preventDefault();
                           event.stopPropagation();
-                          if (typeof t.projectThreadId !== "number") return;
-                          const threadProjectId = t.projectThreadId;
+                          const threadProjectId = t.id;
                           const threadId = t.id;
                           setThreadTransitionThreadId(threadId);
                           setThreadTransitionAction("close");
@@ -177,8 +176,7 @@ export function ProjectPage({ project, fromThreadId, onCloseThread, onCommitThre
                         onClick={(event) => {
                           event.preventDefault();
                           event.stopPropagation();
-                          if (typeof t.projectThreadId !== "number") return;
-                          const threadProjectId = t.projectThreadId;
+                          const threadProjectId = t.id;
                           const threadId = t.id;
                           setThreadTransitionThreadId(threadId);
                           setThreadTransitionAction("commit");
@@ -300,7 +298,7 @@ export function ProjectPage({ project, fromThreadId, onCloseThread, onCommitThre
                 disabled={isSubmittingClone || !cloneThreadTitle.trim()}
                 onClick={async () => {
                   const draft = cloneThreadDraft;
-                  if (!draft || typeof draft.projectThreadId !== "number") return;
+                  if (!draft) return;
                   const title = cloneThreadTitle.trim();
                   const description = cloneThreadDescription.trim();
                   if (!title) return;
@@ -312,7 +310,7 @@ export function ProjectPage({ project, fromThreadId, onCloseThread, onCommitThre
                     return next;
                   });
                   try {
-                    const result = await onCloneThread(draft.projectThreadId, {
+                    const result = await onCloneThread(draft.id, {
                       title,
                       description,
                     });
