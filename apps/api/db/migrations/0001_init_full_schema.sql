@@ -23,13 +23,13 @@ create table if not exists users (
 -- OPENSHIP ENUMS
 -- ============================================================
 
-create type node_kind as enum ('Root', 'Host', 'Container', 'Process', 'Library');
-create type edge_type as enum ('Runtime', 'Dataflow', 'Dependency');
-create type doc_kind as enum ('Document', 'Skill', 'Prompt');
-create type ref_type as enum ('Document', 'Skill', 'Prompt');
-create type provider as enum ('notion', 'google');
-create type doc_source_type as enum ('local', 'notion', 'google_doc');
-create type artifact_type as enum ('Summary', 'Code', 'Docs');
+create type if not exists node_kind as enum ('Root', 'Host', 'Container', 'Process', 'Library');
+create type if not exists edge_type as enum ('Runtime', 'Dataflow', 'Dependency');
+create type if not exists doc_kind as enum ('Document', 'Skill', 'Prompt');
+create type if not exists ref_type as enum ('Document', 'Skill', 'Prompt');
+create type if not exists provider as enum ('notion', 'google');
+create type if not exists doc_source_type as enum ('local', 'notion', 'google_doc');
+create type if not exists artifact_type as enum ('Summary', 'Code', 'Docs');
 
 -- ============================================================
 -- SYSTEMS
@@ -241,8 +241,8 @@ create index idx_artifact_files_hash on artifact_files (file_hash);
 -- PROJECTS
 -- ============================================================
 
-create type collaborator_role as enum ('Editor', 'Viewer');
-create type project_visibility as enum ('public', 'private');
+create type if not exists collaborator_role as enum ('Editor', 'Viewer');
+create type if not exists project_visibility as enum ('public', 'private');
 
 create table projects (
   id          text primary key,
@@ -292,10 +292,10 @@ create index idx_member_roles_role on project_member_roles (project_id, role_nam
 -- THREADS
 -- ============================================================
 
-create type action_type as enum ('Chat', 'Edit', 'Import', 'Plan', 'PlanResponse', 'Execute', 'ExecuteResponse', 'Update');
-create type message_role as enum ('User', 'Assistant', 'System');
-create type change_operation as enum ('Create', 'Update', 'Delete');
-create type staffx_event_type as enum (
+create type if not exists action_type as enum ('Chat', 'Edit', 'Import', 'Plan', 'PlanResponse', 'Execute', 'ExecuteResponse', 'Update');
+create type if not exists message_role as enum ('User', 'Assistant', 'System');
+create type if not exists change_operation as enum ('Create', 'Update', 'Delete');
+create type if not exists staffx_event_type as enum (
   'chat.session.finished',
   'assistant.run.started',
   'assistant.run.progress',
