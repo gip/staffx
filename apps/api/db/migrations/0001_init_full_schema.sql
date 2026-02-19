@@ -23,13 +23,65 @@ create table if not exists users (
 -- OPENSHIP ENUMS
 -- ============================================================
 
-create type if not exists node_kind as enum ('Root', 'Host', 'Container', 'Process', 'Library');
-create type if not exists edge_type as enum ('Runtime', 'Dataflow', 'Dependency');
-create type if not exists doc_kind as enum ('Document', 'Skill', 'Prompt');
-create type if not exists ref_type as enum ('Document', 'Skill', 'Prompt');
-create type if not exists provider as enum ('notion', 'google');
-create type if not exists doc_source_type as enum ('local', 'notion', 'google_doc');
-create type if not exists artifact_type as enum ('Summary', 'Code', 'Docs');
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_type t
+    join pg_namespace n on n.oid = t.typnamespace
+    where t.typname = 'node_kind' and n.nspname = current_schema()
+  ) then
+    create type node_kind as enum ('Root', 'Host', 'Container', 'Process', 'Library');
+  end if;
+  if not exists (
+    select 1
+    from pg_type t
+    join pg_namespace n on n.oid = t.typnamespace
+    where t.typname = 'edge_type' and n.nspname = current_schema()
+  ) then
+    create type edge_type as enum ('Runtime', 'Dataflow', 'Dependency');
+  end if;
+  if not exists (
+    select 1
+    from pg_type t
+    join pg_namespace n on n.oid = t.typnamespace
+    where t.typname = 'doc_kind' and n.nspname = current_schema()
+  ) then
+    create type doc_kind as enum ('Document', 'Skill', 'Prompt');
+  end if;
+  if not exists (
+    select 1
+    from pg_type t
+    join pg_namespace n on n.oid = t.typnamespace
+    where t.typname = 'ref_type' and n.nspname = current_schema()
+  ) then
+    create type ref_type as enum ('Document', 'Skill', 'Prompt');
+  end if;
+  if not exists (
+    select 1
+    from pg_type t
+    join pg_namespace n on n.oid = t.typnamespace
+    where t.typname = 'provider' and n.nspname = current_schema()
+  ) then
+    create type provider as enum ('notion', 'google');
+  end if;
+  if not exists (
+    select 1
+    from pg_type t
+    join pg_namespace n on n.oid = t.typnamespace
+    where t.typname = 'doc_source_type' and n.nspname = current_schema()
+  ) then
+    create type doc_source_type as enum ('local', 'notion', 'google_doc');
+  end if;
+  if not exists (
+    select 1
+    from pg_type t
+    join pg_namespace n on n.oid = t.typnamespace
+    where t.typname = 'artifact_type' and n.nspname = current_schema()
+  ) then
+    create type artifact_type as enum ('Summary', 'Code', 'Docs');
+  end if;
+end $$;
 
 -- ============================================================
 -- SYSTEMS
@@ -241,8 +293,25 @@ create index idx_artifact_files_hash on artifact_files (file_hash);
 -- PROJECTS
 -- ============================================================
 
-create type if not exists collaborator_role as enum ('Editor', 'Viewer');
-create type if not exists project_visibility as enum ('public', 'private');
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_type t
+    join pg_namespace n on n.oid = t.typnamespace
+    where t.typname = 'collaborator_role' and n.nspname = current_schema()
+  ) then
+    create type collaborator_role as enum ('Editor', 'Viewer');
+  end if;
+  if not exists (
+    select 1
+    from pg_type t
+    join pg_namespace n on n.oid = t.typnamespace
+    where t.typname = 'project_visibility' and n.nspname = current_schema()
+  ) then
+    create type project_visibility as enum ('public', 'private');
+  end if;
+end $$;
 
 create table projects (
   id          text primary key,
@@ -250,6 +319,7 @@ create table projects (
   description text,
   visibility  project_visibility not null default 'private',
   owner_id    uuid not null references users(id),
+  is_archived boolean not null default false,
   created_at  timestamptz not null default now(),
   updated_at  timestamptz not null default now()
 );
@@ -292,19 +362,59 @@ create index idx_member_roles_role on project_member_roles (project_id, role_nam
 -- THREADS
 -- ============================================================
 
-create type if not exists action_type as enum ('Chat', 'Edit', 'Import', 'Plan', 'PlanResponse', 'Execute', 'ExecuteResponse', 'Update');
-create type if not exists message_role as enum ('User', 'Assistant', 'System');
-create type if not exists change_operation as enum ('Create', 'Update', 'Delete');
-create type if not exists staffx_event_type as enum (
-  'chat.session.finished',
-  'assistant.run.started',
-  'assistant.run.progress',
-  'assistant.run.waiting_input',
-  'assistant.run.completed',
-  'assistant.run.failed',
-  'assistant.run.cancelled',
-  'thread.matrix.changed'
-);
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_type t
+    join pg_namespace n on n.oid = t.typnamespace
+    where t.typname = 'action_type' and n.nspname = current_schema()
+  ) then
+    create type action_type as enum (
+      'Chat',
+      'Edit',
+      'Import',
+      'Plan',
+      'PlanResponse',
+      'Execute',
+      'ExecuteResponse',
+      'Update'
+    );
+  end if;
+  if not exists (
+    select 1
+    from pg_type t
+    join pg_namespace n on n.oid = t.typnamespace
+    where t.typname = 'message_role' and n.nspname = current_schema()
+  ) then
+    create type message_role as enum ('User', 'Assistant', 'System');
+  end if;
+  if not exists (
+    select 1
+    from pg_type t
+    join pg_namespace n on n.oid = t.typnamespace
+    where t.typname = 'change_operation' and n.nspname = current_schema()
+  ) then
+    create type change_operation as enum ('Create', 'Update', 'Delete');
+  end if;
+  if not exists (
+    select 1
+    from pg_type t
+    join pg_namespace n on n.oid = t.typnamespace
+    where t.typname = 'staffx_event_type' and n.nspname = current_schema()
+  ) then
+    create type staffx_event_type as enum (
+      'chat.session.finished',
+      'assistant.run.started',
+      'assistant.run.progress',
+      'assistant.run.waiting_input',
+      'assistant.run.completed',
+      'assistant.run.failed',
+      'assistant.run.cancelled',
+      'thread.matrix.changed'
+    );
+  end if;
+end $$;
 
 create table threads (
   id               text primary key,
@@ -848,7 +958,7 @@ from actions a
 join threads t on t.id = a.thread_id
 order by a.thread_id, a.position;
 
-create view project_summary as
+create or replace view project_summary as
 select
   p.id,
   p.name,
@@ -861,5 +971,3 @@ select
   p.created_at,
   p.updated_at
 from projects p;
-alter table projects
-  add column is_archived boolean not null default false;

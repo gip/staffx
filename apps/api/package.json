@@ -8,7 +8,7 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "migrate": "node-pg-migrate up --config node-pg-migrate.config.cjs --migrations-dir db/migrations",
-    "migrate:status": "node-pg-migrate status --config node-pg-migrate.config.cjs --migrations-dir db/migrations",
+    "migrate:status": "node-pg-migrate up --dry-run --config node-pg-migrate.config.cjs --migrations-dir db/migrations",
     "migrate:down:last": "node-pg-migrate down 1 --config node-pg-migrate.config.cjs --migrations-dir db/migrations"
   },
   "dependencies": {

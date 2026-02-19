@@ -142,7 +142,7 @@ curl -N -H "Authorization: Bearer $TOKEN" \
 ## Migration policy
 
 - Single initial migration only:
-  - `apps/api/db/migrations/0001_init_full_schema.sql` + `apps/api/db/migrations/0001_init_full_schema.js`
+  - `apps/api/db/migrations/0001_init_full_schema.sql`
 - Bootstrap flow:
   1. Create empty DB
   2. Run schema migration

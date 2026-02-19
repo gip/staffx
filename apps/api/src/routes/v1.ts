@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 
-import { query } from "../db.js";
+import pool, { query } from "../db.js";
 import { generateOpenShipFileBundle } from "../agent-runner.js";
 import { verifyAuth, type AuthUser } from "../auth.js";
 import {
@@ -678,26 +678,43 @@ export async function v1Routes(app: FastifyInstance) {
       const rootNodeId = "s.root";
       const now = new Date();
 
-      await query(
-        `INSERT INTO projects (id, name, description, visibility, owner_id)
-         VALUES ($1, $2, $3, $4, $5)`,
-        [projectId, name, description, visibility, user.id],
-      );
-      await query(
-        `INSERT INTO systems (id, name, root_node_id, metadata, spec_version)
-         VALUES ($1, $2, $3, '{}'::jsonb, 'openship/v1')`,
-        [systemId, name, rootNodeId],
-      );
-      await query(
-        `INSERT INTO nodes (id, system_id, kind, name, parent_id, metadata)
-         VALUES ($1, $2, 'Root'::node_kind, $3, NULL, '{}'::jsonb)`,
-        [rootNodeId, systemId, name],
-      );
-      await query(
-        `INSERT INTO threads (id, title, description, project_id, created_by, seed_system_id, status)
-         VALUES ($1, 'Project Creation', $2, $3, $4, $5, 'open')`,
-        [threadId, description, projectId, user.id, systemId],
-      );
+      const client = await pool.connect();
+      let inTransaction = false;
+      try {
+        await client.query("BEGIN");
+        inTransaction = true;
+
+        await client.query(
+          `INSERT INTO projects (id, name, description, visibility, owner_id)
+           VALUES ($1, $2, $3, $4, $5)`,
+          [projectId, name, description, visibility, user.id],
+        );
+        await client.query(
+          `INSERT INTO systems (id, name, root_node_id, metadata, spec_version)
+           VALUES ($1, $2, $3, '{}'::jsonb, 'openship/v1')`,
+          [systemId, name, rootNodeId],
+        );
+        await client.query(
+          `INSERT INTO nodes (id, system_id, kind, name, parent_id, metadata)
+           VALUES ($1, $2, 'Root'::node_kind, $3, NULL, '{}'::jsonb)`,
+          [rootNodeId, systemId, name],
+        );
+        await client.query(
+          `INSERT INTO threads (id, title, description, project_id, created_by, seed_system_id, status)
+           VALUES ($1, 'Project Creation', $2, $3, $4, $5, 'open')`,
+          [threadId, description, projectId, user.id, systemId],
+        );
+
+        await client.query("COMMIT");
+        inTransaction = false;
+      } catch (err) {
+        if (inTransaction) {
+          await client.query("ROLLBACK").catch(() => {});
+        }
+        throw err;
+      } finally {
+        client.release();
+      }
 
       return {
         id: projectId,
@@ -777,9 +794,14 @@ export async function v1Routes(app: FastifyInstance) {
       const pageSize = parsePositiveInt(req.query.pageSize, 50, 1, 200);
       const offset = (page - 1) * pageSize;
 
-      const projectFilterClause = req.query.projectId ? "AND p.id = $3" : "";
-      const params: Array<unknown> = [user.id, pageSize + 1, offset];
-      if (req.query.projectId) params.push(req.query.projectId);
+      const params: Array<unknown> = [user.id];
+      const limitParam = params.length + 1;
+      const offsetParam = params.length + 2;
+      params.push(pageSize + 1, offset);
+
+      const projectFilterClause = req.query.projectId
+        ? `AND p.id = $${params.push(req.query.projectId)}`
+        : "";
 
       const result = await query<V1ThreadSummaryRow>(
         `SELECT
@@ -808,8 +830,8 @@ export async function v1Routes(app: FastifyInstance) {
            AND (p.visibility = 'public' OR p.owner_id = $1 OR pc.user_id IS NOT NULL)
            ${projectFilterClause}
          ORDER BY t.updated_at DESC
-         LIMIT $2
-         OFFSET $3`,
+         LIMIT $${limitParam}
+         OFFSET $${offsetParam}`,
         params,
       );
 
