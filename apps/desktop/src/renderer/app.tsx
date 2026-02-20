@@ -1723,19 +1723,6 @@ export function App() {
         logout: () => window.electronAPI.auth.logout(),
       }}
     >
-      <NavigateSync />
-      <Header />
-      <Routes>
-        <Route path="/" element={<HomeRoute projects={projects} setProjects={setProjects} />} />
-        <Route path="/:handle/:project" element={<ProjectRoute isAuthenticated={isAuthenticated} />} />
-        <Route path="/settings" element={<AccountSettingsRoute isAuthenticated={isAuthenticated} />} />
-        <Route path="/:handle/:project/settings" element={<SettingsRoute />} />
-        <Route path="/:handle" element={<ProfileRoute isAuthenticated={isAuthenticated} />} />
-        <Route
-          path="/:handle/:project/thread/:threadId"
-          element={<ThreadRoute isAuthenticated={isAuthenticated} />}
-        />
-      </Routes>
       <AppShell projects={projects} setProjects={setProjects} isAuthenticated={isAuthenticated} refreshProjects={refreshProjects} />
     </AuthContext.Provider>
   );
