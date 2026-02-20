@@ -120,12 +120,49 @@ export type AssistantRunMode = "direct" | "plan";
 
 export type AssistantExecutor = "backend" | "desktop";
 
+type AssistantModel = "claude-opus-4-6" | "claude-sonnet-4-6" | "codex-5.3";
+
+interface AssistantModelOption {
+  key: AssistantModel;
+  label: string;
+}
+
+const ASSISTANT_MODELS: AssistantModelOption[] = [
+  { key: "claude-opus-4-6", label: "Opus 4.6" },
+  { key: "claude-sonnet-4-6", label: "Sonnet 4.6" },
+  { key: "codex-5.3", label: "Codex 5.3" },
+];
+
+const DEFAULT_ASSISTANT_MODEL: AssistantModel = "claude-opus-4-6";
+const MODEL_STORAGE_KEY_PREFIX = "staffx-thread-agent-model";
+const MODEL_STORAGE_KEY_GLOBAL = "staffx-thread-agent-model-default";
+
+function resolveAssistantModel(raw: string | null | undefined): AssistantModel {
+  const normalized = raw?.trim() ?? "";
+  return ASSISTANT_MODELS.some((model) => model.key === normalized) ? (normalized as AssistantModel) : DEFAULT_ASSISTANT_MODEL;
+}
+
+function threadModelStorageKey(threadId: string): string {
+  return `${MODEL_STORAGE_KEY_PREFIX}:${threadId}`;
+}
+
+function readStoredAssistantModel(threadId: string): AssistantModel {
+  try {
+    const threadScoped = localStorage.getItem(threadModelStorageKey(threadId));
+    const fallback = localStorage.getItem(MODEL_STORAGE_KEY_GLOBAL);
+    return resolveAssistantModel(threadScoped || fallback);
+  } catch {
+    return DEFAULT_ASSISTANT_MODEL;
+  }
+}
+
 export interface AssistantRunRequest {
   chatMessageId: string | null;
   mode: AssistantRunMode;
   planActionId: string | null;
   executor?: AssistantExecutor;
   wait?: boolean;
+  model?: string;
 }
 
 export interface AssistantRunResponse {
@@ -324,7 +361,6 @@ interface ThreadPageProps {
   disableChatInputs?: boolean;
 }
 
-const AGENT_OPTIONS = ["Opus 4.6"] as const;
 const SYSTEM_PROMPT_CONCERN = "__system_prompt__";
 const DOC_TYPES: DocKind[] = ["Document", "Skill"];
 const SOURCE_TYPE_TO_PROVIDER: Record<Exclude<DocSourceType, "local">, IntegrationProvider> = {
@@ -1265,10 +1301,11 @@ export function ThreadPage({
   const [isSendingChat, setIsSendingChat] = useState(false);
   const [assistantError, setAssistantError] = useState("");
   const [assistantSummaryStatus, setAssistantSummaryStatus] = useState<AssistantRunSummaryStatus | null>(null);
-  const [selectedAgentModel, setSelectedAgentModel] = useState<string>(AGENT_OPTIONS[0]);
+  const [selectedAgentModel, setSelectedAgentModel] = useState<AssistantModel>(() =>
+    readStoredAssistantModel(detail.thread.id),
+  );
   const [isRunningAssistant, setIsRunningAssistant] = useState(false);
   const isChatInputsDisabled = disableChatInputs;
-  const isAssistantRunEnabled = onRunAssistant && !assistantRunDisabledMessage;
   const [isClosingThread, setIsClosingThread] = useState(false);
   const [isCommittingThread, setIsCommittingThread] = useState(false);
   const [isCloningThread, setIsCloningThread] = useState(false);
@@ -1340,6 +1377,8 @@ export function ThreadPage({
   const isThreadOpen = detail.thread.status === "open";
   const effectiveCanEdit = detail.permissions.canEdit && isThreadOpen;
   const canCloneThread = isFinalizedThreadStatus(detail.thread.status) && detail.permissions.canEdit && !!onCloneThread;
+  const isAssistantRunEnabled = onRunAssistant && !assistantRunDisabledMessage;
+  const isAssistantModelSelectEnabled = isAssistantRunEnabled && !isChatInputsDisabled && !isRunningAssistant && effectiveCanEdit;
 
   type FullscreenTab = "topology" | "matrix" | "chat";
   const titleInputRef = useRef<HTMLInputElement>(null);
@@ -1382,6 +1421,20 @@ export function ThreadPage({
     setCloneTitle(detail.thread.title);
     setCloneDescription(detail.thread.description ?? "");
   }, [detail.thread.title, detail.thread.description]);
+
+  useEffect(() => {
+    setSelectedAgentModel(readStoredAssistantModel(detail.thread.id));
+  }, [detail.thread.id]);
+
+  useEffect(() => {
+    if (!isAssistantModelSelectEnabled) return;
+    try {
+      localStorage.setItem(threadModelStorageKey(detail.thread.id), selectedAgentModel);
+      localStorage.setItem(MODEL_STORAGE_KEY_GLOBAL, selectedAgentModel);
+    } catch {
+      // Ignore storage failures.
+    }
+  }, [detail.thread.id, selectedAgentModel, isAssistantModelSelectEnabled]);
 
   const toggleConcern = useCallback((name: string) => {
     setVisibleConcerns((prev) => {
@@ -2358,6 +2411,7 @@ export function ThreadPage({
         chatMessageId: userMessageId,
         mode: "direct",
         planActionId: null,
+        model: selectedAgentModel,
       });
 
       const runError = getErrorMessage(runResult);
@@ -2395,6 +2449,7 @@ export function ThreadPage({
         chatMessageId: null,
         mode,
         planActionId: mode === "direct" ? (planActionId ?? null) : null,
+        model: selectedAgentModel,
       });
 
       const error = getErrorMessage(result);
@@ -3224,7 +3279,7 @@ export function ThreadPage({
 
         const getChatSenderName = (role: "User" | "Assistant" | "System") => {
           if (role === "User") return detail.thread.createdByHandle;
-          if (role === "Assistant") return selectedAgentModel;
+          if (role === "Assistant") return role;
           return role;
         };
 
@@ -3266,12 +3321,12 @@ export function ThreadPage({
 
             {effectiveCanEdit ? (
               <div className="thread-chat-form">
-                <div className="thread-chat-input-row">
-                  <textarea
-                    className="field-input thread-chat-input"
-                    rows={4}
-                    placeholder="Ask StaffX anything"
-                    value={chatInput}
+                  <div className="thread-chat-input-row">
+                    <textarea
+                      className="field-input thread-chat-input"
+                      rows={4}
+                      placeholder="Ask StaffX anything"
+                      value={chatInput}
                     onChange={(event) => setChatInput(event.target.value)}
                     disabled={isSendingChat || isChatInputsDisabled}
                   />
@@ -3282,10 +3337,28 @@ export function ThreadPage({
                     disabled={isSendingChat || !chatInput.trim() || isChatInputsDisabled}
                     aria-label="Send message"
                   >
-                    <Send size={14} />
-                  </button>
+                      <Send size={14} />
+                    </button>
+                  </div>
+                  <div className="thread-chat-model-row">
+                    <label htmlFor={`assistant-model-select-${detail.thread.id}`} className="sr-only">
+                      Assistant model
+                    </label>
+                    <select
+                      id={`assistant-model-select-${detail.thread.id}`}
+                      className="thread-chat-agent-select"
+                      value={selectedAgentModel}
+                      onChange={(event) => setSelectedAgentModel(event.currentTarget.value as AssistantModel)}
+                      disabled={!isAssistantModelSelectEnabled}
+                    >
+                      {ASSISTANT_MODELS.map((model) => (
+                        <option key={model.key} value={model.key}>
+                          {model.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
                 </div>
-              </div>
             ) : (
               <p className="thread-chat-disabled-copy">Only owners and editors can use the chat.</p>
             )}

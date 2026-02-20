@@ -316,6 +316,7 @@ interface AssistantRunPlanResponse {
   messages: ThreadChatMessage[];
   systemId: string;
   threadState?: ThreadDetailPayload;
+  model?: string;
 }
 
 interface AssistantRunQueuedResponse {
@@ -323,6 +324,7 @@ interface AssistantRunQueuedResponse {
   status: "queued" | "running";
   message: "Run queued for desktop execution";
   systemId: string;
+  model?: string;
 }
 
 interface AssistantRunRequestBody {
@@ -330,6 +332,7 @@ interface AssistantRunRequestBody {
   mode: "direct" | "plan";
   planActionId: string | null;
   executor: AssistantExecutor;
+  model: string;
   wait: boolean;
 }
 
@@ -363,6 +366,7 @@ interface AssistantRunRow {
   thread_id: string;
   project_id: string;
   requested_by_user_id: string | null;
+  model: string;
   mode: "direct" | "plan";
   plan_action_id: string | null;
   chat_message_id: string | null;
@@ -601,6 +605,10 @@ interface ParsedDocumentText {
   body: string;
 }
 
+const ALLOWED_ASSISTANT_MODELS = ["claude-opus-4-6", "claude-sonnet-4-6", "codex-5.3"] as const;
+type AssistantModel = (typeof ALLOWED_ASSISTANT_MODELS)[number];
+const DEFAULT_ASSISTANT_MODEL: AssistantModel = "claude-opus-4-6";
+
 interface TopologyLayoutBody {
   positions: Array<{
     nodeId: string;
@@ -624,6 +632,14 @@ function parseThreadId(threadId: string): number | null {
   return parsed;
 }
 
+function resolveAssistantModel(raw: unknown): AssistantModel | null {
+  if (raw === undefined || raw === null) return null;
+  if (typeof raw !== "string") return null;
+  const normalized = raw.trim();
+  if (normalized.length === 0) return null;
+  return ALLOWED_ASSISTANT_MODELS.includes(normalized as AssistantModel) ? (normalized as AssistantModel) : null;
+}
+
 function parseAssistantRunMode(value: unknown): "direct" | "plan" | null {
   if (value !== "direct" && value !== "plan") return null;
   return value;
@@ -642,6 +658,7 @@ function parseAssistantRunRequest(body: unknown): AssistantRunRequestBody | null
     mode: unknown;
     planActionId: unknown;
     executor: unknown;
+    model: unknown;
     wait: unknown;
   }>;
   const mode = parseAssistantRunMode(payload.mode);
@@ -653,8 +670,17 @@ function parseAssistantRunRequest(body: unknown): AssistantRunRequestBody | null
   if (payload.wait !== undefined && payload.wait !== true && payload.wait !== false) return null;
   const wait = payload.wait === undefined ? true : payload.wait;
   const executor: AssistantExecutor = executorRaw === "desktop" ? "desktop" : "backend";
+  const rawModel = payload.model;
+  let model: AssistantModel;
+  if (rawModel === undefined) {
+    model = DEFAULT_ASSISTANT_MODEL;
+  } else {
+    const parsedModel = resolveAssistantModel(rawModel);
+    if (parsedModel === null) return null;
+    model = parsedModel;
+  }
 
-  return { mode, chatMessageId, planActionId, executor, wait };
+  return { mode, chatMessageId, planActionId, executor, model, wait };
 }
 
 async function getAssistantRunTriggerMessage(threadId: string, chatMessageId: string | null): Promise<AssistantRunMessageLookupRow | null> {
@@ -862,6 +888,7 @@ function runExecutionError(error: unknown): string {
 function mapAgentRunRowToResponse(row: {
   runId: string;
   systemId: string;
+  model?: string;
   runResultStatus?: "success" | "failed" | null;
   runResultMessages?: string[] | null;
   runResultChanges?: AssistantRunPlanChange[] | null;
@@ -875,6 +902,7 @@ function mapAgentRunRowToResponse(row: {
         runId: row.runId,
         status: row.threadStatus,
         message: "Run queued for desktop execution",
+        model: row.model,
         systemId: row.systemId,
       };
     }
@@ -889,6 +917,7 @@ function mapAgentRunRowToResponse(row: {
     : (fallbackMessages.length > 0 ? fallbackMessages : ["No execution output."]);
   const changes = row.runResultChanges ?? [];
   return {
+    model: row.model,
     planActionId: null,
     planResponseActionId: null,
     executeActionId: null,
@@ -905,7 +934,7 @@ function mapAgentRunRowToResponse(row: {
 
 async function getAgentRunByThreadId(threadId: string, runId: string): Promise<AssistantRunRow | null> {
   const result = await query<AssistantRunRow>(
-    `SELECT id, thread_id, project_id, requested_by_user_id, mode, plan_action_id, chat_message_id,
+    `SELECT id, thread_id, project_id, requested_by_user_id, model, mode, plan_action_id, chat_message_id,
             prompt, system_prompt, status, runner_id, run_result_status,
             run_result_messages, run_result_changes, run_error
        FROM agent_runs
@@ -3278,6 +3307,7 @@ export async function threadRoutes(app: FastifyInstance) {
           planActionId: null,
           chatMessageId: parsedBody.chatMessageId,
           prompt: runPrompt,
+          model: parsedBody.model,
           systemPrompt: resolvedSystemPrompt,
         }, AGENT_RUN_SLOT_WAIT_MS, AGENT_RUN_ENQUEUE_POLL_MS);
 
@@ -3306,6 +3336,7 @@ export async function threadRoutes(app: FastifyInstance) {
         return mapAgentRunRowToResponse({
           runId: runRow.id,
           systemId,
+          model: runRow.model,
           runResultStatus: runRow.run_result_status,
           runResultMessages: runRow.run_result_messages,
           runResultChanges: runRow.run_result_changes,
@@ -3398,6 +3429,7 @@ export async function threadRoutes(app: FastifyInstance) {
             planActionId,
             chatMessageId: parsedBody.chatMessageId,
             prompt: runPrompt,
+            model: parsedBody.model,
             systemPrompt: resolvedSystemPrompt,
           }, AGENT_RUN_SLOT_WAIT_MS, AGENT_RUN_ENQUEUE_POLL_MS);
 
@@ -3696,6 +3728,7 @@ export async function threadRoutes(app: FastifyInstance) {
         status: claimed.status,
         prompt: claimed.prompt,
         systemPrompt: claimed.system_prompt,
+        model: claimed.model,
         systemId,
       };
     },
@@ -3826,6 +3859,7 @@ export async function threadRoutes(app: FastifyInstance) {
       return mapAgentRunRowToResponse({
         runId: updated.id,
         systemId,
+        model: updated.model,
         runResultStatus: updated.run_result_status,
         runResultMessages: updated.run_result_messages,
         runResultChanges: updated.run_result_changes,
@@ -3873,6 +3907,7 @@ export async function threadRoutes(app: FastifyInstance) {
       return mapAgentRunRowToResponse({
         runId: run.id,
         systemId,
+        model: run.model,
         runResultStatus: run.run_result_status,
         runResultMessages: run.run_result_messages,
         runResultChanges: run.run_result_changes,

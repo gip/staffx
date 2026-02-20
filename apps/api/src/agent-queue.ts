@@ -11,6 +11,7 @@ export interface AgentRunRow {
   thread_id: string;
   project_id: string;
   requested_by_user_id: string | null;
+  model: string;
   mode: AgentRunMode;
   plan_action_id: string | null;
   chat_message_id: string | null;
@@ -33,6 +34,7 @@ export interface EnqueueAgentRunParams {
   projectId: string;
   requestedByUserId: string | null;
   mode: AgentRunMode;
+  model: string;
   planActionId: string | null;
   chatMessageId: string | null;
   prompt: string;
@@ -56,6 +58,7 @@ export async function enqueueAgentRun(params: EnqueueAgentRunParams): Promise<st
       thread_id,
       project_id,
       requested_by_user_id,
+      model,
       mode,
       plan_action_id,
       chat_message_id,
@@ -68,6 +71,7 @@ export async function enqueueAgentRun(params: EnqueueAgentRunParams): Promise<st
       params.threadId,
       params.projectId,
       params.requestedByUserId,
+      params.model,
       params.mode,
       params.planActionId,
       params.chatMessageId,
@@ -144,6 +148,7 @@ export async function claimNextAgentRun(runnerId: string): Promise<AgentRunRow |
         ar.thread_id,
         ar.project_id,
         ar.requested_by_user_id,
+        ar.model,
         ar.mode,
         ar.plan_action_id,
         ar.chat_message_id,
@@ -197,6 +202,7 @@ export async function claimAgentRunById(runId: string, runnerId: string, threadI
         ar.thread_id,
         ar.project_id,
         ar.requested_by_user_id,
+        ar.model,
         ar.mode,
         ar.plan_action_id,
         ar.chat_message_id,
@@ -233,6 +239,7 @@ export async function getAgentRunById(runId: string): Promise<AgentRunRow | null
       thread_id,
       project_id,
       requested_by_user_id,
+      model,
       mode,
       plan_action_id,
       chat_message_id,

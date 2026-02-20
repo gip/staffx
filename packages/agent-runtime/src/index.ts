@@ -7,7 +7,12 @@ import { type Query, type SDKMessage, query } from "@anthropic-ai/claude-agent-s
 type AgentRunStatus = "success" | "failed";
 
 const DEFAULT_TOOLS = ["Read", "Grep", "Glob", "Bash", "Edit", "Write"] as const;
-const DEFAULT_CLAUDE_MODEL = "claude-opus-4-6";
+const DEFAULT_MODEL = "claude-opus-4-6";
+const ALLOWED_ASSISTANT_MODELS = ["claude-opus-4-6", "claude-sonnet-4-6", "codex-5.3"] as const;
+const CODEX_MODEL = "codex-5.3";
+type AssistantModel = (typeof ALLOWED_ASSISTANT_MODELS)[number];
+
+export type { AssistantModel };
 
 export interface AgentRunPlanChange {
   target_table: string;
@@ -42,13 +47,157 @@ export interface ResolveThreadWorkspacePathInput {
   baseDir?: string;
 }
 
-export interface RunClaudeAgentInput {
+function normalizeAssistantModel(rawModel: string | undefined): AssistantModel {
+  return rawModel === "claude-sonnet-4-6" || rawModel === "codex-5.3" ? rawModel : DEFAULT_MODEL;
+}
+
+interface BaseRunAgentInput {
   prompt: string;
   cwd: string;
   allowedTools?: string[];
   systemPrompt?: string;
   model?: string;
   onMessage?: (message: SDKMessage) => void;
+}
+
+export interface RunClaudeAgentInput extends BaseRunAgentInput {
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === "object" && value !== null ? value as Record<string, unknown> : null;
+}
+
+function isFunction(value: unknown): value is (...args: unknown[]) => unknown {
+  return typeof value === "function";
+}
+
+function isAsyncIterable<T>(value: unknown): value is AsyncIterable<T> {
+  return typeof value === "object" && value !== null && typeof (value as { [Symbol.asyncIterator]?: unknown })[Symbol.asyncIterator] === "function";
+}
+
+function normalizeCodexError(error: unknown): string {
+  if (error instanceof Error) return error.message || "Unknown codex execution error.";
+  if (typeof error === "string") return error;
+  return "Unknown codex execution error.";
+}
+
+function buildCodexPayload(input: BaseRunAgentInput): Record<string, unknown> {
+  return {
+    prompt: input.prompt,
+    model: CODEX_MODEL,
+    cwd: input.cwd,
+    systemPrompt: input.systemPrompt,
+    allowedTools: input.allowedTools,
+  };
+}
+
+async function runCodexAgent(input: BaseRunAgentInput): Promise<AgentRunResult> {
+  const messages: string[] = [];
+
+  try {
+    const codex = await import("@openai/codex-sdk") as Record<string, unknown>;
+    const payload = buildCodexPayload(input);
+    const invocationTargets: Array<(payload: Record<string, unknown>) => Promise<unknown>> = [];
+
+    const registerFunction = (value: unknown): void => {
+      if (!isFunction(value)) return;
+      const fn = value as (...args: unknown[]) => unknown;
+      invocationTargets.push(async (nextPayload) => fn(nextPayload));
+    };
+
+    registerFunction((codex as Record<string, unknown>).run);
+    registerFunction((codex as Record<string, unknown>).execute);
+    registerFunction((codex as Record<string, unknown>).chat);
+    registerFunction((codex as Record<string, unknown>).generate);
+
+    const defaultExport = (codex as Record<string, unknown>).default;
+    registerFunction(defaultExport);
+
+    const constructors = [
+      (codex as Record<string, unknown>).CodexAgent,
+      (codex as Record<string, unknown>).Codex,
+      (codex as Record<string, unknown>).Client,
+      (codex as Record<string, unknown>).SDK,
+    ];
+
+    for (const constructor of constructors) {
+      if (!isFunction(constructor)) continue;
+      invocationTargets.push(async (nextPayload) => {
+        const Constructor = constructor as unknown as { new (options: Record<string, unknown>): unknown };
+        const instance = new Constructor(nextPayload);
+        const runMethod = asRecord(instance)?.run;
+        const executeMethod = asRecord(instance)?.execute;
+        if (isFunction(runMethod)) return runMethod.call(instance, nextPayload);
+        if (isFunction(executeMethod)) return executeMethod.call(instance, nextPayload);
+        throw new Error("No executable method found on codex sdk instance");
+      });
+    }
+
+    invocationTargets.push(() => {
+      throw new Error("Unable to resolve a codex invocation path");
+    });
+
+    let lastError: string | null = null;
+    let result: unknown = null;
+
+    for (const invoke of invocationTargets) {
+      try {
+        const output = await invoke(payload);
+        result = output;
+        if (isAsyncIterable<unknown>(output)) {
+          for await (const message of output) {
+            if (input.onMessage) input.onMessage(message as SDKMessage);
+            const summary = codexMessageText(message);
+            if (summary) messages.push(summary);
+          }
+          break;
+        }
+
+        const fallbackSummary = codexMessageText(output);
+        if (fallbackSummary) messages.push(fallbackSummary);
+        if (input.onMessage) input.onMessage(output as SDKMessage);
+        break;
+      } catch (error: unknown) {
+        lastError = normalizeCodexError(error);
+      }
+    }
+
+    if (result === null) {
+      return {
+        status: "failed",
+        messages: [lastError ?? "No codex execution path matched."],
+        changes: [],
+        error: lastError ?? "No codex execution path matched.",
+      };
+    }
+
+    return {
+      status: "success",
+      messages: messages.length > 0 ? messages : ["Execution completed."],
+      changes: [],
+    };
+  } catch (error: unknown) {
+    return {
+      status: "failed",
+      messages: ["Execution failed."],
+      changes: [],
+      error: normalizeCodexError(error),
+    };
+  }
+}
+
+export interface RunAgentInput extends BaseRunAgentInput {
+}
+
+export async function runAgent(input: RunAgentInput): Promise<AgentRunResult> {
+  const model = normalizeAssistantModel(input.model);
+  if (model === CODEX_MODEL) {
+    return runCodexAgent(input);
+  }
+  return runClaudeAgent({
+    ...input,
+    model,
+  });
 }
 
 export function resolveThreadWorkspacePath(input: ResolveThreadWorkspacePathInput): string {
@@ -94,6 +243,35 @@ function extractMessageText(value: unknown, depth = 0): string[] {
   }
 
   return [];
+}
+
+function parseCodexText(value: unknown, depth = 0): string[] {
+  if (depth > 8 || value === null || value === undefined) return [];
+  if (typeof value === "string") return [value];
+  if (Array.isArray(value)) return value.flatMap((entry) => parseCodexText(entry, depth + 1));
+  if (typeof value === "object") {
+    const typed = value as Record<string, unknown>;
+    const source = [
+      typed.text,
+      typed.content,
+      typed.message,
+      typed.response,
+    ];
+    for (const item of source) {
+      const parsed = parseCodexText(item, depth + 1);
+      if (parsed.length > 0) {
+        return parsed;
+      }
+    }
+  }
+  return [];
+}
+
+function codexMessageText(message: unknown): string | null {
+  if (message === null || message === undefined) return null;
+  const values = parseCodexText(message);
+  const joined = values.map((entry) => entry.trim()).filter((entry) => entry.length > 0);
+  return joined.length > 0 ? joined.join("\n") : null;
 }
 
 function extractMessageSummary(message: SDKMessage): string | null {
@@ -295,6 +473,7 @@ export function summarizeOpenShipBundleChanges(changes: AgentRunPlanChange[]): s
 }
 
 export async function runClaudeAgent(input: RunClaudeAgentInput): Promise<AgentRunResult> {
+  const model = normalizeAssistantModel(input.model);
   const cwd = input.cwd;
   await mkdir(cwd, { recursive: true });
 
@@ -307,7 +486,7 @@ export async function runClaudeAgent(input: RunClaudeAgentInput): Promise<AgentR
       permissionMode: "bypassPermissions",
       allowDangerouslySkipPermissions: true,
       allowedTools,
-      model: DEFAULT_CLAUDE_MODEL,
+      model,
       cwd,
       ...(input.systemPrompt ? { systemPrompt: input.systemPrompt } : {}),
     },

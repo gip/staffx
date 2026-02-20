@@ -205,6 +205,7 @@ interface V1ProjectThreadDocumentRow {
 interface V1AgentRunRow {
   id: string;
   thread_id: string;
+  model: string;
   status: AssistantRunStatus;
   mode: AssistantMode;
   prompt: string;
@@ -226,9 +227,22 @@ interface V1ChatMessageRequest {
 interface V1RunStartBody {
   prompt?: string;
   chatMessageId?: string;
+  model?: string;
   wait?: boolean;
   status?: string;
   sourceThreadId?: string;
+}
+
+const ALLOWED_ASSISTANT_MODELS = ["claude-opus-4-6", "claude-sonnet-4-6", "codex-5.3"] as const;
+const DEFAULT_ASSISTANT_MODEL: "claude-opus-4-6" | "claude-sonnet-4-6" | "codex-5.3" = "claude-opus-4-6";
+type AssistantModel = (typeof ALLOWED_ASSISTANT_MODELS)[number];
+
+function resolveAssistantModel(raw: unknown): AssistantModel | null {
+  if (raw === undefined || raw === null) return null;
+  if (typeof raw !== "string") return null;
+  const normalized = raw.trim();
+  if (normalized.length === 0) return null;
+  return ALLOWED_ASSISTANT_MODELS.includes(normalized as AssistantModel) ? (normalized as AssistantModel) : null;
 }
 
 type V1ThreadStatus = "open" | "closed" | "committed";
@@ -635,6 +649,7 @@ async function collectOpenShipBundleFiles(bundleDir: string): Promise<V1OpenShip
 function mapAssistantRunRow(run: V1AgentRunRow): {
   runId: string;
   threadId: string;
+  model?: string;
   status: AssistantRunStatus;
   mode: AssistantMode;
   prompt: string;
@@ -650,6 +665,7 @@ function mapAssistantRunRow(run: V1AgentRunRow): {
   return {
     runId: run.id,
     threadId: run.thread_id,
+    model: run.model,
     status: run.status,
     mode: run.mode,
     prompt: run.prompt,
@@ -1618,6 +1634,18 @@ export async function v1Routes(app: FastifyInstance) {
       const mode = req.params.assistantType;
       const chatMessageId = req.body?.chatMessageId?.trim() || null;
       const prompt = req.body?.prompt?.trim();
+      const rawModel = req.body?.model;
+      let resolvedModel: AssistantModel;
+      if (rawModel === undefined) {
+        resolvedModel = DEFAULT_ASSISTANT_MODEL;
+      } else {
+        const model = resolveAssistantModel(rawModel);
+        if (model === null) {
+          return writeProblem(reply, 400, "Invalid model", "model must be one of claude-opus-4-6, claude-sonnet-4-6, or codex-5.3");
+        }
+        resolvedModel = model;
+      }
+
 
       const thread = await resolveThreadAccessByRequestParam(threadId, user);
       if (!thread) {
@@ -1648,6 +1676,7 @@ export async function v1Routes(app: FastifyInstance) {
         planActionId: null,
         chatMessageId,
         prompt: prompt ?? "Run this request.",
+        model: resolvedModel,
       });
 
       await publishEvent({
@@ -1851,7 +1880,7 @@ export async function v1Routes(app: FastifyInstance) {
             SET status = 'cancelled', run_result_status = 'failed', run_error = COALESCE($2, run_error),
                 completed_at = NOW(), updated_at = NOW()
           WHERE id = $1 AND status IN ('queued', 'running')
-          RETURNING id, thread_id, status, mode, prompt, system_prompt, run_result_status,
+          RETURNING id, thread_id, model, status, mode, prompt, system_prompt, run_result_status,
                     run_result_messages, run_result_changes, run_error, created_at, started_at, completed_at`,
         [runId, "Cancelled by user"],
       );

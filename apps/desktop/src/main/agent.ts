@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import {
   diffOpenShipSnapshots,
-  runClaudeAgent,
+  runAgent,
   snapshotOpenShipBundle,
   type SDKMessage,
 } from "@staffx/agent-runtime";
@@ -25,6 +25,7 @@ interface AssistantRunClaimResponse {
   runId: string;
   status: "queued" | "running" | "success" | "failed";
   systemId: string;
+  model?: string;
   prompt?: string;
   systemPrompt?: string | null;
 }
@@ -454,16 +455,17 @@ export async function startAssistantRunLocal(payload: {
     }
   };
 
-  console.info("[desktop-agent] invoking Claude agent", {
+  console.info("[desktop-agent] invoking assistant runtime", {
     runId: payload.runId,
     workspace,
     bundleDir,
     systemPrompt: claimPayload.systemPrompt ?? null,
   });
 
-  const runResult = await runClaudeAgent({
+  const runResult = await runAgent({
     prompt: claimPayload.prompt ?? "Run this request.",
     cwd: workspace,
+    model: claimPayload.model,
     systemPrompt: claimPayload.systemPrompt ?? undefined,
     allowedTools: ["Read", "Grep", "Glob", "Bash", "Edit", "Write"],
     onMessage: logTurn,
