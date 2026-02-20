@@ -338,7 +338,7 @@ export async function projectRoutes(app: FastifyInstance) {
                   FROM threads t
                   WHERE t.project_id = p.id
                   ORDER BY t.updated_at DESC
-                  LIMIT 2
+                  LIMIT 10
                 ) t),
                '[]'::jsonb
              ) AS threads
@@ -372,7 +372,7 @@ export async function projectRoutes(app: FastifyInstance) {
                   FROM threads t
                   WHERE t.project_id = p.id
                   ORDER BY t.updated_at DESC
-                  LIMIT 2
+                  LIMIT 10
                 ) t),
                '[]'::jsonb
              ) AS threads

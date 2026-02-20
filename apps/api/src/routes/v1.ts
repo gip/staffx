@@ -42,6 +42,7 @@ interface V1ProjectAccessRow {
 
 interface V1ThreadSummaryRow {
   id: string;
+  project_thread_id: number | null;
   title: string | null;
   description: string | null;
   source_thread_id: string | null;
@@ -66,6 +67,9 @@ interface V1ThreadMatrixNodeCell {
     sourceType: string;
     sourceUrl: string | null;
     sourceExternalId: string | null;
+    sourceMetadata: Record<string, unknown> | null;
+    sourceConnectedUserId: string | null;
+    refType: string;
   }>;
   artifacts: Array<{
     path: string;
@@ -151,6 +155,18 @@ interface V1ProjectListRow {
   owner_handle: string;
   created_at: Date;
   thread_count: string;
+}
+
+interface V1ProjectThreadsListRow {
+  project_id: string;
+  id: string;
+  project_thread_id: number | null;
+  title: string | null;
+  description: string | null;
+  source_thread_id: string | null;
+  status: V1ThreadStatus;
+  created_at: Date;
+  updated_at: Date;
 }
 
 type AssistantMode = "direct" | "plan";
@@ -312,6 +328,14 @@ function normalizeToplologyPositions(body: V1MatrixPatchBody): Array<{ nodeId: s
     .map((entry) => ({ nodeId: entry.nodeId.trim(), x: entry.x, y: entry.y }));
 }
 
+function parseProjectThreadId(raw: string): number | null {
+  const trimmed = raw.trim();
+  if (!/^\d+$/.test(trimmed)) return null;
+  const parsed = Number(trimmed);
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) return null;
+  return parsed;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
@@ -416,6 +440,71 @@ async function resolveThreadAccess(threadId: string, user: AuthUser): Promise<V1
   return { ...row, access_role: accessRole };
 }
 
+async function resolveThreadAccessByProjectThreadId(
+  projectThreadId: number,
+  user: AuthUser,
+): Promise<V1ThreadRow | null> {
+  const result = await query<V1ThreadRow>(
+    `SELECT
+       t.id,
+       t.project_id,
+       t.title,
+       t.description,
+       t.status,
+       t.created_at,
+       t.updated_at,
+       t.source_thread_id,
+       COALESCE(NULLIF(pc.role::text, ''),
+         CASE
+           WHEN p.owner_id = $2 THEN 'Owner'
+           WHEN p.visibility = 'public' THEN 'Viewer'
+           ELSE NULL
+         END
+       )::text AS access_role
+     FROM threads t
+     JOIN projects p ON p.id = t.project_id
+     JOIN users owner_u ON owner_u.id = p.owner_id
+     LEFT JOIN project_collaborators pc
+       ON pc.project_id = p.id
+      AND pc.user_id = $2
+     WHERE t.project_thread_id = $1
+       AND p.is_archived = false
+     LIMIT 1`,
+    [projectThreadId, user.id],
+  );
+
+  if (result.rowCount === 0) return null;
+
+  const row = result.rows[0];
+  const accessRole = row.access_role as AccessRole | null;
+  if (!accessRole) return null;
+
+  return { ...row, access_role: accessRole };
+}
+
+type V1ThreadRouteId = { kind: "uuid"; id: string } | { kind: "project"; projectThreadId: number };
+
+function parseV1ThreadRouteId(raw: string): V1ThreadRouteId | null {
+  const projectThreadId = parseProjectThreadId(raw);
+  if (projectThreadId != null) return { kind: "project", projectThreadId };
+  if (isUuid(raw)) return { kind: "uuid", id: raw };
+  return null;
+}
+
+async function resolveThreadAccessByRequestParam(
+  rawThreadId: string,
+  user: AuthUser,
+): Promise<V1ThreadRow | null> {
+  const parsed = parseV1ThreadRouteId(rawThreadId);
+  if (!parsed) return null;
+
+  if (parsed.kind === "uuid") {
+    return resolveThreadAccess(parsed.id, user);
+  }
+  return resolveThreadAccessByProjectThreadId(parsed.projectThreadId, user);
+}
+
+
 function buildPaginationFromQuery(rawPage: unknown, rawPageSize: unknown): V1ListCursor {
   const page = parsePositiveInt(rawPage, 1, 1, Number.MAX_SAFE_INTEGER);
   const pageSize = parsePositiveInt(rawPageSize, 50, 1, 200);
@@ -441,12 +530,17 @@ async function loadThreadMatrix(systemId: string): Promise<V1ThreadMatrixNodeCel
     source_type: string;
     source_url: string | null;
     source_external_id: string | null;
+    source_metadata: Record<string, unknown> | null;
+    source_connected_user_id: string | null;
+    ref_type: string;
   }>(
     `SELECT mr.node_id, mr.concern, d.hash, d.title, d.kind::text, d.language,
-            d.source_type::text AS source_type, d.source_url, d.source_external_id
+            d.source_type::text AS source_type, d.source_url, d.source_external_id,
+            d.source_metadata, d.source_connected_user_id, mr.ref_type::text AS ref_type
        FROM matrix_refs mr
        JOIN documents d ON d.system_id = mr.system_id AND d.hash = mr.doc_hash
-      WHERE mr.system_id = $1`,
+      WHERE mr.system_id = $1
+        AND mr.ref_type IN ('Document'::ref_type, 'Skill'::ref_type)`,
     [systemId],
   );
 
@@ -462,6 +556,9 @@ async function loadThreadMatrix(systemId: string): Promise<V1ThreadMatrixNodeCel
       sourceType: row.source_type,
       sourceUrl: row.source_url,
       sourceExternalId: row.source_external_id,
+      sourceMetadata: row.source_metadata,
+      sourceConnectedUserId: row.source_connected_user_id,
+      refType: row.ref_type,
     };
 
     if (!existing) {
@@ -627,6 +724,65 @@ export async function v1Routes(app: FastifyInstance) {
 
       const hasMore = result.rows.length > pageSize;
       const rows = hasMore ? result.rows.slice(0, pageSize) : result.rows;
+      const projectIds = rows.map((row) => row.id);
+      const threadRows = projectIds.length
+        ? await query<V1ProjectThreadsListRow>(
+          `SELECT
+             thread_summaries.project_id,
+             thread_summaries.id,
+             thread_summaries.project_thread_id,
+             thread_summaries.title,
+             thread_summaries.description,
+             thread_summaries.source_thread_id,
+             thread_summaries.status::text AS status,
+             thread_summaries.created_at,
+             thread_summaries.updated_at
+           FROM (
+             SELECT
+               t.project_id,
+               t.id,
+               t.project_thread_id,
+               t.title,
+               t.description,
+               t.source_thread_id,
+               t.status,
+               t.created_at,
+               t.updated_at,
+               ROW_NUMBER() OVER (PARTITION BY t.project_id ORDER BY t.updated_at DESC) AS rank
+             FROM threads t
+             WHERE t.project_id = ANY($1::text[])
+           ) thread_summaries
+           WHERE thread_summaries.rank <= 10
+           ORDER BY thread_summaries.updated_at DESC`,
+          [projectIds],
+        )
+        : { rows: [] as V1ProjectThreadsListRow[] };
+
+      const threadRowsByProject = new Map<string, Array<{
+        id: string;
+        projectThreadId: number | null;
+        title: string | null;
+        description: string | null;
+        status: V1ThreadStatus;
+        sourceThreadId: string | null;
+        createdAt: string;
+        updatedAt: string;
+      }>>();
+
+      for (const thread of threadRows.rows) {
+        const existing = threadRowsByProject.get(thread.project_id) ?? [];
+        existing.push({
+          id: thread.id,
+          projectThreadId: thread.project_thread_id,
+          title: thread.title,
+          description: thread.description,
+          status: thread.status,
+          sourceThreadId: thread.source_thread_id,
+          createdAt: thread.created_at.toISOString(),
+          updatedAt: thread.updated_at.toISOString(),
+        });
+        threadRowsByProject.set(thread.project_id, existing);
+      }
 
       return {
         items: rows.map((row) => ({
@@ -638,6 +794,7 @@ export async function v1Routes(app: FastifyInstance) {
           ownerHandle: row.owner_handle,
           createdAt: row.created_at.toISOString(),
           threadCount: Number.parseInt(row.thread_count, 10),
+          threads: threadRowsByProject.get(row.id) ?? [],
         })),
         page,
         pageSize,
@@ -806,6 +963,7 @@ export async function v1Routes(app: FastifyInstance) {
       const result = await query<V1ThreadSummaryRow>(
         `SELECT
            t.id,
+           t.project_thread_id,
            t.title,
            t.description,
            t.source_thread_id,
@@ -841,6 +999,7 @@ export async function v1Routes(app: FastifyInstance) {
       return {
         items: rows.map((row) => ({
           id: row.id,
+          projectThreadId: row.project_thread_id,
           projectId: row.project_id,
           sourceThreadId: row.source_thread_id,
           title: row.title,
@@ -912,6 +1071,7 @@ export async function v1Routes(app: FastifyInstance) {
       const inserted = await query<V1ThreadSummaryRow>(
         `SELECT
            t.id,
+           t.project_thread_id,
            t.title,
            t.description,
            t.source_thread_id,
@@ -936,6 +1096,7 @@ export async function v1Routes(app: FastifyInstance) {
       }
 
       const created = inserted.rows[0];
+      const responseProjectThreadId = created.project_thread_id;
       await publishEvent({
         type: "assistant.run.started",
         aggregateType: "thread",
@@ -951,6 +1112,7 @@ export async function v1Routes(app: FastifyInstance) {
 
         return {
           id: created.id,
+          projectThreadId: responseProjectThreadId,
           projectId: created.project_id,
           sourceThreadId: created.source_thread_id,
           title: created.title,
@@ -971,14 +1133,14 @@ export async function v1Routes(app: FastifyInstance) {
     async (req, reply) => {
       const user = (req as V1AuthRequest).auth;
       const threadId = req.params.threadId;
-      if (!isUuid(threadId)) {
-        return writeProblem(reply, 400, "Invalid threadId", "threadId must be a UUID.");
-      }
-
-      const thread = await resolveThreadAccess(threadId, user);
+      const thread = await resolveThreadAccessByRequestParam(threadId, user);
       if (!thread) {
+        if (!parseV1ThreadRouteId(threadId)) {
+          return writeProblem(reply, 400, "Invalid threadId", "threadId must be a UUID or project thread id.");
+        }
         return notFoundProblem(reply, "Thread not found");
       }
+      const resolvedThreadId = thread.id;
 
       const [projectRow, messagesResult, systemTopology, systemEdges, matrixCells, concernRows, matrixDocumentsRows] = await Promise.all([
         query<{ project_name: string; owner_handle: string; creator_handle: string }>(
@@ -988,7 +1150,7 @@ export async function v1Routes(app: FastifyInstance) {
            JOIN users owner_u ON owner_u.id = p.owner_id
            JOIN users u ON u.id = t.created_by
            WHERE t.id = $1`,
-          [threadId],
+          [resolvedThreadId],
         ),
         query<{
           id: string;
@@ -999,31 +1161,31 @@ export async function v1Routes(app: FastifyInstance) {
           content: string;
           created_at: Date;
         }>(
-          `SELECT m.id, m.action_id, a.type::text AS action_type, a.position AS action_position,
-                  m.role, m.content, m.created_at
-             FROM messages m
-             JOIN actions a ON a.thread_id = m.thread_id AND a.id = m.action_id
-            WHERE m.thread_id = $1
-            ORDER BY a.position, m.created_at`,
-          [threadId],
+            `SELECT m.id, m.action_id, a.type::text AS action_type, a.position AS action_position,
+                    m.role, m.content, m.created_at
+               FROM messages m
+               JOIN actions a ON a.thread_id = m.thread_id AND a.id = m.action_id
+              WHERE m.thread_id = $1
+              ORDER BY a.position, m.created_at`,
+          [resolvedThreadId],
         ),
         query<{ id: string; name: string; kind: string; parent_id: string | null; metadata: Record<string, unknown> }>(
-          `SELECT n.id, n.name, n.kind::text AS kind, n.parent_id, n.metadata
-             FROM nodes n
-            WHERE n.system_id = (SELECT thread_current_system($1))
-            ORDER BY n.id`,
-          [threadId],
+         `SELECT n.id, n.name, n.kind::text AS kind, n.parent_id, n.metadata
+            FROM nodes n
+           WHERE n.system_id = (SELECT thread_current_system($1))
+           ORDER BY n.id`,
+          [resolvedThreadId],
         ),
         query<{ id: string; from_node_id: string; to_node_id: string; type: string; metadata: Record<string, unknown> }>(
           `SELECT e.id, e.from_node_id, e.to_node_id, e.type::text AS type, e.metadata
            FROM edges e
            WHERE e.system_id = (SELECT thread_current_system($1))
            ORDER BY e.id`,
-          [threadId],
+          [resolvedThreadId],
         ),
-        getThreadSystemId(threadId)
+        getThreadSystemId(resolvedThreadId)
           .then((systemId) => systemId ? loadThreadMatrix(systemId) : Promise.resolve([] as V1ThreadMatrixNodeCell[])),
-        getThreadSystemId(threadId).then(async (systemId) =>
+        getThreadSystemId(resolvedThreadId).then(async (systemId) =>
           systemId
             ? query<V1ProjectThreadConcernRow>(
                 `SELECT name, position FROM concerns WHERE system_id = $1 ORDER BY position`,
@@ -1031,7 +1193,7 @@ export async function v1Routes(app: FastifyInstance) {
               ).then((result) => result.rows)
             : Promise.resolve([] as V1ProjectThreadConcernRow[]),
         ),
-        getThreadSystemId(threadId).then(async (systemId) =>
+        getThreadSystemId(resolvedThreadId).then(async (systemId) =>
           systemId
             ? query<V1ProjectThreadDocumentRow>(
                 `SELECT hash, kind::text AS kind, title, language, text, source_type::text AS source_type,
@@ -1047,7 +1209,6 @@ export async function v1Routes(app: FastifyInstance) {
 
       const project = projectRow.rows[0];
       const topology = toTopology(systemTopology.rows, systemEdges.rows);
-      const safeSystemId = await getThreadSystemId(threadId);
 
       return {
         thread: {
@@ -1071,7 +1232,8 @@ export async function v1Routes(app: FastifyInstance) {
         },
         topology,
         matrix: {
-          nodes: matrixCells,
+          nodes: topology.nodes,
+          cells: matrixCells,
           concerns: concernRows.map((concern) => ({ name: concern.name, position: concern.position })),
           documents: matrixDocumentsRows.map((document) => ({
             hash: document.hash,
@@ -1109,14 +1271,14 @@ export async function v1Routes(app: FastifyInstance) {
     async (req, reply) => {
       const user = (req as V1AuthRequest).auth;
       const threadId = req.params.threadId;
-      if (!isUuid(threadId)) {
-        return writeProblem(reply, 400, "Invalid threadId", "threadId must be a UUID.");
-      }
-
-      const thread = await resolveThreadAccess(threadId, user);
+      const thread = await resolveThreadAccessByRequestParam(threadId, user);
       if (!thread) {
+        if (!parseV1ThreadRouteId(threadId)) {
+          return writeProblem(reply, 400, "Invalid threadId", "threadId must be a UUID or project thread id.");
+        }
         return notFoundProblem(reply, "Thread not found");
       }
+      const resolvedThreadId = thread.id;
 
       if (!canEdit(thread.access_role)) {
         return forbiddenProblem(reply);
@@ -1154,7 +1316,7 @@ export async function v1Routes(app: FastifyInstance) {
             SET ${updates.join(", ")}
           WHERE id = $${updates.length + 1}
           RETURNING id, title, description, status`,
-        [...params, threadId],
+        [...params, resolvedThreadId],
       );
 
       if (result.rowCount === 0) {
@@ -1178,20 +1340,20 @@ export async function v1Routes(app: FastifyInstance) {
     async (req, reply) => {
       const user = (req as V1AuthRequest).auth;
       const threadId = req.params.threadId;
-      if (!isUuid(threadId)) {
-        return writeProblem(reply, 400, "Invalid threadId", "threadId must be a UUID.");
-      }
-
-      const thread = await resolveThreadAccess(threadId, user);
+      const thread = await resolveThreadAccessByRequestParam(threadId, user);
       if (!thread) {
+        if (!parseV1ThreadRouteId(threadId)) {
+          return writeProblem(reply, 400, "Invalid threadId", "threadId must be a UUID or project thread id.");
+        }
         return notFoundProblem(reply, "Thread not found");
       }
+      const resolvedThreadId = thread.id;
 
       if (!canEdit(thread.access_role)) {
         return forbiddenProblem(reply);
       }
 
-      await query("DELETE FROM threads WHERE id = $1", [threadId]);
+      await query("DELETE FROM threads WHERE id = $1", [resolvedThreadId]);
       reply.code(204).send();
     },
   );
@@ -1201,16 +1363,16 @@ export async function v1Routes(app: FastifyInstance) {
     async (req, reply) => {
       const user = (req as V1AuthRequest).auth;
       const threadId = req.params.threadId;
-      if (!isUuid(threadId)) {
-        return writeProblem(reply, 400, "Invalid threadId", "threadId must be a UUID.");
-      }
-
-      const thread = await resolveThreadAccess(threadId, user);
+      const thread = await resolveThreadAccessByRequestParam(threadId, user);
       if (!thread) {
+        if (!parseV1ThreadRouteId(threadId)) {
+          return writeProblem(reply, 400, "Invalid threadId", "threadId must be a UUID or project thread id.");
+        }
         return notFoundProblem(reply, "Thread not found");
       }
+      const resolvedThreadId = thread.id;
 
-      const systemId = await getThreadSystemId(threadId);
+      const systemId = await getThreadSystemId(resolvedThreadId);
       if (!systemId) {
         return writeProblem(reply, 500, "System missing", "Thread has no current system");
       }
@@ -1244,11 +1406,12 @@ export async function v1Routes(app: FastifyInstance) {
       ]);
 
       return {
-        threadId,
+        threadId: resolvedThreadId,
         systemId,
         topology: toTopology(nodeResult.rows, edgeResult.rows),
         matrix: {
-          nodes: cells,
+          nodes: toTopology(nodeResult.rows, edgeResult.rows).nodes,
+          cells,
           concerns: concernRows.map((concern) => ({ name: concern.name, position: concern.position })),
           documents: documentRows.map((document) => ({
             hash: document.hash,
@@ -1272,14 +1435,14 @@ export async function v1Routes(app: FastifyInstance) {
     async (req, reply) => {
       const user = (req as V1AuthRequest).auth;
       const threadId = req.params.threadId;
-      if (!isUuid(threadId)) {
-        return writeProblem(reply, 400, "Invalid threadId", "threadId must be a UUID.");
-      }
-
-      const thread = await resolveThreadAccess(threadId, user);
+      const thread = await resolveThreadAccessByRequestParam(threadId, user);
       if (!thread) {
+        if (!parseV1ThreadRouteId(threadId)) {
+          return writeProblem(reply, 400, "Invalid threadId", "threadId must be a UUID or project thread id.");
+        }
         return notFoundProblem(reply, "Thread not found");
       }
+      const resolvedThreadId = thread.id;
 
       if (!canEdit(thread.access_role)) {
         return forbiddenProblem(reply);
@@ -1290,7 +1453,7 @@ export async function v1Routes(app: FastifyInstance) {
         return writeProblem(reply, 400, "Invalid matrix payload", "No valid node layout entries provided.");
       }
 
-      const systemId = await getThreadSystemId(threadId);
+      const systemId = await getThreadSystemId(resolvedThreadId);
       if (!systemId) {
         return writeProblem(reply, 500, "System missing", "Thread has no current system");
       }
@@ -1310,14 +1473,22 @@ export async function v1Routes(app: FastifyInstance) {
         return notFoundProblem(reply, "No nodes updated");
       }
 
-      await publishThreadMatrixChanged(threadId, user, threadId);
+      await publishThreadMatrixChanged(resolvedThreadId, user, resolvedThreadId);
       const cells = await loadThreadMatrix(systemId);
+      const topologyRows = await query<{ id: string; name: string; kind: string; parent_id: string | null; metadata: Record<string, unknown> }>(
+        `SELECT id, name, kind::text AS kind, parent_id, metadata
+           FROM nodes
+          WHERE system_id = $1 ORDER BY id`,
+        [systemId],
+      );
+      const topology = toTopology(topologyRows.rows, []);
       return {
-        threadId,
+        threadId: resolvedThreadId,
         systemId,
         changed,
         matrix: {
-          nodes: cells,
+          nodes: topology.nodes,
+          cells,
         },
       };
     },
@@ -1328,30 +1499,30 @@ export async function v1Routes(app: FastifyInstance) {
     async (req, reply) => {
       const user = (req as V1AuthRequest).auth;
       const threadId = req.params.threadId;
-      if (!isUuid(threadId)) {
-        return writeProblem(reply, 400, "Invalid threadId", "threadId must be a UUID.");
-      }
-
-      const thread = await resolveThreadAccess(threadId, user);
+      const thread = await resolveThreadAccessByRequestParam(threadId, user);
       if (!thread) {
+        if (!parseV1ThreadRouteId(threadId)) {
+          return writeProblem(reply, 400, "Invalid threadId", "threadId must be a UUID or project thread id.");
+        }
         return notFoundProblem(reply, "Thread not found");
       }
+      const resolvedThreadId = thread.id;
 
       if (!canEdit(thread.access_role)) {
         return forbiddenProblem(reply);
       }
 
-      const systemId = await getThreadSystemId(threadId);
+      const systemId = await getThreadSystemId(resolvedThreadId);
       if (!systemId) {
         return writeProblem(reply, 500, "System missing", "Thread has no current system");
       }
 
       const workspace = await mkdtemp(join(tmpdir(), "staffx-openship-bundle-"));
       try {
-        const bundleDir = await generateOpenShipFileBundle(threadId, workspace);
+        const bundleDir = await generateOpenShipFileBundle(resolvedThreadId, workspace);
         const files = await collectOpenShipBundleFiles(bundleDir);
         const descriptor: V1OpenShipBundleDescriptor = {
-          threadId,
+          threadId: resolvedThreadId,
           systemId,
           generatedAt: new Date().toISOString(),
           files,
@@ -1368,14 +1539,14 @@ export async function v1Routes(app: FastifyInstance) {
     async (req, reply) => {
       const user = (req as V1AuthRequest).auth;
       const threadId = req.params.threadId;
-      if (!isUuid(threadId)) {
-        return writeProblem(reply, 400, "Invalid threadId", "threadId must be a UUID.");
-      }
-
-      const thread = await resolveThreadAccess(threadId, user);
+      const thread = await resolveThreadAccessByRequestParam(threadId, user);
       if (!thread) {
+        if (!parseV1ThreadRouteId(threadId)) {
+          return writeProblem(reply, 400, "Invalid threadId", "threadId must be a UUID or project thread id.");
+        }
         return notFoundProblem(reply, "Thread not found");
       }
+      const resolvedThreadId = thread.id;
 
       if (!canEdit(thread.access_role)) {
         return forbiddenProblem(reply);
@@ -1397,14 +1568,14 @@ export async function v1Routes(app: FastifyInstance) {
         `SELECT COALESCE(MAX(position), 0) + 1 AS position
          FROM actions
          WHERE thread_id = $1`,
-        [threadId],
+        [resolvedThreadId],
       );
       const actionPosition = positionResult.rows[0]?.position ?? 1;
 
       await query<{ id: string }>(
         `INSERT INTO actions (id, thread_id, position, type, title)
          VALUES ($1, $2, $3, 'Chat'::action_type, 'Chat message')`,
-        [actionId, threadId, actionPosition],
+        [actionId, resolvedThreadId, actionPosition],
       );
 
       const messageResult = await query<{
@@ -1417,7 +1588,7 @@ export async function v1Routes(app: FastifyInstance) {
         `INSERT INTO messages (id, thread_id, action_id, role, content, position)
          VALUES ($1, $2, $3, $4::message_role, $5, 1)
          RETURNING id, action_id, role, content, created_at`,
-        [messageId, threadId, actionId, role, content],
+        [messageId, resolvedThreadId, actionId, role, content],
       );
 
       if (messageResult.rowCount === 0) {
@@ -1448,16 +1619,11 @@ export async function v1Routes(app: FastifyInstance) {
       const chatMessageId = req.body?.chatMessageId?.trim() || null;
       const prompt = req.body?.prompt?.trim();
 
-      if (!isUuid(threadId)) {
-        return writeProblem(reply, 400, "Invalid threadId", "threadId must be a UUID.");
-      }
-
-      if (mode !== "direct" && mode !== "plan") {
-        return writeProblem(reply, 400, "Invalid assistant type", "assistantType must be direct or plan");
-      }
-
-      const thread = await resolveThreadAccess(threadId, user);
+      const thread = await resolveThreadAccessByRequestParam(threadId, user);
       if (!thread) {
+        if (!parseV1ThreadRouteId(threadId)) {
+          return writeProblem(reply, 400, "Invalid threadId", "threadId must be a UUID or project thread id.");
+        }
         return notFoundProblem(reply, "Thread not found");
       }
 
@@ -1465,12 +1631,17 @@ export async function v1Routes(app: FastifyInstance) {
         return forbiddenProblem(reply);
       }
 
+      if (mode !== "direct" && mode !== "plan") {
+        return writeProblem(reply, 400, "Invalid assistant type", "assistantType must be direct or plan");
+      }
+      const resolvedThreadId = thread.id;
+
       if (chatMessageId && !isUuid(chatMessageId)) {
         return writeProblem(reply, 400, "Invalid chatMessageId", "chatMessageId must be a UUID.");
       }
 
       const runId = await enqueueAgentRunWithWait({
-        threadId,
+        threadId: resolvedThreadId,
         projectId: thread.project_id,
         requestedByUserId: user.id,
         mode,
@@ -1484,9 +1655,9 @@ export async function v1Routes(app: FastifyInstance) {
         aggregateType: "assistant-run",
         aggregateId: runId,
         orgId: user.orgId,
-        traceId: threadId,
+        traceId: resolvedThreadId,
         payload: {
-          threadId,
+          threadId: resolvedThreadId,
           mode,
           status: "queued",
         },
@@ -1496,9 +1667,9 @@ export async function v1Routes(app: FastifyInstance) {
         aggregateType: "assistant-run",
         aggregateId: runId,
         orgId: user.orgId,
-        traceId: threadId,
+        traceId: resolvedThreadId,
         payload: {
-          threadId,
+          threadId: resolvedThreadId,
           mode,
           status: "waiting_input",
         },
@@ -1508,7 +1679,7 @@ export async function v1Routes(app: FastifyInstance) {
         runId,
         status: "queued" as AssistantRunStatus,
         mode,
-        threadId,
+        threadId: resolvedThreadId,
       };
     },
   );
@@ -1751,6 +1922,17 @@ export async function v1Routes(app: FastifyInstance) {
   app.get<{ Querystring: { since?: string; limit?: number } }>(
     "/events/stream",
     async (req, reply) => {
+      const requestOrigin = Array.isArray(req.headers.origin) ? req.headers.origin[0] : req.headers.origin;
+      const allowOrigin = requestOrigin?.trim() || "*";
+      reply.raw.setHeader("Access-Control-Allow-Origin", allowOrigin);
+      reply.raw.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+      reply.raw.setHeader("Access-Control-Allow-Headers", "Authorization, Last-Event-ID, Cache-Control, Content-Type");
+      reply.raw.setHeader("Access-Control-Expose-Headers", "Cache-Control");
+      reply.raw.setHeader("Content-Type", "text/event-stream");
+      reply.raw.setHeader("Cache-Control", "no-cache");
+      reply.raw.setHeader("Connection", "keep-alive");
+      reply.raw.setHeader("X-Accel-Buffering", "no");
+
       const user = (req as V1AuthRequest).auth;
       const limit = parsePositiveInt(req.query.limit, 100, 1, 500);
 
@@ -1772,9 +1954,6 @@ export async function v1Routes(app: FastifyInstance) {
         );
       }
 
-      reply.raw.setHeader("Content-Type", "text/event-stream");
-      reply.raw.setHeader("Cache-Control", "no-cache");
-      reply.raw.setHeader("Connection", "keep-alive");
       reply.raw.write("retry: 3000\n\n");
 
       let closed = false;

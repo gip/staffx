@@ -4,6 +4,7 @@ import {
   AuthContext,
   useAuth,
   Header,
+  Sidebar,
   Home,
   ProjectPage,
   ThreadPage,
@@ -41,7 +42,17 @@ interface V1ProjectListItem {
   accessRole: string;
   ownerHandle: string;
   createdAt: string;
-  threadCount: number;
+  threads?: Array<{
+    id: string;
+    title: string | null;
+    description: string | null;
+    projectThreadId?: number | null;
+    status: "open" | "closed" | "committed";
+    sourceThreadId?: string | null;
+    updatedAt: string;
+    createdAt?: string;
+  }>;
+  threadCount?: number;
 }
 
 interface V1ProjectListResponse {
@@ -54,6 +65,7 @@ interface V1ProjectListResponse {
 interface V1ThreadListItem {
   id: string;
   projectId: string;
+  projectThreadId: number | null;
   sourceThreadId: string | null;
   title: string | null;
   description: string | null;
@@ -155,7 +167,16 @@ function normalizeProject(item: V1ProjectListItem): Project {
     visibility: item.visibility,
     ownerHandle: item.ownerHandle,
     createdAt: item.createdAt,
-    threads: [],
+    threads: item.threads?.map((thread) => ({
+      id: thread.id,
+      projectThreadId: thread.projectThreadId,
+      title: thread.title,
+      description: thread.description,
+      status: thread.status,
+      sourceThreadId: thread.sourceThreadId,
+      updatedAt: thread.updatedAt,
+      createdAt: thread.createdAt,
+    })) ?? [],
   };
 }
 
@@ -163,6 +184,7 @@ function normalizeThread(row: V1ThreadListItem): {
   id: string;
   title: string | null;
   description: string | null;
+  projectThreadId?: number | null;
   status: "open" | "closed" | "committed";
   sourceThreadId?: string | null;
   updatedAt: string;
@@ -170,6 +192,7 @@ function normalizeThread(row: V1ThreadListItem): {
 } {
   return {
     id: row.id,
+    projectThreadId: row.projectThreadId,
     title: row.title,
     description: row.description,
     status: row.status,
@@ -765,7 +788,7 @@ function AccountSettingsRoute({ isAuthenticated }: { isAuthenticated: boolean })
   );
 }
 
-function ProjectRoute({ isAuthenticated }: { isAuthenticated: boolean }) {
+function ProjectRoute({ isAuthenticated, onProjectMutated }: { isAuthenticated: boolean; onProjectMutated?: () => void }) {
   const { handle, project: projectName } = useParams<{ handle: string; project: string }>();
   const apiFetch = useApi();
   const [project, setProject] = useState<Project | null>(null);
@@ -923,11 +946,12 @@ function ProjectRoute({ isAuthenticated }: { isAuthenticated: boolean }) {
                     createdAt: data.createdAt,
                     updatedAt: data.updatedAt,
                     projectId: data.projectId,
-                      accessRole: data.accessRole,
+                    accessRole: data.accessRole,
                   })],
                 }
               : current
           ));
+          onProjectMutated?.();
           return {
             thread: {
               id: data.id,
@@ -966,7 +990,7 @@ function SettingsRoute() {
   );
 }
 
-function ThreadRoute({ isAuthenticated }: { isAuthenticated: boolean }) {
+function ThreadRoute({ isAuthenticated, onProjectMutated }: { isAuthenticated: boolean; onProjectMutated?: () => void }) {
   const { handle, project: projectName, threadId } = useParams<{
     handle: string;
     project: string;
@@ -1011,7 +1035,9 @@ function ThreadRoute({ isAuthenticated }: { isAuthenticated: boolean }) {
 
   const handleThreadEvent = useCallback(
     async (event: V1EventItem) => {
-      if (!threadId || !isThreadEvent(event, threadId)) return;
+      if (!threadId) return;
+      const detailThreadId = detail?.thread.id;
+      if (!isThreadEvent(event, threadId) && !(detailThreadId && isThreadEvent(event, detailThreadId))) return;
       if (
         event.type === "assistant.run.started"
         || event.type === "assistant.run.progress"
@@ -1025,7 +1051,7 @@ function ThreadRoute({ isAuthenticated }: { isAuthenticated: boolean }) {
         refreshThreadDebounced();
       }
     },
-    [threadId, refreshThreadDebounced],
+    [detail?.thread.id, refreshThreadDebounced, threadId],
   );
 
   const processEventPayload = useCallback(async (event: V1EventItem) => {
@@ -1279,6 +1305,7 @@ function ThreadRoute({ isAuthenticated }: { isAuthenticated: boolean }) {
           }
           const data = (await res.json()) as { thread: ThreadDetail };
           setDetail((prev) => (prev ? { ...prev, thread: data.thread } : prev));
+          onProjectMutated?.();
           return data;
         } catch (error: unknown) {
           if (error instanceof Error && error.message.trim()) {
@@ -1557,20 +1584,72 @@ function ThreadRoute({ isAuthenticated }: { isAuthenticated: boolean }) {
   );
 }
 
-function ProjectHeader() {
+function AppShell({
+  projects,
+  setProjects,
+  isAuthenticated,
+  refreshProjects,
+}: {
+  projects: Project[];
+  setProjects: React.Dispatch<React.SetStateAction<Project[]>>;
+  isAuthenticated: boolean;
+  refreshProjects: () => void;
+}) {
   const location = useLocation();
+  const [sidebarOpen, setSidebarOpen] = useState(() => {
+    try {
+      return localStorage.getItem("staffx-sidebar") !== "false";
+    } catch {
+      return true;
+    }
+  });
+
+  const toggleSidebar = useCallback(() => {
+    setSidebarOpen((prev) => {
+      const next = !prev;
+      try { localStorage.setItem("staffx-sidebar", String(next)); } catch {}
+      return next;
+    });
+  }, []);
+
   const segments = location.pathname.replace(/^\//, "").split("/").filter(Boolean);
-  const isProjectRoute =
-    segments.length >= 2 && segments[0] !== "settings";
+  const isProjectRoute = segments.length >= 2 && segments[0] !== "settings";
   const handle = isProjectRoute ? segments[0] : undefined;
   const projectName = isProjectRoute ? segments[1] : undefined;
 
   return (
-    <Header
-      variant="desktop"
-      projectLabel={handle && projectName ? `${handle} / ${projectName}` : undefined}
-      projectHref={handle && projectName ? `/${handle}/${projectName}` : undefined}
-    />
+    <>
+      <NavigateSync />
+      <Header
+        variant="desktop"
+        projectLabel={handle && projectName ? `${handle} / ${projectName}` : undefined}
+        projectHref={handle && projectName ? `/${handle}/${projectName}` : undefined}
+        onToggleSidebar={toggleSidebar}
+      />
+      <div className="app-layout">
+        {isAuthenticated && (
+          <Sidebar
+            projects={projects}
+            activeProjectOwner={handle}
+            activeProjectName={projectName}
+            open={sidebarOpen}
+          />
+        )}
+        <div className="app-content">
+          <Routes>
+            <Route path="/" element={<HomeRoute projects={projects} setProjects={setProjects} />} />
+            <Route path="/:handle/:project" element={<ProjectRoute isAuthenticated={isAuthenticated} onProjectMutated={refreshProjects} />} />
+            <Route path="/settings" element={<AccountSettingsRoute isAuthenticated={isAuthenticated} />} />
+            <Route path="/:handle/:project/settings" element={<SettingsRoute isAuthenticated={isAuthenticated} />} />
+            <Route path="/:handle" element={<ProfileRoute isAuthenticated={isAuthenticated} />} />
+            <Route
+              path="/:handle/:project/thread/:threadId"
+              element={<ThreadRoute isAuthenticated={isAuthenticated} onProjectMutated={refreshProjects} />}
+            />
+          </Routes>
+        </div>
+      </div>
+    </>
   );
 }
 
@@ -1579,6 +1658,9 @@ export function App() {
   const [isLoading, setIsLoading] = useState(true);
   const [user, setUser] = useState<AuthUser | null>(null);
   const [projects, setProjects] = useState<Project[]>([]);
+  const [projectsKey, setProjectsKey] = useState(0);
+
+  const refreshProjects = useCallback(() => setProjectsKey((k) => k + 1), []);
 
   useEffect(() => {
     const { auth } = window.electronAPI;
@@ -1629,7 +1711,7 @@ export function App() {
         console.error("API fetch failed:", err);
       }
     });
-  }, [isAuthenticated]);
+  }, [isAuthenticated, projectsKey]);
 
   return (
     <AuthContext.Provider
@@ -1641,19 +1723,7 @@ export function App() {
         logout: () => window.electronAPI.auth.logout(),
       }}
     >
-      <NavigateSync />
-      <ProjectHeader />
-      <Routes>
-        <Route path="/" element={<HomeRoute projects={projects} setProjects={setProjects} />} />
-        <Route path="/:handle/:project" element={<ProjectRoute isAuthenticated={isAuthenticated} />} />
-        <Route path="/settings" element={<AccountSettingsRoute isAuthenticated={isAuthenticated} />} />
-        <Route path="/:handle/:project/settings" element={<SettingsRoute />} />
-        <Route path="/:handle" element={<ProfileRoute isAuthenticated={isAuthenticated} />} />
-        <Route
-          path="/:handle/:project/thread/:threadId"
-          element={<ThreadRoute isAuthenticated={isAuthenticated} />}
-        />
-      </Routes>
+      <AppShell projects={projects} setProjects={setProjects} isAuthenticated={isAuthenticated} refreshProjects={refreshProjects} />
     </AuthContext.Provider>
   );
 }
