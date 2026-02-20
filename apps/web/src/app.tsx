@@ -263,6 +263,9 @@ function normalizeApiUrl(raw: string): string {
 
 const API_URL = normalizeApiUrl(import.meta.env.VITE_API_URL ?? "http://localhost:3001");
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+function isUuid(s: string): boolean { return UUID_RE.test(s); }
+
 function upsertMatrixCell(cells: MatrixCell[], nextCell: MatrixCell): MatrixCell[] {
   const index = cells.findIndex(
     (cell) => cell.nodeId === nextCell.nodeId && cell.concern === nextCell.concern,
@@ -952,7 +955,7 @@ function SettingsRoute() {
 }
 
 function ThreadRoute({ onProjectMutated }: { onProjectMutated?: () => void }) {
-  const { handle, project: projectName, threadId } = useParams<{
+  const { handle, project: projectName, threadId: threadIdParam } = useParams<{
     handle: string;
     project: string;
     threadId: string;
@@ -967,6 +970,15 @@ function ThreadRoute({ onProjectMutated }: { onProjectMutated?: () => void }) {
   const eventStreamAbortRef = useRef<AbortController | null>(null);
   const eventPollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const eventRefreshPromiseRef = useRef<Promise<void> | null>(null);
+  const resolvedThreadIdRef = useRef<string | null>(null);
+
+  // Build the thread API path, appending project context query params when threadId is a number
+  const threadPath = useCallback((suffix = "") => {
+    const id = resolvedThreadIdRef.current ?? threadIdParam!;
+    const base = `/threads/${encodeURIComponent(id)}${suffix}`;
+    if (isUuid(id)) return base;
+    return `${base}${suffix.includes("?") ? "&" : "?"}handle=${encodeURIComponent(handle!)}&project=${encodeURIComponent(projectName!)}`;
+  }, [threadIdParam, handle, projectName]);
   const [integrationStatuses, setIntegrationStatuses] = useState<IntegrationStatusRecord>({
     notion: "disconnected",
     google: "disconnected",
@@ -993,12 +1005,13 @@ function ThreadRoute({ onProjectMutated }: { onProjectMutated?: () => void }) {
   }, [apiFetch]);
 
   const refreshThread = useCallback(async () => {
-    if (!threadId) return;
-    const threadRes = await apiFetch(`/threads/${encodeURIComponent(threadId)}`, undefined, { auth: "required" });
+    if (!threadIdParam) return;
+    const threadRes = await apiFetch(threadPath(), undefined, { auth: "required" });
     if (!threadRes.ok) return;
     const nextDetail = await threadRes.json() as ThreadDetailPayload;
+    resolvedThreadIdRef.current = nextDetail.thread.id;
     setDetail(nextDetail);
-  }, [apiFetch, threadId]);
+  }, [apiFetch, threadIdParam, threadPath]);
 
   const refreshThreadDebounced = useCallback(() => {
     if (eventRefreshPromiseRef.current) return;
@@ -1023,7 +1036,8 @@ function ThreadRoute({ onProjectMutated }: { onProjectMutated?: () => void }) {
 
   const handleThreadEvent = useCallback(
     async (event: V1EventItem) => {
-      if (!threadId || !isThreadEvent(event, threadId)) return;
+      const resolvedId = resolvedThreadIdRef.current;
+      if (!resolvedId || !isThreadEvent(event, resolvedId)) return;
       if (
         event.type === "assistant.run.started"
         || event.type === "assistant.run.progress"
@@ -1037,7 +1051,7 @@ function ThreadRoute({ onProjectMutated }: { onProjectMutated?: () => void }) {
         refreshThreadDebounced();
       }
     },
-    [threadId, refreshThreadDebounced],
+    [refreshThreadDebounced],
   );
 
   const processEventPayload = useCallback(async (event: V1EventItem) => {
@@ -1049,7 +1063,7 @@ function ThreadRoute({ onProjectMutated }: { onProjectMutated?: () => void }) {
   }, [handleThreadEvent]);
 
   useEffect(() => {
-    if (!isAuthenticated || !threadId) return;
+    if (!isAuthenticated || !threadIdParam) return;
 
     let mounted = true;
     let pollingOnly = false;
@@ -1195,7 +1209,7 @@ function ThreadRoute({ onProjectMutated }: { onProjectMutated?: () => void }) {
       stopPolling();
       pollingOnly = true;
     };
-  }, [apiFetch, handleThreadEvent, isAuthenticated, processEventPayload, threadId]);
+  }, [apiFetch, handleThreadEvent, isAuthenticated, processEventPayload, threadIdParam]);
 
   useEffect(() => {
     if (!isAuthenticated) return;
@@ -1217,12 +1231,13 @@ function ThreadRoute({ onProjectMutated }: { onProjectMutated?: () => void }) {
   }, [isAuthenticated, refreshIntegrationStatuses, searchParams, setSearchParams]);
 
   useEffect(() => {
-    if (!threadId) return;
+    if (!threadIdParam) return;
     setNotFound(false);
     setDetail(null);
+    resolvedThreadIdRef.current = null;
 
     const loadThread = async () => {
-      const res = await apiFetch(`/threads/${encodeURIComponent(threadId)}`, undefined, { auth: "required" });
+      const res = await apiFetch(threadPath(), undefined, { auth: "required" });
       if (res.status === 404) {
         setNotFound(true);
         return;
@@ -1230,11 +1245,13 @@ function ThreadRoute({ onProjectMutated }: { onProjectMutated?: () => void }) {
       if (!res.ok) {
         throw new Error(await readError(res, "Failed to load thread"));
       }
-      setDetail((await res.json()) as ThreadDetailPayload);
+      const data = (await res.json()) as ThreadDetailPayload;
+      resolvedThreadIdRef.current = data.thread.id;
+      setDetail(data);
     };
 
     loadThread().catch(() => setNotFound(true));
-  }, [threadId, apiFetch]);
+  }, [threadIdParam, apiFetch, threadPath]);
 
   if (notFound) {
     return (
@@ -1260,7 +1277,7 @@ function ThreadRoute({ onProjectMutated }: { onProjectMutated?: () => void }) {
       onUpdateThread={async (payload) => {
         try {
           const res = await apiFetch(
-            `/threads/${encodeURIComponent(threadId!)}`,
+            `/threads/${encodeURIComponent(detail.thread.id)}`,
             {
               method: "PATCH",
               headers: { "Content-Type": "application/json" },
@@ -1283,7 +1300,7 @@ function ThreadRoute({ onProjectMutated }: { onProjectMutated?: () => void }) {
       }}
       onSaveTopologyLayout={async (payload) => {
         const res = await apiFetch(
-          `/threads/${encodeURIComponent(threadId!)}/matrix`,
+          `/threads/${encodeURIComponent(detail.thread.id)}/matrix`,
           {
             method: "PATCH",
             headers: { "Content-Type": "application/json" },
@@ -1310,7 +1327,7 @@ function ThreadRoute({ onProjectMutated }: { onProjectMutated?: () => void }) {
       onReplaceMatrixDocument={undefined}
       onSendChatMessage={async (payload) => {
         const res = await apiFetch(
-          `/threads/${encodeURIComponent(threadId!)}/chat`,
+          `/threads/${encodeURIComponent(detail.thread.id)}/chat`,
           {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -1337,7 +1354,7 @@ function ThreadRoute({ onProjectMutated }: { onProjectMutated?: () => void }) {
       onRunAssistant={async (payload) => {
         const assistantType = payload.mode === "plan" ? "plan" : "direct";
         const res = await apiFetch(
-          `/threads/${encodeURIComponent(threadId!)}/assistants/${assistantType}/runs`,
+          `/threads/${encodeURIComponent(detail.thread.id)}/assistants/${assistantType}/runs`,
           {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -1350,7 +1367,7 @@ function ThreadRoute({ onProjectMutated }: { onProjectMutated?: () => void }) {
         const data = (await res.json()) as AssistantRunResponse;
         const refreshThread = async () => {
           const threadRes = await apiFetch(
-            `/threads/${encodeURIComponent(threadId!)}`,
+            `/threads/${encodeURIComponent(detail.thread.id)}`,
           );
           if (!threadRes.ok) {
             return null;
@@ -1388,7 +1405,7 @@ function ThreadRoute({ onProjectMutated }: { onProjectMutated?: () => void }) {
       onCloseThread={async () => {
         try {
           const res = await apiFetch(
-            `/threads/${encodeURIComponent(threadId!)}`,
+            `/threads/${encodeURIComponent(detail.thread.id)}`,
             {
               method: "PATCH",
               headers: { "Content-Type": "application/json" },
@@ -1411,7 +1428,7 @@ function ThreadRoute({ onProjectMutated }: { onProjectMutated?: () => void }) {
       onCommitThread={async () => {
         try {
           const res = await apiFetch(
-            `/threads/${encodeURIComponent(threadId!)}`,
+            `/threads/${encodeURIComponent(detail.thread.id)}`,
             {
               method: "PATCH",
               headers: { "Content-Type": "application/json" },
@@ -1446,7 +1463,7 @@ function ThreadRoute({ onProjectMutated }: { onProjectMutated?: () => void }) {
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({
                 projectId: targetProjectId,
-                sourceThreadId: threadId,
+                sourceThreadId: detail.thread.id,
                 title,
                 description,
               }),

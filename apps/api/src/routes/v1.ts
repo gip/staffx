@@ -976,13 +976,32 @@ export async function v1Routes(app: FastifyInstance) {
     },
   );
 
-  app.get<{ Params: { threadId: string } }>(
+  app.get<{ Params: { threadId: string }; Querystring: { handle?: string; project?: string } }>(
     "/threads/:threadId",
     async (req, reply) => {
       const user = (req as V1AuthRequest).auth;
-      const threadId = req.params.threadId;
+      let threadId = req.params.threadId;
+
+      // Support looking up by projectThreadId (number) with handle + project query params
       if (!isUuid(threadId)) {
-        return writeProblem(reply, 400, "Invalid threadId", "threadId must be a UUID.");
+        const num = Number(threadId);
+        const { handle, project: projectName } = req.query;
+        if (!Number.isInteger(num) || !handle || !projectName) {
+          return writeProblem(reply, 400, "Invalid threadId", "threadId must be a UUID, or a number with handle and project query params.");
+        }
+        const resolved = await query<{ id: string }>(
+          `SELECT t.id
+             FROM threads t
+             JOIN projects p ON p.id = t.project_id
+             JOIN users u ON u.id = p.owner_id
+            WHERE u.handle = $1 AND p.name = $2 AND t.project_thread_id = $3
+            LIMIT 1`,
+          [handle, projectName, num],
+        );
+        if (resolved.rowCount === 0) {
+          return notFoundProblem(reply, "Thread not found");
+        }
+        threadId = resolved.rows[0].id;
       }
 
       const thread = await resolveThreadAccess(threadId, user);
