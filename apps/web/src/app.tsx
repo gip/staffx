@@ -65,6 +65,7 @@ interface V1ProjectListResponse {
 interface V1ThreadListItem {
   id: string;
   projectId: string;
+  projectThreadId?: number;
   sourceThreadId: string | null;
   title: string | null;
   description: string | null;
@@ -177,7 +178,7 @@ function normalizeProject(item: V1ProjectListItem): Project {
   };
 }
 
-function normalizeThread(row: V1ThreadListItem & { projectThreadId?: number }): {
+function normalizeThread(row: V1ThreadListItem): {
   id: string;
   projectThreadId?: number;
   title: string | null;

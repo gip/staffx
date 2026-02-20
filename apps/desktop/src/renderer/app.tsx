@@ -63,6 +63,7 @@ interface V1ProjectListResponse {
 interface V1ThreadListItem {
   id: string;
   projectId: string;
+  projectThreadId?: number;
   sourceThreadId: string | null;
   title: string | null;
   description: string | null;
@@ -177,6 +178,7 @@ function normalizeProject(item: V1ProjectListItem): Project {
 
 function normalizeThread(row: V1ThreadListItem): {
   id: string;
+  projectThreadId?: number;
   title: string | null;
   description: string | null;
   status: "open" | "closed" | "committed";
@@ -186,6 +188,7 @@ function normalizeThread(row: V1ThreadListItem): {
 } {
   return {
     id: row.id,
+    projectThreadId: row.projectThreadId,
     title: row.title,
     description: row.description,
     status: row.status,

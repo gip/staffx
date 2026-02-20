@@ -185,6 +185,7 @@ function getRunSummary(response: AssistantRunResponse): { status: AssistantRunSu
 
 export interface ThreadDetail {
   id: string;
+  projectThreadId?: number;
   title: string;
   description: string | null;
   status: ThreadStatus;
@@ -2894,7 +2895,7 @@ export function ThreadPage({
           <>
             <h1 className="thread-view-title">
               {detail.thread.title}{" "}
-              <span className="thread-view-title-number">#{detail.thread.id.slice(0, 8)}</span>
+              <span className="thread-view-title-number">#{detail.thread.projectThreadId ?? detail.thread.id}</span>
             </h1>
             {effectiveCanEdit && (
               <button

@@ -124,12 +124,12 @@ export function ProjectPage({ project, fromThreadId, onCloseThread, onCommitThre
                 {flatThreads.map(({ thread: t, depth }) => (
               <Link
                 key={t.id}
-                to={`/${project.ownerHandle}/${project.name}/thread/${t.id}`}
+                to={`/${project.ownerHandle}/${project.name}/thread/${t.projectThreadId ?? t.id}`}
                 className={`thread-row${depth > 0 ? " thread-row--nested" : ""}`}
                 style={depth > 0 ? { paddingLeft: `${16 + depth * 24}px` } : undefined}
               >
                 <span className="thread-row-main">
-                  <span className="thread-row-id">#{t.id.slice(0, 8)}</span>
+                  <span className="thread-row-id">#{t.projectThreadId ?? t.id}</span>
                   <span className="thread-row-title">{t.title ?? "Untitled"}</span>
                   {(project.accessRole === "Owner" || project.accessRole === "Editor") && t.status === "open" && onCloseThread && onCommitThread && (
                     <>

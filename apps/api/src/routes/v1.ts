@@ -45,6 +45,7 @@ interface V1ThreadSummaryRow {
   title: string | null;
   description: string | null;
   source_thread_id: string | null;
+  project_thread_id: number;
   project_id: string;
   project_name: string;
   status: "open" | "closed" | "committed";
@@ -160,6 +161,7 @@ type AssistantRunStatus = "queued" | "running" | "success" | "failed" | "cancell
 interface V1ThreadRow {
   id: string;
   project_id: string;
+  project_thread_id: number;
   title: string | null;
   description: string | null;
   status: "open" | "closed" | "committed";
@@ -384,6 +386,7 @@ async function resolveThreadAccess(threadId: string, user: AuthUser): Promise<V1
     `SELECT
        t.id,
        t.project_id,
+       t.project_thread_id,
        t.title,
        t.description,
        t.status,
@@ -812,6 +815,7 @@ export async function v1Routes(app: FastifyInstance) {
            t.title,
            t.description,
            t.source_thread_id,
+           t.project_thread_id,
            p.name AS project_name,
            t.project_id,
            t.status,
@@ -845,6 +849,7 @@ export async function v1Routes(app: FastifyInstance) {
         items: rows.map((row) => ({
           id: row.id,
           projectId: row.project_id,
+          projectThreadId: row.project_thread_id,
           sourceThreadId: row.source_thread_id,
           title: row.title,
           description: row.description,
@@ -918,6 +923,7 @@ export async function v1Routes(app: FastifyInstance) {
            t.title,
            t.description,
            t.source_thread_id,
+           t.project_thread_id,
            p.name AS project_name,
            t.project_id,
            t.status,
@@ -955,6 +961,7 @@ export async function v1Routes(app: FastifyInstance) {
         return {
           id: created.id,
           projectId: created.project_id,
+          projectThreadId: created.project_thread_id,
           sourceThreadId: created.source_thread_id,
           title: created.title,
         description: created.description,
@@ -1056,6 +1063,7 @@ export async function v1Routes(app: FastifyInstance) {
         thread: {
           id: thread.id,
           projectId: thread.project_id,
+          projectThreadId: thread.project_thread_id,
           title: thread.title,
           description: thread.description,
           status: thread.status,
