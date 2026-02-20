@@ -6,6 +6,7 @@ import {
   Route,
   Routes,
   useNavigate,
+  useLocation,
   useParams,
   useSearchParams,
 } from "react-router-dom";
@@ -13,6 +14,7 @@ import {
   AuthContext,
   useAuth,
   Header,
+  Sidebar,
   Home,
   ProjectPage,
   ThreadPage,
@@ -42,7 +44,17 @@ interface V1ProjectListItem {
   accessRole: string;
   ownerHandle: string;
   createdAt: string;
-  threadCount: number;
+  threads?: Array<{
+    id: string;
+    title: string | null;
+    description: string | null;
+    projectThreadId?: number | null;
+    status: "open" | "closed" | "committed";
+    sourceThreadId?: string | null;
+    updatedAt: string;
+    createdAt?: string;
+  }>;
+  threadCount?: number;
 }
 
 interface V1ProjectListResponse {
@@ -55,6 +67,7 @@ interface V1ProjectListResponse {
 interface V1ThreadListItem {
   id: string;
   projectId: string;
+  projectThreadId: number | null;
   sourceThreadId: string | null;
   title: string | null;
   description: string | null;
@@ -151,6 +164,7 @@ function normalizeProject(item: V1ProjectListItem, threads: Array<{
   id: string;
   title: string | null;
   description: string | null;
+  projectThreadId?: number | null;
   status: "open" | "closed" | "committed";
   sourceThreadId?: string | null;
   updatedAt: string;
@@ -163,7 +177,16 @@ function normalizeProject(item: V1ProjectListItem, threads: Array<{
     visibility: item.visibility,
     ownerHandle: item.ownerHandle,
     createdAt: item.createdAt,
-    threads,
+    threads: item.threads?.map((thread) => ({
+      id: thread.id,
+      projectThreadId: thread.projectThreadId,
+      title: thread.title,
+      description: thread.description,
+      status: thread.status,
+      sourceThreadId: thread.sourceThreadId,
+      updatedAt: thread.updatedAt,
+      createdAt: thread.createdAt,
+    })) ?? threads,
   };
 }
 
@@ -171,12 +194,14 @@ function normalizeThread(row: V1ThreadListItem): {
   id: string;
   title: string | null;
   description: string | null;
+  projectThreadId?: number | null;
   status: "open" | "closed" | "committed";
   sourceThreadId?: string | null;
   updatedAt: string;
 } {
   return {
     id: row.id,
+    projectThreadId: row.projectThreadId,
     title: row.title,
     description: row.description,
     status: row.status,
@@ -744,7 +769,7 @@ function AccountSettingsRoute() {
   );
 }
 
-function ProjectRoute() {
+function ProjectRoute({ onProjectMutated }: { onProjectMutated?: () => void }) {
   const { handle, project: projectName } = useParams<{ handle: string; project: string }>();
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
@@ -901,7 +926,9 @@ function ProjectRoute() {
                 }
               : current
           ));
-          navigate(`/${encodeURIComponent(handle!)}/${encodeURIComponent(projectName!)}/thread/${data.id}`);
+          onProjectMutated?.();
+          const threadRouteId = data.projectThreadId != null ? String(data.projectThreadId) : data.id;
+          navigate(`/${encodeURIComponent(handle!)}/${encodeURIComponent(projectName!)}/thread/${threadRouteId}`);
           return { thread: created };
         } catch (error: unknown) {
           if (error instanceof Error && error.message.trim()) {
@@ -937,7 +964,7 @@ function SettingsRoute() {
   );
 }
 
-function ThreadRoute() {
+function ThreadRoute({ onProjectMutated }: { onProjectMutated?: () => void }) {
   const { handle, project: projectName, threadId } = useParams<{
     handle: string;
     project: string;
@@ -1009,7 +1036,9 @@ function ThreadRoute() {
 
   const handleThreadEvent = useCallback(
     async (event: V1EventItem) => {
-      if (!threadId || !isThreadEvent(event, threadId)) return;
+      if (!threadId) return;
+      const detailThreadId = detail?.thread.id;
+      if (!isThreadEvent(event, threadId) && !(detailThreadId && isThreadEvent(event, detailThreadId))) return;
       if (
         event.type === "assistant.run.started"
         || event.type === "assistant.run.progress"
@@ -1023,7 +1052,7 @@ function ThreadRoute() {
         refreshThreadDebounced();
       }
     },
-    [threadId, refreshThreadDebounced],
+    [detail?.thread.id, refreshThreadDebounced, threadId],
   );
 
   const processEventPayload = useCallback(async (event: V1EventItem) => {
@@ -1258,6 +1287,7 @@ function ThreadRoute() {
           }
           const data = (await res.json()) as { thread: ThreadDetail };
           setDetail((prev) => (prev ? { ...prev, thread: data.thread } : prev));
+          onProjectMutated?.();
           return data;
         } catch (error: unknown) {
           if (error instanceof Error && error.message.trim()) {
@@ -1454,7 +1484,9 @@ function ThreadRoute() {
             createdAt: new Date().toISOString(),
             threadCount: 0,
           });
-          navigate(`/${encodeURIComponent(handle!)}/${encodeURIComponent(projectName!)}/thread/${data.id}`);
+          onProjectMutated?.();
+          const threadRouteId = data.projectThreadId != null ? String(data.projectThreadId) : data.id;
+          navigate(`/${encodeURIComponent(handle!)}/${encodeURIComponent(projectName!)}/thread/${threadRouteId}`);
           return { thread: created };
         } catch (error: unknown) {
           if (error instanceof Error && error.message.trim()) {
@@ -1467,13 +1499,81 @@ function ThreadRoute() {
   );
 }
 
+function AppShell({
+  projects,
+  setProjects,
+  isAuthenticated,
+  refreshProjects,
+}: {
+  projects: Project[];
+  setProjects: React.Dispatch<React.SetStateAction<Project[]>>;
+  isAuthenticated: boolean;
+  refreshProjects: () => void;
+}) {
+  const location = useLocation();
+  const [sidebarOpen, setSidebarOpen] = useState(() => {
+    try {
+      return localStorage.getItem("staffx-sidebar") !== "false";
+    } catch {
+      return true;
+    }
+  });
+
+  const toggleSidebar = useCallback(() => {
+    setSidebarOpen((prev) => {
+      const next = !prev;
+      try { localStorage.setItem("staffx-sidebar", String(next)); } catch {}
+      return next;
+    });
+  }, []);
+
+  const segments = location.pathname.replace(/^\//, "").split("/").filter(Boolean);
+  const activeProjectOwner = segments.length >= 2 && segments[0] !== "settings" ? segments[0] : undefined;
+  const activeProjectName = segments.length >= 2 && segments[0] !== "settings" ? segments[1] : undefined;
+
+  return (
+    <>
+      <NavigateSync />
+      <Header onToggleSidebar={toggleSidebar} />
+      <div className="app-layout">
+        {isAuthenticated && (
+          <Sidebar
+            projects={projects}
+            activeProjectOwner={activeProjectOwner}
+            activeProjectName={activeProjectName}
+            open={sidebarOpen}
+          />
+        )}
+        <div className="app-content">
+          <Routes>
+            <Route path="/" element={<HomePage projects={projects} setProjects={setProjects} />} />
+            <Route path="/:handle/:project" element={<ProjectRoute onProjectMutated={refreshProjects} />} />
+            <Route path="/settings" element={<AccountSettingsRoute />} />
+            <Route path="/:handle/:project/settings" element={<SettingsRoute />} />
+            <Route path="/:handle" element={<ProfileRoute />} />
+            <Route path="/:handle/:project/thread/:threadId" element={<ThreadRoute onProjectMutated={refreshProjects} />} />
+            <Route path="*" element={<NotFoundRoute />} />
+          </Routes>
+          <footer className="site-footer">
+            Built by <a href="https://x.com/wutheringsf" target="_blank" rel="noreferrer">@wutheringsf</a>
+          </footer>
+        </div>
+      </div>
+    </>
+  );
+}
+
 export function App() {
   const { isAuthenticated, isLoading, loginWithRedirect, logout } = useAuth0();
   const apiFetch = useApi();
   const [user, setUser] = useState<AuthUser | null>(null);
   const [projects, setProjects] = useState<Project[]>([]);
+  const [projectsKey, setProjectsKey] = useState(0);
+
+  const refreshProjects = useCallback(() => setProjectsKey((k) => k + 1), []);
 
   useEffect(() => {
+    if (!isAuthenticated) return;
     apiFetch("/projects", undefined, { auth: "optional" })
       .then(async (response) => {
         if (!response.ok) return;
@@ -1484,7 +1584,7 @@ export function App() {
       .catch((error) => {
         console.error("Project fetch failed:", error);
       });
-  }, [apiFetch, isAuthenticated]);
+  }, [apiFetch, isAuthenticated, projectsKey]);
 
   useEffect(() => {
     if (!isAuthenticated) {
@@ -1514,20 +1614,7 @@ export function App() {
       }}
     >
       <BrowserRouter>
-        <NavigateSync />
-        <Header />
-        <Routes>
-          <Route path="/" element={<HomePage projects={projects} setProjects={setProjects} />} />
-          <Route path="/:handle/:project" element={<ProjectRoute />} />
-          <Route path="/settings" element={<AccountSettingsRoute />} />
-          <Route path="/:handle/:project/settings" element={<SettingsRoute />} />
-          <Route path="/:handle" element={<ProfileRoute />} />
-          <Route path="/:handle/:project/thread/:threadId" element={<ThreadRoute />} />
-          <Route path="*" element={<NotFoundRoute />} />
-        </Routes>
-        <footer className="site-footer">
-          Built by <a href="https://x.com/wutheringsf" target="_blank" rel="noreferrer">@wutheringsf</a>
-        </footer>
+        <AppShell projects={projects} setProjects={setProjects} isAuthenticated={isAuthenticated} refreshProjects={refreshProjects} />
       </BrowserRouter>
     </AuthContext.Provider>
   );

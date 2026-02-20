@@ -11,6 +11,7 @@ export const isFinalizedThreadStatus = (status: ThreadStatus): boolean =>
 
 export interface Thread {
   id: string;
+  projectThreadId?: number | null;
   title: string | null;
   description: string | null;
   status: ThreadStatus;
