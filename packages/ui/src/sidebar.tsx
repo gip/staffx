@@ -65,10 +65,10 @@ export function Sidebar({
                   {p.threads.slice(0, 10).map((t) => (
                     <Link
                       key={t.id}
-                      to={`/${p.ownerHandle}/${p.name}/thread/${t.id}`}
+                      to={`/${p.ownerHandle}/${p.name}/thread/${t.projectThreadId ?? t.id}`}
                       className="sidebar-thread"
                     >
-                      <span className="sidebar-thread-id">#{t.id}</span>
+                      <span className="sidebar-thread-id">#{t.projectThreadId ?? t.id}</span>
                       <span className="sidebar-thread-title">
                         {t.title || "Untitled"}
                       </span>

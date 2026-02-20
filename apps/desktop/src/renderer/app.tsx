@@ -43,6 +43,14 @@ interface V1ProjectListItem {
   ownerHandle: string;
   createdAt: string;
   threadCount: number;
+  threads?: Array<{
+    id: string;
+    projectThreadId: number;
+    title: string | null;
+    description: string | null;
+    status: "open" | "closed" | "committed";
+    updatedAt: string;
+  }>;
 }
 
 interface V1ProjectListResponse {
@@ -156,7 +164,14 @@ function normalizeProject(item: V1ProjectListItem): Project {
     visibility: item.visibility,
     ownerHandle: item.ownerHandle,
     createdAt: item.createdAt,
-    threads: [],
+    threads: (item.threads ?? []).map((t) => ({
+      id: t.id,
+      projectThreadId: t.projectThreadId,
+      title: t.title,
+      description: t.description,
+      status: t.status,
+      updatedAt: t.updatedAt,
+    })),
   };
 }
 
