@@ -63,9 +63,8 @@ export async function enqueueAgentRun(params: EnqueueAgentRunParams): Promise<st
       plan_action_id,
       chat_message_id,
       prompt,
-      system_prompt,
-      status
-    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'queued') RETURNING id`,
+      system_prompt
+    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id`,
     [
       randomUUID(),
       params.threadId,

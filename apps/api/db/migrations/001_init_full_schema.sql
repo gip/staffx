@@ -416,6 +416,8 @@ begin
   end if;
 end $$;
 
+create sequence if not exists threads_project_thread_id_seq;
+
 create table threads (
   id               text primary key,
   title            text,
@@ -423,6 +425,7 @@ create table threads (
   project_id       text not null references projects(id) on delete cascade,
   created_by       uuid not null references users(id),
   seed_system_id   text not null references systems(id),
+  project_thread_id integer not null default nextval('threads_project_thread_id_seq'),
   source_thread_id text references threads(id),
   status           text not null default 'open'
     check (status in ('open', 'closed', 'committed')),
@@ -431,6 +434,7 @@ create table threads (
 );
 
 create index idx_threads_project on threads (project_id);
+create unique index idx_threads_project_thread_id on threads (project_thread_id);
 create index idx_threads_created_by on threads (created_by);
 create index idx_threads_seed on threads (seed_system_id);
 create index idx_threads_source on threads (source_thread_id) where source_thread_id is not null;
