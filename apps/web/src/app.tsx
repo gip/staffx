@@ -6,6 +6,7 @@ import {
   Route,
   Routes,
   useNavigate,
+  useLocation,
   useParams,
   useSearchParams,
 } from "react-router-dom";
@@ -13,6 +14,7 @@ import {
   AuthContext,
   useAuth,
   Header,
+  Sidebar,
   Home,
   ProjectPage,
   ProjectSettingsPage,
@@ -527,7 +529,7 @@ function AccountSettingsRoute() {
   );
 }
 
-function ProjectRoute() {
+function ProjectRoute({ onProjectMutated }: { onProjectMutated?: () => void }) {
   const { handle, project: projectName } = useParams<{ handle: string; project: string }>();
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
@@ -647,6 +649,7 @@ function ProjectRoute() {
             return { error: "New thread not found" };
           }
           navigate(`/${encodeURIComponent(handle!)}/${encodeURIComponent(projectName!)}/thread/${data.thread.projectThreadId}`);
+          onProjectMutated?.();
           return data;
         } catch (error: unknown) {
           if (error instanceof Error && error.message.trim()) {
@@ -832,7 +835,7 @@ function SettingsRoute() {
   );
 }
 
-function ThreadRoute() {
+function ThreadRoute({ onProjectMutated }: { onProjectMutated?: () => void }) {
   const { handle, project: projectName, threadId } = useParams<{
     handle: string;
     project: string;
@@ -947,6 +950,7 @@ function ThreadRoute() {
           }
           const data = (await res.json()) as { thread: ThreadDetail };
           setDetail((prev) => (prev ? { ...prev, thread: data.thread } : prev));
+          onProjectMutated?.();
           return data;
         } catch (error: unknown) {
           if (error instanceof Error && error.message.trim()) {
@@ -1291,6 +1295,7 @@ function ThreadRoute() {
             return { error: "New thread not found" };
           }
           navigate(`/${encodeURIComponent(handle!)}/${encodeURIComponent(projectName!)}/thread/${data.thread.projectThreadId}`);
+          onProjectMutated?.();
           return data;
         } catch (error: unknown) {
           if (error instanceof Error && error.message.trim()) {
@@ -1303,11 +1308,78 @@ function ThreadRoute() {
   );
 }
 
+function AppShell({
+  projects,
+  setProjects,
+  isAuthenticated,
+  refreshProjects,
+}: {
+  projects: Project[];
+  setProjects: React.Dispatch<React.SetStateAction<Project[]>>;
+  isAuthenticated: boolean;
+  refreshProjects: () => void;
+}) {
+  const location = useLocation();
+  const [sidebarOpen, setSidebarOpen] = useState(() => {
+    try {
+      return localStorage.getItem("staffx-sidebar") !== "false";
+    } catch {
+      return true;
+    }
+  });
+
+  const toggleSidebar = useCallback(() => {
+    setSidebarOpen((prev) => {
+      const next = !prev;
+      try { localStorage.setItem("staffx-sidebar", String(next)); } catch {}
+      return next;
+    });
+  }, []);
+
+  const segments = location.pathname.replace(/^\//, "").split("/").filter(Boolean);
+  const activeProjectOwner = segments.length >= 2 && segments[0] !== "settings" ? segments[0] : undefined;
+  const activeProjectName = segments.length >= 2 && segments[0] !== "settings" ? segments[1] : undefined;
+
+  return (
+    <>
+      <NavigateSync />
+      <Header onToggleSidebar={toggleSidebar} />
+      <div className="app-layout">
+        {isAuthenticated && (
+          <Sidebar
+            projects={projects}
+            activeProjectOwner={activeProjectOwner}
+            activeProjectName={activeProjectName}
+            open={sidebarOpen}
+          />
+        )}
+        <div className="app-content">
+          <Routes>
+            <Route path="/" element={<HomePage projects={projects} setProjects={setProjects} />} />
+            <Route path="/:handle/:project" element={<ProjectRoute onProjectMutated={refreshProjects} />} />
+            <Route path="/settings" element={<AccountSettingsRoute />} />
+            <Route path="/:handle/:project/settings" element={<SettingsRoute />} />
+            <Route path="/:handle" element={<ProfileRoute />} />
+            <Route path="/:handle/:project/thread/:threadId" element={<ThreadRoute onProjectMutated={refreshProjects} />} />
+            <Route path="*" element={<NotFoundRoute />} />
+          </Routes>
+          <footer className="site-footer">
+            Built by <a href="https://x.com/wutheringsf" target="_blank" rel="noreferrer">@wutheringsf</a>
+          </footer>
+        </div>
+      </div>
+    </>
+  );
+}
+
 export function App() {
   const { isAuthenticated, isLoading, loginWithRedirect, logout } = useAuth0();
   const apiFetch = useApi();
   const [user, setUser] = useState<AuthUser | null>(null);
   const [projects, setProjects] = useState<Project[]>([]);
+  const [projectsKey, setProjectsKey] = useState(0);
+
+  const refreshProjects = useCallback(() => setProjectsKey((k) => k + 1), []);
 
   useEffect(() => {
     apiFetch("/projects", undefined, { auth: "optional" })
@@ -1318,7 +1390,7 @@ export function App() {
       .catch((error) => {
         console.error("Project fetch failed:", error);
       });
-  }, [apiFetch, isAuthenticated]);
+  }, [apiFetch, isAuthenticated, projectsKey]);
 
   useEffect(() => {
     if (!isAuthenticated) {
@@ -1348,20 +1420,7 @@ export function App() {
       }}
     >
       <BrowserRouter>
-        <NavigateSync />
-        <Header />
-        <Routes>
-          <Route path="/" element={<HomePage projects={projects} setProjects={setProjects} />} />
-          <Route path="/:handle/:project" element={<ProjectRoute />} />
-          <Route path="/settings" element={<AccountSettingsRoute />} />
-          <Route path="/:handle/:project/settings" element={<SettingsRoute />} />
-          <Route path="/:handle" element={<ProfileRoute />} />
-          <Route path="/:handle/:project/thread/:threadId" element={<ThreadRoute />} />
-          <Route path="*" element={<NotFoundRoute />} />
-        </Routes>
-        <footer className="site-footer">
-          Built by <a href="https://x.com/wutheringsf" target="_blank" rel="noreferrer">@wutheringsf</a>
-        </footer>
+        <AppShell projects={projects} setProjects={setProjects} isAuthenticated={isAuthenticated} refreshProjects={refreshProjects} />
       </BrowserRouter>
     </AuthContext.Provider>
   );

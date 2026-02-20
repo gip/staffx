@@ -4,6 +4,7 @@ import {
   AuthContext,
   useAuth,
   Header,
+  Sidebar,
   Home,
   ProjectPage,
   ProjectSettingsPage,
@@ -550,7 +551,7 @@ function AccountSettingsRoute({ isAuthenticated }: { isAuthenticated: boolean })
   );
 }
 
-function ProjectRoute({ isAuthenticated }: { isAuthenticated: boolean }) {
+function ProjectRoute({ isAuthenticated, onProjectMutated }: { isAuthenticated: boolean; onProjectMutated?: () => void }) {
   const { handle, project: projectName } = useParams<{ handle: string; project: string }>();
   const apiFetch = useApi();
   const [project, setProject] = useState<Project | null>(null);
@@ -667,6 +668,7 @@ function ProjectRoute({ isAuthenticated }: { isAuthenticated: boolean }) {
           if (!data?.thread?.projectThreadId) {
             return { error: "New thread not found" };
           }
+          onProjectMutated?.();
           return data;
         } catch (error: unknown) {
           if (error instanceof Error && error.message.trim()) {
@@ -839,7 +841,7 @@ function SettingsRoute({ isAuthenticated }: { isAuthenticated: boolean }) {
   );
 }
 
-function ThreadRoute({ isAuthenticated }: { isAuthenticated: boolean }) {
+function ThreadRoute({ isAuthenticated, onProjectMutated }: { isAuthenticated: boolean; onProjectMutated?: () => void }) {
   const { handle, project: projectName, threadId } = useParams<{
     handle: string;
     project: string;
@@ -950,6 +952,7 @@ function ThreadRoute({ isAuthenticated }: { isAuthenticated: boolean }) {
           }
           const data = (await res.json()) as { thread: ThreadDetail };
           setDetail((prev) => (prev ? { ...prev, thread: data.thread } : prev));
+          onProjectMutated?.();
           return data;
         } catch (error: unknown) {
           if (error instanceof Error && error.message.trim()) {
@@ -1393,20 +1396,72 @@ function ThreadRoute({ isAuthenticated }: { isAuthenticated: boolean }) {
   );
 }
 
-function ProjectHeader() {
+function AppShell({
+  projects,
+  setProjects,
+  isAuthenticated,
+  refreshProjects,
+}: {
+  projects: Project[];
+  setProjects: React.Dispatch<React.SetStateAction<Project[]>>;
+  isAuthenticated: boolean;
+  refreshProjects: () => void;
+}) {
   const location = useLocation();
+  const [sidebarOpen, setSidebarOpen] = useState(() => {
+    try {
+      return localStorage.getItem("staffx-sidebar") !== "false";
+    } catch {
+      return true;
+    }
+  });
+
+  const toggleSidebar = useCallback(() => {
+    setSidebarOpen((prev) => {
+      const next = !prev;
+      try { localStorage.setItem("staffx-sidebar", String(next)); } catch {}
+      return next;
+    });
+  }, []);
+
   const segments = location.pathname.replace(/^\//, "").split("/").filter(Boolean);
-  const isProjectRoute =
-    segments.length >= 2 && segments[0] !== "settings";
+  const isProjectRoute = segments.length >= 2 && segments[0] !== "settings";
   const handle = isProjectRoute ? segments[0] : undefined;
   const projectName = isProjectRoute ? segments[1] : undefined;
 
   return (
-    <Header
-      variant="desktop"
-      projectLabel={handle && projectName ? `${handle} / ${projectName}` : undefined}
-      projectHref={handle && projectName ? `/${handle}/${projectName}` : undefined}
-    />
+    <>
+      <NavigateSync />
+      <Header
+        variant="desktop"
+        projectLabel={handle && projectName ? `${handle} / ${projectName}` : undefined}
+        projectHref={handle && projectName ? `/${handle}/${projectName}` : undefined}
+        onToggleSidebar={toggleSidebar}
+      />
+      <div className="app-layout">
+        {isAuthenticated && (
+          <Sidebar
+            projects={projects}
+            activeProjectOwner={handle}
+            activeProjectName={projectName}
+            open={sidebarOpen}
+          />
+        )}
+        <div className="app-content">
+          <Routes>
+            <Route path="/" element={<HomeRoute projects={projects} setProjects={setProjects} />} />
+            <Route path="/:handle/:project" element={<ProjectRoute isAuthenticated={isAuthenticated} onProjectMutated={refreshProjects} />} />
+            <Route path="/settings" element={<AccountSettingsRoute isAuthenticated={isAuthenticated} />} />
+            <Route path="/:handle/:project/settings" element={<SettingsRoute isAuthenticated={isAuthenticated} />} />
+            <Route path="/:handle" element={<ProfileRoute isAuthenticated={isAuthenticated} />} />
+            <Route
+              path="/:handle/:project/thread/:threadId"
+              element={<ThreadRoute isAuthenticated={isAuthenticated} onProjectMutated={refreshProjects} />}
+            />
+          </Routes>
+        </div>
+      </div>
+    </>
   );
 }
 
@@ -1415,6 +1470,9 @@ export function App() {
   const [isLoading, setIsLoading] = useState(true);
   const [user, setUser] = useState<AuthUser | null>(null);
   const [projects, setProjects] = useState<Project[]>([]);
+  const [projectsKey, setProjectsKey] = useState(0);
+
+  const refreshProjects = useCallback(() => setProjectsKey((k) => k + 1), []);
 
   useEffect(() => {
     const { auth } = window.electronAPI;
@@ -1464,7 +1522,7 @@ export function App() {
         console.error("API fetch failed:", err);
       }
     });
-  }, [isAuthenticated]);
+  }, [isAuthenticated, projectsKey]);
 
   return (
     <AuthContext.Provider
@@ -1476,19 +1534,7 @@ export function App() {
         logout: () => window.electronAPI.auth.logout(),
       }}
     >
-      <NavigateSync />
-      <ProjectHeader />
-      <Routes>
-        <Route path="/" element={<HomeRoute projects={projects} setProjects={setProjects} />} />
-        <Route path="/:handle/:project" element={<ProjectRoute isAuthenticated={isAuthenticated} />} />
-        <Route path="/settings" element={<AccountSettingsRoute isAuthenticated={isAuthenticated} />} />
-        <Route path="/:handle/:project/settings" element={<SettingsRoute isAuthenticated={isAuthenticated} />} />
-        <Route path="/:handle" element={<ProfileRoute isAuthenticated={isAuthenticated} />} />
-        <Route
-          path="/:handle/:project/thread/:threadId"
-          element={<ThreadRoute isAuthenticated={isAuthenticated} />}
-        />
-      </Routes>
+      <AppShell projects={projects} setProjects={setProjects} isAuthenticated={isAuthenticated} refreshProjects={refreshProjects} />
     </AuthContext.Provider>
   );
 }
