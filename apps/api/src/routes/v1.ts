@@ -1071,7 +1071,8 @@ export async function v1Routes(app: FastifyInstance) {
         },
         topology,
         matrix: {
-          nodes: matrixCells,
+          nodes: topology.nodes,
+          cells: matrixCells,
           concerns: concernRows.map((concern) => ({ name: concern.name, position: concern.position })),
           documents: matrixDocumentsRows.map((document) => ({
             hash: document.hash,
@@ -1243,12 +1244,14 @@ export async function v1Routes(app: FastifyInstance) {
         ).then((result) => result.rows),
       ]);
 
+      const topology = toTopology(nodeResult.rows, edgeResult.rows);
       return {
         threadId,
         systemId,
-        topology: toTopology(nodeResult.rows, edgeResult.rows),
+        topology,
         matrix: {
-          nodes: cells,
+          nodes: topology.nodes,
+          cells,
           concerns: concernRows.map((concern) => ({ name: concern.name, position: concern.position })),
           documents: documentRows.map((document) => ({
             hash: document.hash,
@@ -1317,7 +1320,7 @@ export async function v1Routes(app: FastifyInstance) {
         systemId,
         changed,
         matrix: {
-          nodes: cells,
+          cells,
         },
       };
     },
