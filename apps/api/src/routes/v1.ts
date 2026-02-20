@@ -66,6 +66,7 @@ interface V1ThreadMatrixNodeCell {
     sourceType: string;
     sourceUrl: string | null;
     sourceExternalId: string | null;
+    refType: string;
   }>;
   artifacts: Array<{
     path: string;
@@ -441,8 +442,9 @@ async function loadThreadMatrix(systemId: string): Promise<V1ThreadMatrixNodeCel
     source_type: string;
     source_url: string | null;
     source_external_id: string | null;
+    ref_type: string;
   }>(
-    `SELECT mr.node_id, mr.concern, d.hash, d.title, d.kind::text, d.language,
+    `SELECT mr.node_id, mr.concern, mr.ref_type::text AS ref_type, d.hash, d.title, d.kind::text, d.language,
             d.source_type::text AS source_type, d.source_url, d.source_external_id
        FROM matrix_refs mr
        JOIN documents d ON d.system_id = mr.system_id AND d.hash = mr.doc_hash
@@ -462,6 +464,7 @@ async function loadThreadMatrix(systemId: string): Promise<V1ThreadMatrixNodeCel
       sourceType: row.source_type,
       sourceUrl: row.source_url,
       sourceExternalId: row.source_external_id,
+      refType: row.ref_type,
     };
 
     if (!existing) {
