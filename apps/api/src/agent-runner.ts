@@ -706,7 +706,7 @@ interface RunClaudeAgentResult {
   messages: string[];
   changes: AgentRunPlanChange[];
   error?: string;
-  openShipBundleFiles?: OpenShipBundleFile[];
+  openShipBundleFiles: OpenShipBundleFile[];
 }
 
 async function runClaudeAgentWithBundleDiff(
@@ -731,6 +731,7 @@ async function runClaudeAgentWithBundleDiff(
       messages: [`OpenShip pre-run generation failed: ${message}`],
       changes: [],
       error: message,
+      openShipBundleFiles: [],
     };
   }
 
@@ -745,7 +746,7 @@ async function runClaudeAgentWithBundleDiff(
       openShipBundleDir: preRunDir,
     });
   }
-  let runResult: AgentRunResult;
+  let runResult: RunClaudeAgentResult;
   try {
     console.info("[agent-runner] invoking Claude agent", {
       threadId,
@@ -753,18 +754,27 @@ async function runClaudeAgentWithBundleDiff(
       workspace,
       systemPrompt,
     });
-    runResult = await runClaudeAgent({
+    const result = await runClaudeAgent({
       prompt: runPrompt,
       cwd: workspace,
       systemPrompt: systemPrompt ?? undefined,
       allowedTools: ["Read", "Grep", "Glob", "Bash", "Edit", "Write"],
     });
-  } catch (error: unknown) {
     runResult = {
-      status: "failed" as QueueStatus,
+      status: result.status,
+      messages: result.messages,
+      changes: result.changes,
+      error: result.error,
+      openShipBundleFiles: [],
+    };
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    runResult = {
+      status: "failed",
       messages: [`Execution failed: ${error instanceof Error ? error.message : String(error)}`],
       changes: [],
-      error: error instanceof Error ? error.message : String(error),
+      error: message,
+      openShipBundleFiles: [],
     };
   }
 
@@ -809,6 +819,7 @@ async function runClaudeAgentWithBundleDiff(
         messages: [...runResult.messages, `OpenShip reconciliation snapshot failed: ${runSummaryError(error)}`],
         changes: runResult.changes,
         error: runSummaryError(error),
+        openShipBundleFiles: [],
       };
     }
   }
@@ -838,6 +849,7 @@ async function applyOpenShipBundleResult(
       messages: [...result.messages, `OpenShip reconciliation failed: ${runSummaryError(error)}`],
       changes: result.changes,
       error: runSummaryError(error),
+      openShipBundleFiles: [],
     };
   }
 

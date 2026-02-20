@@ -1,6 +1,8 @@
 # OpenShip Domain Model
 
-Reference for the OpenShip schema. Source of truth: `apps/api/src/migrations/001_init.sql`.
+Reference for the OpenShip schema. Source of truth: `apps/api/db/migrations/0001_init_full_schema.sql`.
+
+This repository now uses a single full-schema migration as the bootstrap point for the v1 API migration story.
 
 ## Core Concepts
 
