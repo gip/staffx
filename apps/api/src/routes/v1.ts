@@ -1778,6 +1778,11 @@ export async function v1Routes(app: FastifyInstance) {
         );
       }
 
+      const origin = req.headers.origin;
+      if (origin) {
+        reply.raw.setHeader("Access-Control-Allow-Origin", origin);
+        reply.raw.setHeader("Access-Control-Allow-Credentials", "true");
+      }
       reply.raw.setHeader("Content-Type", "text/event-stream");
       reply.raw.setHeader("Cache-Control", "no-cache");
       reply.raw.setHeader("Connection", "keep-alive");
