@@ -11,7 +11,10 @@ const TYPED_NODE_ID_SCHEME = "typed_key_v1";
 const TYPED_NODE_ID_PATTERN = /^([hcpl])\.([a-z0-9]+(?:-[a-z0-9]+)*)$/;
 
 type YamlScalar = string | number | boolean | null;
-type YamlValue = YamlScalar | YamlValue[] | Record<string, YamlValue>;
+interface YamlObject {
+  [key: string]: YamlValue;
+}
+type YamlValue = YamlScalar | YamlValue[] | YamlObject;
 
 export interface OpenShipBundleFile {
   path: string;
@@ -262,13 +265,21 @@ function parseOpenShipEdges(raw: string): ParsedOpenShipEdge[] {
   const edgeFile = parsed as Record<string, YamlValue>;
   const topLevelKeys = Object.keys(edgeFile);
   const edgesPayload = edgeFile.edges;
-  let edgesList: YamlValue | undefined;
+  let edgesList: YamlValue[] = [];
 
   if (Array.isArray(edgesPayload)) {
     edgesList = edgesPayload;
   } else if (edgesPayload && typeof edgesPayload === "object" && !Array.isArray(edgesPayload)) {
     const nested = edgesPayload as Record<string, YamlValue>;
-    edgesList = nested.edges;
+    const nestedEdges = nested.edges;
+    if (!Array.isArray(nestedEdges)) {
+      edgesError(
+        `topLevelKeys=${topLevelKeys.join(", ") || "<empty>"}, nested edges=${describeYamlValue(
+          nestedEdges,
+        )}; rawPreview="${previewYaml(raw)}"`,
+      );
+    }
+    edgesList = nestedEdges as YamlValue[];
   } else {
     edgesError(
       `topLevelKeys=${topLevelKeys.join(", ") || "<empty>"}, edges value=${describeYamlValue(
@@ -286,17 +297,18 @@ function parseOpenShipEdges(raw: string): ParsedOpenShipEdge[] {
   }
 
   return edgesList.map((entry, index) => {
+    const normalizedEntry = entry;
     if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
       edgesError(
-        `Invalid edge entry at index ${index} in ${filePath}; value=${describeYamlValue(entry as YamlValue | undefined)}; ` +
+        `Invalid edge entry at index ${index} in ${filePath}; value=${describeYamlValue(normalizedEntry)}; ` +
           `rawPreview="${previewYaml(raw)}"`,
       );
     }
 
     const edge = entry as Record<string, YamlValue>;
-    let from: string;
-    let to: string;
-    let type: ParsedOpenShipEdge["type"];
+    let from = "";
+    let to = "";
+    let type: ParsedOpenShipEdge["type"] = "Dependency";
     try {
       from = asString(edge.fromNodeId, `edge ${index} in ${filePath} fromNodeId`);
       to = asString(edge.toNodeId, `edge ${index} in ${filePath} toNodeId`);

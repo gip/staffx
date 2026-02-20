@@ -1,12 +1,11 @@
 import Fastify from "fastify";
 import cors from "@fastify/cors";
+import { close } from "./db.js";
 import { healthRoutes } from "./routes/health.js";
 import { meRoutes } from "./routes/me.js";
-import { projectRoutes } from "./routes/projects.js";
-import { threadRoutes } from "./routes/thread.js";
-import { integrationsRoutes } from "./routes/integrations.js";
 import { userRoutes } from "./routes/users.js";
-import { close } from "./db.js";
+import { v1Routes } from "./routes/v1.js";
+import { integrationsRoutes } from "./routes/integrations.js";
 import { startAgentRunner } from "./agent-runner.js";
 
 const port = Number(process.env.PORT ?? 3001);
@@ -16,12 +15,14 @@ const apiPollMsRaw = Number(process.env.STAFFX_AGENT_RUNNER_POLL_MS ?? "1000");
 const apiPollMs = Number.isFinite(apiPollMsRaw) && apiPollMsRaw > 0 ? apiPollMsRaw : 1000;
 
 await app.register(cors, { origin: true, methods: ["GET", "HEAD", "PUT", "PATCH", "POST", "DELETE"] });
-await app.register(healthRoutes);
-await app.register(meRoutes);
-await app.register(projectRoutes);
-await app.register(threadRoutes);
-await app.register(integrationsRoutes);
-await app.register(userRoutes);
+
+await app.register(async (subApp) => {
+    await subApp.register(healthRoutes);
+    await subApp.register(meRoutes);
+    await subApp.register(integrationsRoutes);
+    await subApp.register(v1Routes);
+    await subApp.register(userRoutes);
+  }, { prefix: "/v1" });
 
 const stopAgentRunner = isClaudeAgentEnabled
   ? startAgentRunner({
@@ -31,6 +32,7 @@ const stopAgentRunner = isClaudeAgentEnabled
   : () => {};
 
 app.log.info({
+  apiVersion: "v1",
   agentRunnerEnabled: isClaudeAgentEnabled,
 });
 

@@ -556,6 +556,7 @@ interface MatrixDocumentAttach {
   concern: string;
   concerns: string[];
   refType: DocKind;
+  docHash?: string;
 }
 
 interface MatrixDocumentCreateBodyBase {
@@ -870,13 +871,13 @@ function mapAgentRunRowToResponse(row: {
   threadState?: ThreadDetailPayload;
 }): AssistantRunPlanResponse | AssistantRunQueuedResponse {
   if (row.threadStatus !== "success" && row.threadStatus !== "failed" && row.threadStatus !== "cancelled") {
-    return {
-      runId: row.runId,
-      status: row.threadStatus,
-      message: "Run has not completed yet.",
-      systemId: row.systemId,
-    };
-  }
+      return {
+        runId: row.runId,
+        status: row.threadStatus,
+        message: "Run queued for desktop execution",
+        systemId: row.systemId,
+      };
+    }
 
   const status = row.threadStatus === "cancelled" ? "failed" : row.runResultStatus ?? row.threadStatus;
   const messages = row.runResultMessages && row.runResultMessages.length > 0
@@ -1270,7 +1271,7 @@ function isDocumentKind(value: string): value is DocKind {
 
 function parseDocumentAttach(
   attach: Partial<MatrixDocumentAttach> | undefined,
-): { nodeId: string; concern: string; concerns: string[]; refType: DocKind } | undefined {
+): MatrixDocumentAttach | undefined {
   if (!attach) return undefined;
   if (typeof attach !== "object") return undefined;
   const parsedAttach = attach as Partial<{
@@ -1278,6 +1279,7 @@ function parseDocumentAttach(
     concerns: string[];
     concern: string;
     refType: string;
+    docHash: string;
   }>;
 
   if (typeof parsedAttach.nodeId !== "string" || typeof parsedAttach.refType !== "string") {
@@ -1297,7 +1299,13 @@ function parseDocumentAttach(
   if (!nodeId || !concerns) return undefined;
   if (!isDocumentKind(refType)) return undefined;
 
-  return { nodeId, concern: concerns[0], concerns, refType: refType as DocKind };
+  return {
+    nodeId,
+    concern: concerns[0],
+    concerns,
+    refType: refType as DocKind,
+    docHash: typeof parsedAttach.docHash === "string" && parsedAttach.docHash.trim() ? parsedAttach.docHash.trim() : undefined,
+  };
 }
 
 function normalizeMatrixDocumentReplaceBody(body: unknown): MatrixDocumentReplaceBody | null {
@@ -1452,9 +1460,9 @@ interface ThreadDetailPayload {
       layoutY: number | null;
     }>;
     cells: MatrixCell[];
-    documents: Array<{
+  documents: Array<{
       hash: string;
-      kind: "Document" | "Skill";
+      kind: "Document" | "Skill" | "Prompt";
       title: string;
       language: string;
       text: string;
@@ -1594,6 +1602,7 @@ interface SystemPromptAttachmentPayload {
   concern: string;
   concerns: string[];
   refType: "Prompt";
+  docHash: string;
 }
 
 interface SystemPromptValidationFailure {
@@ -1640,6 +1649,7 @@ async function validateSystemPromptAttachment(
       concern: SYSTEM_PROMPT_CONCERN,
       concerns: [SYSTEM_PROMPT_CONCERN],
       refType: "Prompt",
+      docHash: attachment.docHash,
     },
   };
 }
@@ -2374,21 +2384,22 @@ export async function threadRoutes(app: FastifyInstance) {
         );
 
         const outputSystemId = beginResult.rows[0]?.output_system_id;
-        if (!outputSystemId) {
-          throw new Error("Failed to create action output system");
-        }
+      if (!outputSystemId) {
+        throw new Error("Failed to create action output system");
+      }
 
-        if (payload.refType === "Prompt") {
-          const validation = await validateSystemPromptAttachment(
-            client,
-            outputSystemId,
-            {
-              nodeId: payload.nodeId,
-              concern: payload.concern,
-              concerns: payload.concerns,
-              refType: "Prompt",
-            },
-          );
+      if (payload.refType === "Prompt") {
+        const validation = await validateSystemPromptAttachment(
+          client,
+          outputSystemId,
+          {
+            nodeId: payload.nodeId,
+            concern: payload.concern,
+            concerns: payload.concerns,
+            refType: "Prompt",
+            docHash: payload.docHash,
+          },
+        );
           if (!validation.valid) {
             await client.query("ROLLBACK");
             inTransaction = false;
@@ -2628,6 +2639,7 @@ export async function threadRoutes(app: FastifyInstance) {
               concern: payload.attach.concern,
               concerns: payload.attach.concerns,
               refType: "Prompt",
+              docHash: payload.attach.docHash ?? hash,
             },
           );
           if (!validation.valid) {
@@ -3054,6 +3066,7 @@ export async function threadRoutes(app: FastifyInstance) {
               concern: payload.concern,
               concerns: payload.concerns,
               refType: "Prompt",
+              docHash: payload.docHash,
             },
           );
           if (!validation.valid) {

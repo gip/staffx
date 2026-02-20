@@ -10,7 +10,13 @@ import {
 } from "@staffx/agent-runtime";
 import { getAccessToken } from "./auth.js";
 
-const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:3001";
+function normalizeApiUrl(raw: string): string {
+  const trimmed = raw.trim().replace(/\/+$/, "");
+  if (!trimmed) return "http://localhost:3001/v1";
+  return trimmed.endsWith("/v1") ? trimmed : `${trimmed}/v1`;
+}
+
+const API_URL = normalizeApiUrl(import.meta.env.VITE_API_URL ?? "http://localhost:3001");
 const DEFAULT_RUNNER_ID = process.env.STAFFX_AGENT_RUNNER_ID ?? "desktop-runner";
 const AGENTS_BOOTSTRAP_FILE_NAME = "AGENTS.md";
 const OPENSHIP_SPEC_WORKSPACE_FILE_PATH = "skills/openship-specs-v1/SKILL.md";
@@ -322,7 +328,7 @@ async function completeRun(
 ) {
   await apiRequest<{ runId: string }>(
     token,
-    `/projects/${encodeURIComponent(handle)}/${encodeURIComponent(projectName)}/thread/${encodeURIComponent(threadId)}/assistant/run/${encodeURIComponent(runId)}/complete`,
+    `/assistant-runs/${encodeURIComponent(runId)}/complete`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -332,7 +338,7 @@ async function completeRun(
 
   return await apiRequest<AssistantRunResultResponse>(
     token,
-    `/projects/${encodeURIComponent(handle)}/${encodeURIComponent(projectName)}/thread/${encodeURIComponent(threadId)}/assistant/run/${encodeURIComponent(runId)}`,
+    `/assistant-runs/${encodeURIComponent(runId)}`,
     { method: "GET" },
   );
 }
@@ -351,7 +357,7 @@ export async function startAssistantRunLocal(payload: {
   try {
     claimPayload = await apiRequest<AssistantRunClaimResponse>(
       token,
-      `/projects/${encodeURIComponent(payload.handle)}/${encodeURIComponent(payload.projectName)}/thread/${encodeURIComponent(payload.threadId)}/assistant/run/${encodeURIComponent(payload.runId)}/claim`,
+      `/assistant-runs/${encodeURIComponent(payload.runId)}/claim`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -360,14 +366,14 @@ export async function startAssistantRunLocal(payload: {
     );
   } catch (error: unknown) {
     const message = toError(error);
-    if (message.includes("HTTP 409") || message.includes("Run is not available for claiming")) {
-      try {
-        return await apiRequest<unknown>(
-          token,
-          `/projects/${encodeURIComponent(payload.handle)}/${encodeURIComponent(payload.projectName)}/thread/${encodeURIComponent(payload.threadId)}/assistant/run/${encodeURIComponent(payload.runId)}`,
-          { method: "GET" },
-        );
-      } catch (readError: unknown) {
+      if (message.includes("HTTP 409") || message.includes("Run is not available for claiming")) {
+        try {
+          return await apiRequest<unknown>(
+            token,
+            `/assistant-runs/${encodeURIComponent(payload.runId)}`,
+            { method: "GET" },
+          );
+        } catch (readError: unknown) {
         logRunOutcome({
           runId: payload.runId,
           threadId: payload.threadId,
@@ -392,7 +398,7 @@ export async function startAssistantRunLocal(payload: {
     try {
       return await apiRequest<unknown>(
         token,
-        `/projects/${encodeURIComponent(payload.handle)}/${encodeURIComponent(payload.projectName)}/thread/${encodeURIComponent(payload.threadId)}/assistant/run/${encodeURIComponent(payload.runId)}`,
+        `/assistant-runs/${encodeURIComponent(payload.runId)}`,
         { method: "GET" },
       );
     } catch (error: unknown) {
@@ -404,7 +410,7 @@ export async function startAssistantRunLocal(payload: {
   try {
     descriptor = await apiRequest<OpenShipBundleDescriptor>(
       token,
-      `/projects/${encodeURIComponent(payload.handle)}/${encodeURIComponent(payload.projectName)}/thread/${encodeURIComponent(payload.threadId)}/openship/bundle`,
+      `/threads/${encodeURIComponent(payload.threadId)}/openship/bundle`,
       {
         method: "GET",
         headers: { Accept: "application/json" },
