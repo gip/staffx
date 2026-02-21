@@ -61,23 +61,17 @@ function extractAgentRunMessageText(value: unknown, depth = 0): string[] {
       return [typedValue.text];
     }
 
-    if (typedValue.content !== undefined) {
-      return extractAgentRunMessageText(typedValue.content, depth + 1);
-    }
-
-    if (typedValue.message !== undefined) {
-      return extractAgentRunMessageText(typedValue.message, depth + 1);
-    }
-
-    if (typedValue.result !== undefined) {
-      return extractAgentRunMessageText(typedValue.result, depth + 1);
-    }
-
-    if (typedValue.summary !== undefined) {
-      return extractAgentRunMessageText(typedValue.summary, depth + 1);
-    }
-
-    return [];
+    const candidates = [
+      typedValue.content,
+      typedValue.message,
+      typedValue.response,
+      typedValue.result,
+      typedValue.summary,
+      typedValue.output,
+      typedValue.aggregated_output,
+      typedValue.items,
+    ];
+    return candidates.flatMap((entry) => extractAgentRunMessageText(entry, depth + 1));
   }
 
   return [];
@@ -378,6 +372,7 @@ interface AssistantRunRow {
   run_result_messages: string[] | null;
   run_result_changes: AssistantRunPlanChange[] | null;
   run_error: string | null;
+  created_at: string;
 }
 
 interface BeginActionRow {
@@ -605,7 +600,9 @@ interface ParsedDocumentText {
   body: string;
 }
 
-const ALLOWED_ASSISTANT_MODELS = ["claude-opus-4-6", "claude-sonnet-4-6", "codex-5.3"] as const;
+const CODEX_MODEL = "gpt-5.3-codex";
+const LEGACY_CODEX_MODEL = "codex-5.3";
+const ALLOWED_ASSISTANT_MODELS = ["claude-opus-4-6", "claude-sonnet-4-6", CODEX_MODEL, LEGACY_CODEX_MODEL] as const;
 type AssistantModel = (typeof ALLOWED_ASSISTANT_MODELS)[number];
 const DEFAULT_ASSISTANT_MODEL: AssistantModel = "claude-opus-4-6";
 
@@ -638,6 +635,10 @@ function resolveAssistantModel(raw: unknown): AssistantModel | null {
   const normalized = raw.trim();
   if (normalized.length === 0) return null;
   return ALLOWED_ASSISTANT_MODELS.includes(normalized as AssistantModel) ? (normalized as AssistantModel) : null;
+}
+
+function normalizeAssistantModel(rawModel: AssistantModel): AssistantModel {
+  return rawModel === CODEX_MODEL ? LEGACY_CODEX_MODEL : rawModel;
 }
 
 function parseAssistantRunMode(value: unknown): "direct" | "plan" | null {
@@ -677,7 +678,7 @@ function parseAssistantRunRequest(body: unknown): AssistantRunRequestBody | null
   } else {
     const parsedModel = resolveAssistantModel(rawModel);
     if (parsedModel === null) return null;
-    model = parsedModel;
+    model = normalizeAssistantModel(parsedModel);
   }
 
   return { mode, chatMessageId, planActionId, executor, model, wait };
@@ -936,7 +937,7 @@ async function getAgentRunByThreadId(threadId: string, runId: string): Promise<A
   const result = await query<AssistantRunRow>(
     `SELECT id, thread_id, project_id, requested_by_user_id, model, mode, plan_action_id, chat_message_id,
             prompt, system_prompt, status, runner_id, run_result_status,
-            run_result_messages, run_result_changes, run_error
+            run_result_messages, run_result_changes, run_error, created_at
        FROM agent_runs
       WHERE id = $1 AND thread_id = $2`,
     [runId, threadId],
@@ -951,10 +952,27 @@ async function persistDesktopAgentRunCompletionMessage(
   runResultStatus: "success" | "failed",
 ): Promise<AssistantRunCompletionRecord | null> {
   const responseActionId = randomUUID();
-  const normalizedMessages = sanitizeAgentRunMessages(payload.messages)
-    .filter((message) => !message.startsWith("OpenShip changes:"));
-  if (normalizedMessages.length === 0) return null;
-  const responseMessage = normalizedMessages.join(" | ");
+  const normalizedMessages = sanitizeAgentRunMessages(payload.messages);
+  const nonChangeMessages = normalizedMessages.filter(
+    (message) => !message.startsWith("OpenShip changes:"),
+  );
+
+  const responseMessages = nonChangeMessages.length > 0
+    ? nonChangeMessages
+    : payload.changes.length > 0
+      ? normalizedMessages
+      : [
+          ...normalizedMessages.filter((message) => !message.startsWith("OpenShip changes:")),
+          payload.status === "failed"
+            ? (payload.error ?? "Execution failed.")
+            : "Execution completed.",
+        ];
+  const uniqueResponseMessages = [...new Set(responseMessages)];
+  if (uniqueResponseMessages.length === 0) {
+    return null;
+  }
+
+  const responseMessage = uniqueResponseMessages.join(" | ");
   await client.query(
     `SELECT begin_action($1, $2, $3::action_type, $4) AS output_system_id`,
     [threadId, responseActionId, "ExecuteResponse", "Agent execution response"],
@@ -3808,6 +3826,15 @@ export async function threadRoutes(app: FastifyInstance) {
           parsed.error,
           runnerId,
         );
+        req.log.info(
+          {
+            runId: run.id,
+            completionRunUpdateApplied,
+            completionStatus,
+            runnerId,
+          },
+          "updateAgentRunResult result",
+        );
         const normalizedCompletionStatus = completionStatus === "failed" ? "failed" : "success";
         await completionClient.query("BEGIN");
         if (completionRunUpdateApplied) {
@@ -3903,6 +3930,20 @@ export async function threadRoutes(app: FastifyInstance) {
       const threadState = shouldIncludeThreadState
         ? await buildThreadStatePayload(context).catch(() => undefined)
         : undefined;
+      let runMessages: AssistantRunMessageRow[] = [];
+      if (run.status === "success" || run.status === "failed" || run.status === "cancelled") {
+        const runMessageRows = await query<AssistantRunMessageRow>(
+          `SELECT m.id, m.action_id, m.role, m.content, m.created_at, a.position AS action_position, a.type AS action_type
+           FROM messages m
+           JOIN actions a ON a.thread_id = m.thread_id AND a.id = m.action_id
+           WHERE m.thread_id = $1
+             AND a.type = 'ExecuteResponse'
+             AND m.created_at >= $2
+           ORDER BY m.created_at DESC, m.position DESC`,
+          [context.threadId, run.created_at],
+        );
+        runMessages = runMessageRows.rows;
+      }
 
       return mapAgentRunRowToResponse({
         runId: run.id,
@@ -3912,6 +3953,7 @@ export async function threadRoutes(app: FastifyInstance) {
         runResultMessages: run.run_result_messages,
         runResultChanges: run.run_result_changes,
         runError: run.run_error,
+        messages: runMessages,
         threadStatus: run.status,
         threadState,
       });

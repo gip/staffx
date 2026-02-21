@@ -113,6 +113,7 @@ export interface ChatMessage {
   actionPosition?: number;
   role: MessageRole;
   content: string;
+  senderName?: string;
   createdAt: string;
 }
 
@@ -120,7 +121,7 @@ export type AssistantRunMode = "direct" | "plan";
 
 export type AssistantExecutor = "backend" | "desktop";
 
-type AssistantModel = "claude-opus-4-6" | "claude-sonnet-4-6" | "codex-5.3";
+type AssistantModel = "claude-opus-4-6" | "claude-sonnet-4-6" | "codex-5.3" | "gpt-5.3-codex";
 
 interface AssistantModelOption {
   key: AssistantModel;
@@ -130,7 +131,8 @@ interface AssistantModelOption {
 const ASSISTANT_MODELS: AssistantModelOption[] = [
   { key: "claude-opus-4-6", label: "Opus 4.6" },
   { key: "claude-sonnet-4-6", label: "Sonnet 4.6" },
-  { key: "codex-5.3", label: "Codex 5.3" },
+  { key: "codex-5.3", label: "Codex 5.3 (legacy)" },
+  { key: "gpt-5.3-codex", label: "Codex 5.3 (gpt-5.3-codex)" },
 ];
 
 const DEFAULT_ASSISTANT_MODEL: AssistantModel = "claude-opus-4-6";
@@ -3277,9 +3279,9 @@ export function ThreadPage({
           return sanitizeAssistantResponseText(content);
         };
 
-        const getChatSenderName = (role: "User" | "Assistant" | "System") => {
-          if (role === "User") return detail.thread.createdByHandle;
-          if (role === "Assistant") return role;
+        const getChatSenderName = (message: ChatMessage) => {
+          if (message.role === "User") return detail.thread.createdByHandle;
+          if (message.role === "Assistant") return message.senderName ?? "Assistant";
           return role;
         };
 
@@ -3306,7 +3308,7 @@ export function ThreadPage({
                   >
                     <header>
                       <div className="thread-chat-message-header-left">
-                        <strong>{getChatSenderName(message.role)}</strong>
+                        <strong>{getChatSenderName(message)}</strong>
                       </div>
                       <span>{formatDateTime(message.createdAt)}</span>
                     </header>

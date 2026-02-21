@@ -185,16 +185,20 @@ export async function claimAgentRunById(runId: string, runnerId: string, threadI
   try {
     const values = threadId ? [runnerId, runId, threadId] : [runnerId, runId];
     const whereClause = threadId ? "AND ar.thread_id = $3" : "";
+    const claimedTransition = `
+      (ar.status = 'queued' AND ar.runner_id IS DISTINCT FROM $1)
+      OR (ar.status = 'running' AND ar.runner_id = $1)
+    `;
 
     const result = await query<AgentRunRow>(
       `UPDATE agent_runs ar
           SET status = 'running',
               runner_id = $1,
-              started_at = NOW(),
+              started_at = CASE WHEN ar.status = 'queued' THEN NOW() ELSE ar.started_at END,
               updated_at = NOW(),
               run_error = NULL
         WHERE ar.id = $2
-          AND ar.status = 'queued'
+          AND ${claimedTransition}
           ${whereClause}
       RETURNING
         ar.id,
