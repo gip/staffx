@@ -1818,6 +1818,12 @@ a.project-card {
   flex-wrap: wrap;
 }
 
+.thread-chat-model-row {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
 .thread-chat-run-action {
   padding: 6px 12px;
   font-size: 13px;

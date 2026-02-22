@@ -298,6 +298,7 @@ interface AssistantRunResultResponse {
     actionType: string;
     actionPosition: number;
     content: string;
+    senderName?: string;
     createdAt: string;
   }>;
   threadState?: ThreadDetailPayload;
