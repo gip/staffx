@@ -311,6 +311,7 @@ interface V1RunCompleteBody {
 interface V1MatrixPatchBody {
   layout?: Array<{ nodeId: string; x: number; y: number }>;
   nodes?: Array<{ nodeId: string; x: number; y: number }>;
+  positions?: Array<{ nodeId: string; x: number; y: number }>;
 }
 
 interface V1ListCursor {
@@ -370,19 +371,25 @@ function parsePositiveInt(raw: unknown, fallback: number, min = 1, max = 200): n
 }
 
 function normalizeToplologyPositions(body: V1MatrixPatchBody): Array<{ nodeId: string; x: number; y: number }> {
-  const list = body.layout ?? body.nodes;
+  const list = body.layout ?? body.nodes ?? body.positions;
   if (!Array.isArray(list)) return [];
   return list
     .filter((entry): entry is { nodeId: string; x: number; y: number } => {
       if (!entry || typeof entry !== "object") return false;
+      const xValue = typeof entry.x === "string" ? Number(entry.x) : entry.x;
+      const yValue = typeof entry.y === "string" ? Number(entry.y) : entry.y;
       return (
         typeof entry.nodeId === "string"
         && entry.nodeId.trim().length > 0
-        && Number.isFinite(entry.x)
-        && Number.isFinite(entry.y)
+        && Number.isFinite(xValue)
+        && Number.isFinite(yValue)
       );
     })
-    .map((entry) => ({ nodeId: entry.nodeId.trim(), x: entry.x, y: entry.y }));
+    .map((entry) => ({
+      nodeId: entry.nodeId.trim(),
+      x: typeof entry.x === "string" ? Number(entry.x) : entry.x,
+      y: typeof entry.y === "string" ? Number(entry.y) : entry.y,
+    }));
 }
 
 function parseProjectThreadId(raw: string): number | null {
@@ -1763,7 +1770,12 @@ export async function v1Routes(app: FastifyInstance) {
       for (const next of layout) {
         const result = await query<{ changed: number }>(
           `UPDATE nodes
-              SET metadata = jsonb_set(jsonb_set(metadata, '{layout}', jsonb_build_object('x', $3, 'y', $4), true), '{layout}', metadata->'layout', true)
+              SET metadata = jsonb_set(
+                coalesce(metadata, '{}'::jsonb),
+                '{layout}',
+                jsonb_build_object('x', $3::double precision, 'y', $4::double precision),
+                true
+              )
             WHERE system_id = $1 AND id = $2`,
           [systemId, next.nodeId, next.x, next.y],
         );

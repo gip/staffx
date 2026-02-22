@@ -3282,7 +3282,7 @@ export function ThreadPage({
         const getChatSenderName = (message: ChatMessage) => {
           if (message.role === "User") return detail.thread.createdByHandle;
           if (message.role === "Assistant") return message.senderName ?? "Assistant";
-          return role;
+          return message.role;
         };
 
         const latestAssistantMessageId = [...visibleChatMessages]

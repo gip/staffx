@@ -1321,7 +1321,7 @@ function ThreadRoute({ isAuthenticated, onProjectMutated }: { isAuthenticated: b
           {
             method: "PATCH",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(payload),
+            body: JSON.stringify({ layout: payload.positions }),
           },
         );
         if (!res.ok) {
