@@ -13,6 +13,7 @@ import {
   getAgentRunById,
   updateAgentRunResult,
 } from "../agent-queue.js";
+import { applyOpenShipBundleToThreadSystem } from "../openship-sync.js";
 import type { AgentRunPlanChange } from "@staffx/agent-runtime";
 import {
   publishEvent,
@@ -134,6 +135,11 @@ interface V1RunResponse {
 interface V1OpenShipBundleFile {
   path: string;
   content: string;
+}
+
+interface RawOpenShipBundleFilePayload {
+  path?: unknown;
+  content?: unknown;
 }
 
 interface V1OpenShipBundleDescriptor {
@@ -299,6 +305,7 @@ interface V1RunCompleteBody {
   changes?: Array<Record<string, unknown>>;
   error?: string;
   runnerId?: string;
+  openShipBundleFiles?: unknown;
 }
 
 interface V1MatrixPatchBody {
@@ -410,6 +417,29 @@ function isAgentRunPlanChange(value: unknown): value is AgentRunPlanChange {
 function parseRunPlanChanges(raw: unknown): AgentRunPlanChange[] {
   if (!Array.isArray(raw)) return [];
   return raw.filter(isAgentRunPlanChange);
+}
+
+function parseOpenShipBundleFiles(value: unknown): V1OpenShipBundleFile[] | null {
+  if (value === undefined) return [];
+
+  if (!Array.isArray(value)) return null;
+
+  const files: V1OpenShipBundleFile[] = [];
+  for (const entry of value) {
+    if (!entry || typeof entry !== "object") return null;
+
+    const candidate = entry as RawOpenShipBundleFilePayload;
+    if (typeof candidate.path !== "string" || typeof candidate.content !== "string") {
+      return null;
+    }
+
+    files.push({
+      path: candidate.path,
+      content: candidate.content,
+    });
+  }
+
+  return files;
 }
 
 function extractV1AgentRunMessageText(value: unknown, depth = 0): string[] {
@@ -2077,18 +2107,50 @@ export async function v1Routes(app: FastifyInstance) {
 
       const success = req.body.status === "success";
       const changes = parseRunPlanChanges(req.body.changes);
-      const normalizedMessages = sanitizeV1AgentRunMessages(messages);
-      let completionMessages: V1RunChatMessage[] = [];
+      const openShipBundleFiles = parseOpenShipBundleFiles(req.body.openShipBundleFiles);
+      if (openShipBundleFiles === null) {
+        return writeProblem(
+          reply,
+          400,
+          "Invalid payload",
+          "openShipBundleFiles must be a list of bundle files.",
+        );
+      }
+
+      const initialNormalizedMessages = sanitizeV1AgentRunMessages(messages);
+      let completionStatus: "success" | "failed" = success ? "success" : "failed";
+      let completionError = req.body.error;
+      let completionMessages = [...initialNormalizedMessages];
+
+      if (completionStatus === "success" && changes.length > 0 && openShipBundleFiles.length > 0) {
+        try {
+          await applyOpenShipBundleToThreadSystem({
+            threadId: run.thread_id,
+            bundleFiles: openShipBundleFiles,
+          });
+          await publishThreadMatrixChanged(run.thread_id, user, run.thread_id);
+        } catch (error: unknown) {
+          const reconcileError = error instanceof Error ? error.message : "Agent execution failed.";
+          const reconcileMessage = `OpenShip reconciliation failed: ${reconcileError}`;
+          completionStatus = "failed";
+          completionError = completionError
+            ? `${completionError} / ${reconcileMessage}`
+            : reconcileMessage;
+          completionMessages = [...completionMessages, reconcileMessage];
+        }
+      }
+
+      let completionMessageRows: V1RunChatMessage[] = [];
       const updated = await updateAgentRunResult(
         runId,
-        success ? "success" : "failed",
+        completionStatus,
         {
-          status: success ? "success" : "failed",
-          messages: normalizedMessages,
+          status: completionStatus,
+          messages: completionMessages,
           changes,
-          error: req.body.error,
+          error: completionError,
         },
-        req.body.error,
+        completionError,
         req.body.runnerId,
       );
 
@@ -2096,12 +2158,12 @@ export async function v1Routes(app: FastifyInstance) {
         const completionRecord = await persistV1DesktopAgentRunCompletionMessage(
           run.thread_id,
           {
-            status: success ? "success" : "failed",
-            messages,
+            status: completionStatus,
+            messages: completionMessages,
             changes,
-            error: req.body.error,
+            error: completionError,
           },
-          success ? "success" : "failed",
+          completionStatus,
         );
 
         if (completionRecord?.responseActionId) {
@@ -2121,7 +2183,7 @@ export async function v1Routes(app: FastifyInstance) {
               ORDER BY m.position`,
             [run.thread_id, completionRecord.responseActionId],
           );
-          completionMessages = responseMessageRows.rows.map((row) => ({
+          completionMessageRows = responseMessageRows.rows.map((row) => ({
             id: row.id,
             actionId: row.action_id,
             actionType: row.action_type,
@@ -2138,7 +2200,7 @@ export async function v1Routes(app: FastifyInstance) {
         {
           runId,
           updated,
-          status: success ? "success" : "failed",
+          status: completionStatus,
           runnerId: req.body.runnerId,
         },
         "updateAgentRunResult result",
@@ -2147,24 +2209,24 @@ export async function v1Routes(app: FastifyInstance) {
       if (!updated) {
         req.log.warn(
           {
-            runId,
-            status: success ? "success" : "failed",
-            runnerId: req.body.runnerId,
-          },
-          "updateAgentRunResult no-op",
+          runId,
+          status: completionStatus,
+          runnerId: req.body.runnerId,
+        },
+        "updateAgentRunResult no-op",
         );
         return writeProblem(reply, 409, "Run cannot be completed", "Run was already finalized");
       }
 
       await publishEvent({
-        type: success ? "assistant.run.completed" : "assistant.run.failed",
+        type: completionStatus === "success" ? "assistant.run.completed" : "assistant.run.failed",
         aggregateType: "assistant-run",
         aggregateId: runId,
         orgId: user.orgId,
         traceId: run.thread_id,
         payload: {
           threadId: run.thread_id,
-          status: req.body.status,
+          status: completionStatus,
           messages,
         },
       });
@@ -2177,15 +2239,15 @@ export async function v1Routes(app: FastifyInstance) {
         payload: {
           threadId: run.thread_id,
           runId,
-          status: req.body.status,
+          status: completionStatus,
         },
       });
 
       const completedRun = await getAgentRunById(runId);
       if (!completedRun) return notFoundProblem(reply, "Run not found");
       const response = mapAssistantRunRow(completedRun);
-      return completionMessages.length > 0
-        ? { ...response, messages: completionMessages }
+      return completionMessageRows.length > 0
+        ? { ...response, messages: completionMessageRows }
         : response;
     },
   );
