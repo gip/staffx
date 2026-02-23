@@ -4,9 +4,9 @@ import { dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import {
   diffOpenShipSnapshots,
-  runClaudeAgent,
+  runAgent,
   snapshotOpenShipBundle,
-  type SDKMessage,
+  type AgentRuntimeMessage,
 } from "@staffx/agent-runtime";
 import { getAccessToken } from "./auth.js";
 
@@ -25,6 +25,7 @@ interface AssistantRunClaimResponse {
   runId: string;
   status: "queued" | "running" | "success" | "failed";
   systemId: string;
+  model?: string;
   prompt?: string;
   systemPrompt?: string | null;
 }
@@ -73,6 +74,7 @@ interface AssistantRunResultResponse {
     actionType: string;
     actionPosition: number;
     content: string;
+    senderName?: string;
     createdAt: string;
   }>;
   threadState?: unknown;
@@ -160,25 +162,30 @@ function extractReadableText(value: unknown, depth = 0): string[] {
       return extractReadableText(typed.text, depth + 1);
     }
 
+    if (typed.output !== undefined) {
+      return extractReadableText(typed.output, depth + 1);
+    }
+
+    if (typed.aggregated_output !== undefined) {
+      return extractReadableText(typed.aggregated_output, depth + 1);
+    }
+
+    if (typed.items !== undefined) {
+      return extractReadableText(typed.items, depth + 1);
+    }
+
     return [];
   }
 
   return [];
 }
 
-function summarizeSdkMessage(message: SDKMessage): { text: string; isAnomaly: boolean } {
+function summarizeSdkMessage(message: AgentRuntimeMessage): { text: string; isAnomaly: boolean } {
   try {
-    const typed = message as {
-      content?: unknown;
-      message?: unknown;
-      response?: unknown;
-      text?: unknown;
-    };
+    const raw = message.raw;
     const text = [
-      ...extractReadableText(typed.content),
-      ...extractReadableText(typed.text),
-      ...extractReadableText(typed.message),
-      ...extractReadableText(typed.response),
+      ...(message.text ? [message.text] : []),
+      ...extractReadableText(raw),
     ]
       .flatMap((line) => line.split("\n"))
       .map((line) => line.trim())
@@ -189,7 +196,7 @@ function summarizeSdkMessage(message: SDKMessage): { text: string; isAnomaly: bo
       return { text, isAnomaly: false };
     }
 
-    const payload = JSON.stringify(message);
+    const payload = JSON.stringify(message.raw ?? message);
     return { text: payload ?? "[unserializable-sdk-message]", isAnomaly: true };
   } catch (error: unknown) {
     const reason = error instanceof Error ? error.message : "unknown serialization error";
@@ -209,6 +216,12 @@ function summarizeFailureReason(messages: string[] | undefined): string | null {
     .filter((message) => message.length > 0)
     .join(" | ");
   return joined.length > 0 ? truncateForLog(joined, 1200) : null;
+}
+
+function summarizePromptForLog(value: string | undefined, maxLength = 300): string {
+  if (!value) return "";
+  const normalized = value.replace(/\s+/g, " ").trim();
+  return normalized.length > maxLength ? `${normalized.slice(0, maxLength - 1)}…` : normalized;
 }
 
 function logRunOutcome(payload: {
@@ -238,10 +251,10 @@ function logRunOutcome(payload: {
   });
 }
 
-function getMessageType(message: SDKMessage): string {
-  return typeof (message as { type?: unknown }).type === "string"
-    ? String((message as { type?: string }).type)
-    : "unknown";
+function getMessageType(message: AgentRuntimeMessage): string {
+  if (typeof message.kind === "string") return message.kind;
+  const rawType = message.raw && typeof message.raw === "object" ? (message.raw as { type?: unknown }).type : undefined;
+  return typeof rawType === "string" ? String(rawType) : "unknown";
 }
 
 async function getWorkspaceAccessToken(): Promise<string> {
@@ -432,7 +445,7 @@ export async function startAssistantRunLocal(payload: {
   const bundleDir = join(workspace, "openship");
   const before = await snapshotOpenShipBundle(bundleDir);
   let turnIndex = 0;
-  const logTurn = (message: SDKMessage): void => {
+  const logTurn = (message: AgentRuntimeMessage): void => {
     const sequence = ++turnIndex;
     try {
       const { text, isAnomaly } = summarizeSdkMessage(message);
@@ -454,19 +467,29 @@ export async function startAssistantRunLocal(payload: {
     }
   };
 
-  console.info("[desktop-agent] invoking Claude agent", {
+  console.info("[desktop-agent] invoking assistant runtime", {
     runId: payload.runId,
     workspace,
     bundleDir,
     systemPrompt: claimPayload.systemPrompt ?? null,
+    prompt: summarizePromptForLog(claimPayload.prompt),
   });
 
-  const runResult = await runClaudeAgent({
+  const runResult = await runAgent({
     prompt: claimPayload.prompt ?? "Run this request.",
     cwd: workspace,
+    model: claimPayload.model,
     systemPrompt: claimPayload.systemPrompt ?? undefined,
     allowedTools: ["Read", "Grep", "Glob", "Bash", "Edit", "Write"],
     onMessage: logTurn,
+  });
+  const runSummary = summarizeFailureReason(runResult.messages) ?? "No assistant summary available.";
+  console.info("[desktop-agent] run summary", {
+    runId: payload.runId,
+    threadId: payload.threadId,
+    stage: "agent_run",
+    status: runResult.status,
+    summary: runSummary,
   });
   logRunOutcome({
     runId: payload.runId,

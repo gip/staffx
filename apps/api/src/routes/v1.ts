@@ -13,6 +13,7 @@ import {
   getAgentRunById,
   updateAgentRunResult,
 } from "../agent-queue.js";
+import { applyOpenShipBundleToThreadSystem } from "../openship-sync.js";
 import type { AgentRunPlanChange } from "@staffx/agent-runtime";
 import {
   publishEvent,
@@ -102,6 +103,7 @@ interface V1RunChatMessage {
   actionPosition: number;
   role: "User" | "Assistant" | "System";
   content: string;
+  senderName?: string;
   createdAt: string;
 }
 
@@ -133,6 +135,11 @@ interface V1RunResponse {
 interface V1OpenShipBundleFile {
   path: string;
   content: string;
+}
+
+interface RawOpenShipBundleFilePayload {
+  path?: unknown;
+  content?: unknown;
 }
 
 interface V1OpenShipBundleDescriptor {
@@ -202,9 +209,20 @@ interface V1ProjectThreadDocumentRow {
   text: string;
 }
 
+interface V1ChatMessageRow {
+  content: string;
+}
+
+interface V1SystemPromptRow {
+  hash: string;
+  text: string;
+  title: string;
+}
+
 interface V1AgentRunRow {
   id: string;
   thread_id: string;
+  model: string;
   status: AssistantRunStatus;
   mode: AssistantMode;
   prompt: string;
@@ -226,9 +244,47 @@ interface V1ChatMessageRequest {
 interface V1RunStartBody {
   prompt?: string;
   chatMessageId?: string;
+  model?: string;
   wait?: boolean;
   status?: string;
   sourceThreadId?: string;
+}
+
+const CODEX_MODEL = "gpt-5.3-codex";
+const LEGACY_CODEX_MODEL = "codex-5.3";
+const ALLOWED_ASSISTANT_MODELS = ["claude-opus-4-6", "claude-sonnet-4-6", CODEX_MODEL, LEGACY_CODEX_MODEL] as const;
+const DEFAULT_ASSISTANT_MODEL: "claude-opus-4-6" | "claude-sonnet-4-6" | "codex-5.3" | "gpt-5.3-codex" = "claude-opus-4-6";
+const SYSTEM_PROMPT_CONCERN = "__system_prompt__";
+const DEFAULT_SYSTEM_PROMPT =
+  "You are a staff software engineer with top design and implementation skills. " +
+  "Start by reading AGENTS.md. " +
+  "You will update the system description and implementation in ./openship (or not if there is no update) " +
+  "and add to a file called SUMMARY.md a description of the plan executed, use Markdown. " +
+  "If changes were made during the run, check that the updated ./openship directory is fully compliant with the OpenShip description and write that you checked that in the summary. " +
+  "If changes are to be made, keep the changes to a minimum. In particular do not update name if existing objects like node or names unless it is absolutely necessary. " +
+  "Node IDs and directory names should not be changed " +
+  "Your response should be a summary of everything that has been done. No need to include checks and validation made.";
+type AssistantModel = (typeof ALLOWED_ASSISTANT_MODELS)[number];
+
+function resolveAssistantModel(raw: unknown): AssistantModel | null {
+  if (raw === undefined || raw === null) return null;
+  if (typeof raw !== "string") return null;
+  const normalized = raw.trim();
+  if (normalized.length === 0) return null;
+  return ALLOWED_ASSISTANT_MODELS.includes(normalized as AssistantModel) ? (normalized as AssistantModel) : null;
+}
+
+function normalizeAssistantModel(rawModel: AssistantModel): AssistantModel {
+  return rawModel === CODEX_MODEL ? LEGACY_CODEX_MODEL : rawModel;
+}
+
+function formatAssistantModelLabel(rawModel: string): string {
+  const model = rawModel.trim();
+  if (model === "gpt-5.3-codex") return "Codex 5.3";
+  if (model === "codex-5.3") return "Codex 5.3";
+  if (model === "claude-opus-4-6") return "Claude Opus 4.6";
+  if (model === "claude-sonnet-4-6") return "Claude Sonnet 4.6";
+  return model;
 }
 
 type V1ThreadStatus = "open" | "closed" | "committed";
@@ -249,11 +305,13 @@ interface V1RunCompleteBody {
   changes?: Array<Record<string, unknown>>;
   error?: string;
   runnerId?: string;
+  openShipBundleFiles?: unknown;
 }
 
 interface V1MatrixPatchBody {
   layout?: Array<{ nodeId: string; x: number; y: number }>;
   nodes?: Array<{ nodeId: string; x: number; y: number }>;
+  positions?: Array<{ nodeId: string; x: number; y: number }>;
 }
 
 interface V1ListCursor {
@@ -313,19 +371,25 @@ function parsePositiveInt(raw: unknown, fallback: number, min = 1, max = 200): n
 }
 
 function normalizeToplologyPositions(body: V1MatrixPatchBody): Array<{ nodeId: string; x: number; y: number }> {
-  const list = body.layout ?? body.nodes;
+  const list = body.layout ?? body.nodes ?? body.positions;
   if (!Array.isArray(list)) return [];
   return list
     .filter((entry): entry is { nodeId: string; x: number; y: number } => {
       if (!entry || typeof entry !== "object") return false;
+      const xValue = typeof entry.x === "string" ? Number(entry.x) : entry.x;
+      const yValue = typeof entry.y === "string" ? Number(entry.y) : entry.y;
       return (
         typeof entry.nodeId === "string"
         && entry.nodeId.trim().length > 0
-        && Number.isFinite(entry.x)
-        && Number.isFinite(entry.y)
+        && Number.isFinite(xValue)
+        && Number.isFinite(yValue)
       );
     })
-    .map((entry) => ({ nodeId: entry.nodeId.trim(), x: entry.x, y: entry.y }));
+    .map((entry) => ({
+      nodeId: entry.nodeId.trim(),
+      x: typeof entry.x === "string" ? Number(entry.x) : entry.x,
+      y: typeof entry.y === "string" ? Number(entry.y) : entry.y,
+    }));
 }
 
 function parseProjectThreadId(raw: string): number | null {
@@ -360,6 +424,175 @@ function isAgentRunPlanChange(value: unknown): value is AgentRunPlanChange {
 function parseRunPlanChanges(raw: unknown): AgentRunPlanChange[] {
   if (!Array.isArray(raw)) return [];
   return raw.filter(isAgentRunPlanChange);
+}
+
+function parseOpenShipBundleFiles(value: unknown): V1OpenShipBundleFile[] | null {
+  if (value === undefined) return [];
+
+  if (!Array.isArray(value)) return null;
+
+  const files: V1OpenShipBundleFile[] = [];
+  for (const entry of value) {
+    if (!entry || typeof entry !== "object") return null;
+
+    const candidate = entry as RawOpenShipBundleFilePayload;
+    if (typeof candidate.path !== "string" || typeof candidate.content !== "string") {
+      return null;
+    }
+
+    files.push({
+      path: candidate.path,
+      content: candidate.content,
+    });
+  }
+
+  return files;
+}
+
+function extractV1AgentRunMessageText(value: unknown, depth = 0): string[] {
+  if (depth > 8 || value === null || value === undefined) return [];
+
+  if (typeof value === "string") {
+    return [value];
+  }
+
+  if (Array.isArray(value)) {
+    return value.flatMap((entry) => extractV1AgentRunMessageText(entry, depth + 1));
+  }
+
+  if (typeof value === "object") {
+    const typed = value as Record<string, unknown>;
+
+    if (typeof typed.text === "string") {
+      return [typed.text];
+    }
+
+    const candidates = [
+      typed.content,
+      typed.message,
+      typed.response,
+      typed.result,
+      typed.summary,
+      typed.output,
+      typed.aggregated_output,
+      typed.items,
+    ];
+
+    return candidates.flatMap((entry) => extractV1AgentRunMessageText(entry, depth + 1));
+  }
+
+  return [];
+}
+
+function normalizeV1AgentRunMessages(messages: string[]): string[] {
+  const unique = new Set<string>();
+  const normalized: string[] = [];
+
+  for (const rawMessage of messages) {
+    const trimmed = rawMessage.trim();
+    if (!trimmed) continue;
+
+    const withoutPrefix = trimmed.replace(/^\[[^\]]+\]\s*/g, "");
+
+    let candidateTexts: string[] = [];
+    try {
+      const parsed = JSON.parse(withoutPrefix) as unknown;
+      candidateTexts = extractV1AgentRunMessageText(parsed)
+        .map((entry) => entry.trim())
+        .filter((entry) => entry.length > 0);
+    } catch {
+      candidateTexts = [trimmed];
+    }
+
+    for (const text of candidateTexts) {
+      if (!unique.has(text)) {
+        unique.add(text);
+        normalized.push(text);
+      }
+    }
+  }
+
+  return normalized.length > 0 ? normalized : ["Execution completed."];
+}
+
+const RECONCILIATION_MESSAGE_PREFIX = "openship reconciliation failed:";
+
+function sanitizeV1AgentRunMessages(messages: string[]): string[] {
+  return normalizeV1AgentRunMessages(messages)
+    .map((message) => message.trim())
+    .filter((message) => message.length > 0)
+    .filter((message) => !message.toLowerCase().startsWith(RECONCILIATION_MESSAGE_PREFIX));
+}
+
+interface V1AgentRunCompletionRecord {
+  responseActionId: string | null;
+}
+
+async function persistV1DesktopAgentRunCompletionMessage(
+  threadId: string,
+  payload: { status: "success" | "failed"; messages: string[]; changes: AgentRunPlanChange[]; error?: string },
+  runResultStatus: "success" | "failed",
+): Promise<V1AgentRunCompletionRecord | null> {
+  const responseActionId = randomUUID();
+  const normalizedMessages = sanitizeV1AgentRunMessages(payload.messages);
+  const nonChangeMessages = normalizedMessages.filter((message) => !message.startsWith("OpenShip changes:"));
+
+  const responseMessages = nonChangeMessages.length > 0
+    ? nonChangeMessages
+    : payload.changes.length > 0
+      ? normalizedMessages
+      : [
+          ...nonChangeMessages,
+          payload.status === "failed"
+            ? (payload.error ?? "Execution failed.")
+            : "Execution completed.",
+        ];
+
+  const uniqueResponseMessages = [...new Set(responseMessages)];
+  if (uniqueResponseMessages.length === 0) {
+    return null;
+  }
+
+  const responseMessage = uniqueResponseMessages.join(" | ");
+  await query(
+    `SELECT begin_action($1, $2, $3::action_type, $4) AS output_system_id`,
+    [threadId, responseActionId, "ExecuteResponse", "Agent execution response"],
+  );
+  await query("SELECT commit_action_empty($1, $2)", [threadId, responseActionId]);
+  await query(
+    `INSERT INTO messages (id, thread_id, action_id, role, content, position)
+     VALUES ($1, $2, $3, 'Assistant'::message_role, $4, 1)`,
+    [randomUUID(), threadId, responseActionId, responseMessage],
+  );
+
+  if (runResultStatus === "success" && payload.changes.length > 0) {
+    const changeActionId = randomUUID();
+    await query(
+      `SELECT begin_action($1, $2, $3::action_type, $4) AS output_system_id`,
+      [threadId, changeActionId, "Update", "Agent execution changes"],
+    );
+    for (const change of payload.changes) {
+      await query(
+        `INSERT INTO changes (
+           id, thread_id, action_id, target_table, operation, target_id, previous, current
+         )
+         VALUES ($1, $2, $3, $4, $5::change_operation, $6, $7, $8)`,
+        [
+          randomUUID(),
+          threadId,
+          changeActionId,
+          change.target_table,
+          change.operation,
+          JSON.stringify(change.target_id),
+          change.previous ? JSON.stringify(change.previous) : null,
+          change.current ? JSON.stringify(change.current) : null,
+        ],
+      );
+    }
+    await query("SELECT commit_action_empty($1, $2)", [threadId, changeActionId]);
+  }
+
+  return { responseActionId };
 }
 
 function canEdit(role: AccessRole): boolean {
@@ -519,6 +752,67 @@ async function getThreadSystemId(threadId: string): Promise<string | null> {
   return result.rows[0]?.system_id ?? null;
 }
 
+async function getSystemPromptsForThreadSystem(threadId: string): Promise<V1SystemPromptRow[]> {
+  const systemId = await getThreadSystemId(threadId);
+  if (!systemId) return [];
+
+  const result = await query<V1SystemPromptRow>(
+    `SELECT d.hash, d.text, d.title
+     FROM systems s
+     JOIN matrix_refs mr
+       ON mr.system_id = s.id
+      AND mr.node_id = s.root_node_id
+      AND mr.ref_type = 'Prompt'::ref_type
+      AND mr.concern = $2
+     JOIN documents d
+       ON d.system_id = mr.system_id
+      AND d.hash = mr.doc_hash
+     WHERE s.id = $1
+     ORDER BY d.created_at DESC`,
+    [systemId, SYSTEM_PROMPT_CONCERN],
+  );
+
+  const deduped = new Map<string, V1SystemPromptRow>();
+  for (const row of result.rows) {
+    if (deduped.has(row.hash)) continue;
+    deduped.set(row.hash, row);
+  }
+  return Array.from(deduped.values());
+}
+
+async function resolveSystemPrompt(threadId: string): Promise<string> {
+  const prompts = await getSystemPromptsForThreadSystem(threadId);
+  const latestPrompt = prompts[0]?.text?.trim();
+  return latestPrompt && latestPrompt.length > 0 ? latestPrompt : DEFAULT_SYSTEM_PROMPT;
+}
+
+async function resolveRunPrompt(
+  threadId: string,
+  chatMessageId: string | null,
+  prompt?: string,
+): Promise<string> {
+  const promptFromPayload = prompt?.trim();
+  if (promptFromPayload) {
+    return promptFromPayload;
+  }
+
+  if (chatMessageId) {
+    const messageResult = await query<V1ChatMessageRow>(
+      `SELECT content
+       FROM messages
+       WHERE id = $1
+         AND thread_id = $2
+         AND role = 'User'::message_role
+       LIMIT 1`,
+      [chatMessageId, threadId],
+    );
+    const messageContent = messageResult.rows[0]?.content?.trim();
+    if (messageContent) return messageContent;
+  }
+
+  return "Run this request.";
+}
+
 async function loadThreadMatrix(systemId: string): Promise<V1ThreadMatrixNodeCell[]> {
   const result = await query<{
     node_id: string;
@@ -635,6 +929,7 @@ async function collectOpenShipBundleFiles(bundleDir: string): Promise<V1OpenShip
 function mapAssistantRunRow(run: V1AgentRunRow): {
   runId: string;
   threadId: string;
+  model?: string;
   status: AssistantRunStatus;
   mode: AssistantMode;
   prompt: string;
@@ -650,6 +945,7 @@ function mapAssistantRunRow(run: V1AgentRunRow): {
   return {
     runId: run.id,
     threadId: run.thread_id,
+    model: run.model,
     status: run.status,
     mode: run.mode,
     prompt: run.prompt,
@@ -1159,12 +1455,23 @@ export async function v1Routes(app: FastifyInstance) {
           action_position: number;
           role: "User" | "Assistant" | "System";
           content: string;
+          sender_model: string | null;
           created_at: Date;
         }>(
             `SELECT m.id, m.action_id, a.type::text AS action_type, a.position AS action_position,
-                    m.role, m.content, m.created_at
+                    m.role, m.content, m.created_at,
+                    ar.model AS sender_model
                FROM messages m
                JOIN actions a ON a.thread_id = m.thread_id AND a.id = m.action_id
+               LEFT JOIN LATERAL (
+                 SELECT ar.model
+                 FROM agent_runs ar
+                 WHERE ar.thread_id = m.thread_id
+                   AND ar.completed_at IS NOT NULL
+                   AND ar.created_at <= m.created_at
+                 ORDER BY ar.completed_at DESC, ar.created_at DESC
+                 LIMIT 1
+               ) ar ON a.type::text = 'ExecuteResponse'
               WHERE m.thread_id = $1
               ORDER BY a.position, m.created_at`,
           [resolvedThreadId],
@@ -1259,6 +1566,7 @@ export async function v1Routes(app: FastifyInstance) {
             actionType: message.action_type,
             actionPosition: message.action_position,
             content: message.content,
+            senderName: message.sender_model ? formatAssistantModelLabel(message.sender_model) : undefined,
             createdAt: message.created_at.toISOString(),
           })),
         },
@@ -1462,7 +1770,12 @@ export async function v1Routes(app: FastifyInstance) {
       for (const next of layout) {
         const result = await query<{ changed: number }>(
           `UPDATE nodes
-              SET metadata = jsonb_set(jsonb_set(metadata, '{layout}', jsonb_build_object('x', $3, 'y', $4), true), '{layout}', metadata->'layout', true)
+              SET metadata = jsonb_set(
+                coalesce(metadata, '{}'::jsonb),
+                '{layout}',
+                jsonb_build_object('x', $3::double precision, 'y', $4::double precision),
+                true
+              )
             WHERE system_id = $1 AND id = $2`,
           [systemId, next.nodeId, next.x, next.y],
         );
@@ -1618,6 +1931,18 @@ export async function v1Routes(app: FastifyInstance) {
       const mode = req.params.assistantType;
       const chatMessageId = req.body?.chatMessageId?.trim() || null;
       const prompt = req.body?.prompt?.trim();
+      const rawModel = req.body?.model;
+      let resolvedModel: AssistantModel;
+      if (rawModel === undefined) {
+        resolvedModel = DEFAULT_ASSISTANT_MODEL;
+      } else {
+        const model = resolveAssistantModel(rawModel);
+        if (model === null) {
+          return writeProblem(reply, 400, "Invalid model", "model must be one of claude-opus-4-6, claude-sonnet-4-6, codex-5.3, or gpt-5.3-codex");
+        }
+        resolvedModel = normalizeAssistantModel(model);
+      }
+
 
       const thread = await resolveThreadAccessByRequestParam(threadId, user);
       if (!thread) {
@@ -1639,6 +1964,17 @@ export async function v1Routes(app: FastifyInstance) {
       if (chatMessageId && !isUuid(chatMessageId)) {
         return writeProblem(reply, 400, "Invalid chatMessageId", "chatMessageId must be a UUID.");
       }
+      const resolvedPrompt = await resolveRunPrompt(resolvedThreadId, chatMessageId, prompt);
+      const systemPrompt = await resolveSystemPrompt(resolvedThreadId);
+
+      req.log.info(
+        {
+          threadId: resolvedThreadId,
+          prompt: resolvedPrompt,
+          systemPrompt,
+        },
+        "Passing control to agent with system prompt",
+      );
 
       const runId = await enqueueAgentRunWithWait({
         threadId: resolvedThreadId,
@@ -1647,7 +1983,9 @@ export async function v1Routes(app: FastifyInstance) {
         mode,
         planActionId: null,
         chatMessageId,
-        prompt: prompt ?? "Run this request.",
+        prompt: resolvedPrompt,
+        model: resolvedModel,
+        systemPrompt,
       });
 
       await publishEvent({
@@ -1780,32 +2118,127 @@ export async function v1Routes(app: FastifyInstance) {
       }
 
       const success = req.body.status === "success";
+      const changes = parseRunPlanChanges(req.body.changes);
+      const openShipBundleFiles = parseOpenShipBundleFiles(req.body.openShipBundleFiles);
+      if (openShipBundleFiles === null) {
+        return writeProblem(
+          reply,
+          400,
+          "Invalid payload",
+          "openShipBundleFiles must be a list of bundle files.",
+        );
+      }
+
+      const initialNormalizedMessages = sanitizeV1AgentRunMessages(messages);
+      let completionStatus: "success" | "failed" = success ? "success" : "failed";
+      let completionError = req.body.error;
+      let completionMessages = [...initialNormalizedMessages];
+
+      if (completionStatus === "success" && changes.length > 0 && openShipBundleFiles.length > 0) {
+        try {
+          await applyOpenShipBundleToThreadSystem({
+            threadId: run.thread_id,
+            bundleFiles: openShipBundleFiles,
+          });
+          await publishThreadMatrixChanged(run.thread_id, user, run.thread_id);
+        } catch (error: unknown) {
+          const reconcileError = error instanceof Error ? error.message : "Agent execution failed.";
+          const reconcileMessage = `OpenShip reconciliation failed: ${reconcileError}`;
+          completionStatus = "failed";
+          completionError = completionError
+            ? `${completionError} / ${reconcileMessage}`
+            : reconcileMessage;
+          completionMessages = [...completionMessages, reconcileMessage];
+        }
+      }
+
+      let completionMessageRows: V1RunChatMessage[] = [];
       const updated = await updateAgentRunResult(
         runId,
-        success ? "success" : "failed",
+        completionStatus,
         {
-          status: success ? "success" : "failed",
-          messages,
-          changes: parseRunPlanChanges(req.body.changes),
-          error: req.body.error,
+          status: completionStatus,
+          messages: completionMessages,
+          changes,
+          error: completionError,
         },
-        req.body.error,
+        completionError,
         req.body.runnerId,
       );
 
+      if (updated) {
+        const completionRecord = await persistV1DesktopAgentRunCompletionMessage(
+          run.thread_id,
+          {
+            status: completionStatus,
+            messages: completionMessages,
+            changes,
+            error: completionError,
+          },
+          completionStatus,
+        );
+
+        if (completionRecord?.responseActionId) {
+          const responseMessageRows = await query<{
+            id: string;
+            action_id: string;
+            action_type: string;
+            action_position: number;
+            role: "User" | "Assistant" | "System";
+            content: string;
+            created_at: string;
+          }>(
+            `SELECT m.id, m.action_id, m.role, m.content, m.created_at, a.position AS action_position, a.type::text AS action_type
+               FROM messages m
+               JOIN actions a ON a.thread_id = m.thread_id AND a.id = m.action_id
+              WHERE m.thread_id = $1 AND m.action_id = $2
+              ORDER BY m.position`,
+            [run.thread_id, completionRecord.responseActionId],
+          );
+          completionMessageRows = responseMessageRows.rows.map((row) => ({
+            id: row.id,
+            actionId: row.action_id,
+            actionType: row.action_type,
+            actionPosition: row.action_position,
+            role: row.role,
+            content: row.content,
+            senderName: formatAssistantModelLabel(run.model),
+            createdAt: new Date(row.created_at).toISOString(),
+          }));
+        }
+      }
+
+      req.log.info(
+        {
+          runId,
+          updated,
+          status: completionStatus,
+          runnerId: req.body.runnerId,
+        },
+        "updateAgentRunResult result",
+      );
+
       if (!updated) {
+        req.log.warn(
+          {
+          runId,
+          status: completionStatus,
+          runnerId: req.body.runnerId,
+        },
+        "updateAgentRunResult no-op",
+        );
         return writeProblem(reply, 409, "Run cannot be completed", "Run was already finalized");
       }
 
       await publishEvent({
-        type: success ? "assistant.run.completed" : "assistant.run.failed",
+        type: completionStatus === "success" ? "assistant.run.completed" : "assistant.run.failed",
         aggregateType: "assistant-run",
         aggregateId: runId,
         orgId: user.orgId,
         traceId: run.thread_id,
         payload: {
           threadId: run.thread_id,
-          status: req.body.status,
+          status: completionStatus,
           messages,
         },
       });
@@ -1818,13 +2251,16 @@ export async function v1Routes(app: FastifyInstance) {
         payload: {
           threadId: run.thread_id,
           runId,
-          status: req.body.status,
+          status: completionStatus,
         },
       });
 
       const completedRun = await getAgentRunById(runId);
       if (!completedRun) return notFoundProblem(reply, "Run not found");
-      return mapAssistantRunRow(completedRun);
+      const response = mapAssistantRunRow(completedRun);
+      return completionMessageRows.length > 0
+        ? { ...response, messages: completionMessageRows }
+        : response;
     },
   );
 
@@ -1851,7 +2287,7 @@ export async function v1Routes(app: FastifyInstance) {
             SET status = 'cancelled', run_result_status = 'failed', run_error = COALESCE($2, run_error),
                 completed_at = NOW(), updated_at = NOW()
           WHERE id = $1 AND status IN ('queued', 'running')
-          RETURNING id, thread_id, status, mode, prompt, system_prompt, run_result_status,
+          RETURNING id, thread_id, model, status, mode, prompt, system_prompt, run_result_status,
                     run_result_messages, run_result_changes, run_error, created_at, started_at, completed_at`,
         [runId, "Cancelled by user"],
       );
