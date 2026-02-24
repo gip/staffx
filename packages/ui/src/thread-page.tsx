@@ -929,7 +929,7 @@ function buildFlowLayoutModel(nodes: TopologyNode[]): FlowLayoutModel {
   const byId = new Map(nodes.map((node) => [node.id, node]));
   const hiddenNodeIds = new Set<string>();
   const nestedChildrenByHost = new Map<string, TopologyNode[]>();
-  const nestedKinds = new Set(["Container", "Process", "Library"]);
+  const nestedKinds = new Set(["Container", "Process"]);
 
   // Extract Root node — rendered as a background boundary, not a regular card
   let rootNode: TopologyNode | null = null;
@@ -960,6 +960,9 @@ function buildFlowLayoutModel(nodes: TopologyNode[]): FlowLayoutModel {
   const visibleParentById = new Map<string, string | null>();
   for (const node of visibleNodes) {
     let parentId = node.parentId;
+    if (node.kind === "Library") {
+      parentId = null;
+    }
     while (parentId && hiddenNodeIds.has(parentId)) {
       parentId = byId.get(parentId)?.parentId ?? null;
     }

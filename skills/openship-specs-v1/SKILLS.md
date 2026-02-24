@@ -89,6 +89,7 @@ A `Host` node with no `parentId` is implicitly contained by the `Root` node. Thi
 
 - `Host` MAY contain `Container` and `Process`.
 - `Container` MAY contain `Process`.
+- `Process` MUST be a child of either `Host` or `Container` and MUST NOT be a child of `Process`.
 - `Process` MUST NOT contain children.
 - `Library` MUST be freestanding (no parent, no children).
 - `Root` MUST be freestanding for containment (no parent).
@@ -351,23 +352,24 @@ A payload is OpenShip v1 conformant only if all rules pass.
 6. `Root` and `Library` are freestanding and have no parent.
 7. `Host` may parent only `Container` or `Process`.
 8. `Container` may parent only `Process`.
-9. `Process` and `Library` have no children.
-10. Every edge MUST have a `type` field with value `Runtime`, `Dataflow`, or `Dependency`.
-11. For `Runtime` and `Dataflow` edges: source MUST be `Process`; target MUST be `Process` or `Container`.
-12. For `Dependency` edges: source MUST be `Process`; target MUST be `Library`.
-13. No edge of any type may include `Root` as source or target.
-14. The projected graph of `Dataflow` edges (Process-to-Process only) MUST be a DAG. `Runtime` edges are exempt from cycle constraints.
-15. The projected graph of `Dependency` edges MUST be a DAG.
-16. All matrix concern keys are declared in concern registry.
-17. All `documentRefs` resolve in shared document store.
-18. All `skillRefs` resolve in shared document store.
-19. `Prompt` references MUST be attached only via `__system_prompt__` on the system root node.
-20. Shared document hashes MUST match canonical hash algorithm (Section 12).
-21. Baseline concerns MUST exist in registry with exact names.
-22. Artifacts MUST reference an existing node.
-23. All IDs MUST match regex `^[a-zA-Z0-9._:-]+$`.
-24. Supersession chains in input documents MUST be acyclic.
-25. Code artifact `filePath` values MUST be valid relative paths (no `..`, no absolute paths, no NUL bytes).
+9. `Process` may only have parent `Host` or `Container`.
+10. `Process` and `Library` have no children.
+11. Every edge MUST have a `type` field with value `Runtime`, `Dataflow`, or `Dependency`.
+12. For `Runtime` and `Dataflow` edges: source MUST be `Process`; target MUST be `Process` or `Container`.
+13. For `Dependency` edges: source MUST be `Process`; target MUST be `Library`.
+14. No edge of any type may include `Root` as source or target.
+15. The projected graph of `Dataflow` edges (Process-to-Process only) MUST be a DAG. `Runtime` edges are exempt from cycle constraints.
+16. The projected graph of `Dependency` edges MUST be a DAG.
+17. All matrix concern keys are declared in concern registry.
+18. All `documentRefs` resolve in shared document store.
+19. All `skillRefs` resolve in shared document store.
+20. `Prompt` references MUST be attached only via `__system_prompt__` on the system root node.
+21. Shared document hashes MUST match canonical hash algorithm (Section 12).
+22. Baseline concerns MUST exist in registry with exact names.
+23. Artifacts MUST reference an existing node.
+24. All IDs MUST match regex `^[a-zA-Z0-9._:-]+$`.
+25. Supersession chains in input documents MUST be acyclic.
+26. Code artifact `filePath` values MUST be valid relative paths (no `..`, no absolute paths, no NUL bytes).
 
 ## 10. File-Based Canonical Representation
 

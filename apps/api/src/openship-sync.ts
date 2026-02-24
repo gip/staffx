@@ -578,6 +578,38 @@ function validateMatrixRefTargets(parsed: ParsedOpenShipBundle): void {
   throw new Error(`OpenShip matrix references missing documents: ${preview}${suffix}`);
 }
 
+function validateLibraryContainmentAndDependencyEdges(parsed: ParsedOpenShipBundle): void {
+  const nodeKindById = new Map<string, ParsedNodeManifest["kind"]>(
+    parsed.nodes.map((node) => [node.id, node.kind]),
+  );
+
+  for (const node of parsed.nodes) {
+    if (node.kind === "Library" && node.parentId !== undefined) {
+      throw new Error(`Invalid Library placement for node "${node.id}"; libraries must be top-level and cannot define parentId.`);
+    }
+  }
+
+  for (const edge of parsed.edges) {
+    if (edge.type !== "Dependency") {
+      continue;
+    }
+
+    const fromKind = nodeKindById.get(edge.fromNodeId);
+    if (fromKind !== "Process") {
+      throw new Error(
+        `Invalid Dependency edge "${edge.id}": fromNodeId "${edge.fromNodeId}" must exist and be a Process.`,
+      );
+    }
+
+    const toKind = nodeKindById.get(edge.toNodeId);
+    if (toKind !== "Library") {
+      throw new Error(
+        `Invalid Dependency edge "${edge.id}": toNodeId "${edge.toNodeId}" must exist and be a Library.`,
+      );
+    }
+  }
+}
+
 function resolveOpenShipRootNodeId(manifestRootNodeId: string, nodeLookup: Map<string, ParsedNodeManifest>): string {
   if (manifestRootNodeId === OPENSHIP_ROOT_NODE_ID) {
     if (!nodeLookup.has(OPENSHIP_ROOT_NODE_ID)) {
@@ -789,6 +821,7 @@ export async function applyOpenShipBundleToThreadSystemWithClient(
 
   const nodeLookup = new Map<string, ParsedNodeManifest>(parsed.nodes.map((node) => [node.id, node]));
   const resolvedSystemNodeId = resolveOpenShipRootNodeId(manifest.systemNodeId, nodeLookup);
+  validateLibraryContainmentAndDependencyEdges(parsed);
   if (typedNodeSchemeEnabled) {
     validateTypedNodeScheme(parsed, resolvedSystemNodeId, baseNodeKinds);
   }
