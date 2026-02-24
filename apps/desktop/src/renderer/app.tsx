@@ -1289,6 +1289,7 @@ function ThreadRoute({ isAuthenticated, onProjectMutated }: { isAuthenticated: b
     return (
     <ThreadPage
       detail={detail}
+      threadRouteId={threadId}
       integrationStatuses={integrationStatuses}
       disableChatInputs={false}
       onUpdateThread={async (payload) => {
