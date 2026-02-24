@@ -214,9 +214,18 @@ export function Home({ projects, onCreateProject, onCheckProjectName }: HomeProp
   if (!isAuthenticated) {
     return (
       <main className="hero">
-        <h1 className="hero-tagline">Staff-level reasoning, on demand.</h1>
+        <h1 className="hero-tagline">A flight simulator for your AI-generated software.</h1>
         <button className="btn hero-cta" onClick={login}>Log In</button>
-        <p><i>StaffX amplifies engineering judgment by exploring architectural tradeoffs and autonomously optimizing both system design and agent configuration.</i></p>
+        <p style={{ textAlign: "center" }}>
+          <i>
+            StaffX is the human control plane for AI-generated software:<br />
+            it lets domain experts go from a product description to a deployed,
+            maintainable system<br />
+            using curated reference architectures, with visual preview, and<br />
+            simulation, and risk scoring that keep the system understandable and safe
+            to change as it evolves.
+          </i>
+        </p>
       </main>
     );
   }
