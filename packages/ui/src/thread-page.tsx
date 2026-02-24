@@ -4,6 +4,7 @@ import {
   ChevronDown,
   ChevronRight,
   ExternalLink,
+  CheckCircle2,
   Minimize2,
   Pencil,
   Plus,
@@ -121,7 +122,7 @@ export type AssistantRunMode = "direct" | "plan";
 
 export type AssistantExecutor = "backend" | "desktop";
 
-type AssistantModel = "claude-opus-4-6" | "claude-sonnet-4-6" | "codex-5.3" | "gpt-5.3-codex";
+type AssistantModel = "claude-opus-4-6" | "claude-sonnet-4-6" | "codex-5.3";
 
 interface AssistantModelOption {
   key: AssistantModel;
@@ -131,8 +132,7 @@ interface AssistantModelOption {
 const ASSISTANT_MODELS: AssistantModelOption[] = [
   { key: "claude-opus-4-6", label: "Opus 4.6" },
   { key: "claude-sonnet-4-6", label: "Sonnet 4.6" },
-  { key: "codex-5.3", label: "Codex 5.3 (legacy)" },
-  { key: "gpt-5.3-codex", label: "Codex 5.3 (gpt-5.3-codex)" },
+  { key: "codex-5.3", label: "Codex 5.3" },
 ];
 
 const DEFAULT_ASSISTANT_MODEL: AssistantModel = "claude-opus-4-6";
@@ -343,6 +343,7 @@ interface MatrixDocumentModal {
 
 interface ThreadPageProps {
   detail: ThreadDetailPayload;
+  threadRouteId?: string;
   onUpdateThread?: (payload: { title?: string; description?: string | null }) => Promise<MutationResult<{ thread: ThreadDetail }>>;
   onSaveTopologyLayout?: (payload: { positions: Array<{ nodeId: string; x: number; y: number }> }) => Promise<MutationResult<{ systemId: string }>>;
   onAddMatrixDoc?: (
@@ -1266,6 +1267,7 @@ function buildFlowEdges(edges: TopologyEdge[], model: FlowLayoutModel): Edge[] {
 
 export function ThreadPage({
   detail,
+  threadRouteId,
   disableChatInputs = false,
   onUpdateThread,
   onSaveTopologyLayout,
@@ -1284,6 +1286,7 @@ export function ThreadPage({
   const [isTopologyCollapsed, setIsTopologyCollapsed] = useState(false);
   const [isMatrixCollapsed, setIsMatrixCollapsed] = useState(true);
   const [isChatCollapsed, setIsChatCollapsed] = useState(false);
+  const [isSimulationCollapsed, setIsSimulationCollapsed] = useState(false);
   const [isDescriptionEditing, setIsDescriptionEditing] = useState(false);
   const [isTitleEditing, setIsTitleEditing] = useState(false);
   const [titleDraft, setTitleDraft] = useState(detail.thread.title);
@@ -1322,6 +1325,7 @@ export function ThreadPage({
   const [pendingPlanActionId, setPendingPlanActionId] = useState<string | null>(null);
   const [topologyError, setTopologyError] = useState("");
   const [isSavingTopologyLayout, setIsSavingTopologyLayout] = useState(false);
+  const [isSimulationSuccess, setIsSimulationSuccess] = useState(false);
   const [documentModal, setDocumentModal] = useState<(MatrixDocumentModal & {
     mode: MatrixDocumentModalMode;
     selectedConcern: string;
@@ -1341,6 +1345,9 @@ export function ThreadPage({
   const [isDocumentModalBusy, setIsDocumentModalBusy] = useState(false);
   const [documentModalError, setDocumentModalError] = useState("");
   const { user } = useAuth();
+  const threadDisplayId = /^\d+$/.test(threadRouteId?.trim() ?? "")
+    ? threadRouteId!.trim()
+    : (threadRouteId?.trim() ?? detail.thread.id).slice(0, 8);
 
   const sanitizeAssistantResponseText = (input: string) => {
     const noisePatterns = [
@@ -1382,7 +1389,7 @@ export function ThreadPage({
   const isAssistantRunEnabled = onRunAssistant && !assistantRunDisabledMessage;
   const isAssistantModelSelectEnabled = isAssistantRunEnabled && !isChatInputsDisabled && !isRunningAssistant && effectiveCanEdit;
 
-  type FullscreenTab = "topology" | "matrix" | "chat";
+  type FullscreenTab = "topology" | "matrix" | "chat" | "simulation";
   const titleInputRef = useRef<HTMLInputElement>(null);
   const fullscreenRef = useRef<HTMLDivElement>(null);
   const reactFlowRef = useRef<ReactFlowInstance | null>(null);
@@ -1426,6 +1433,10 @@ export function ThreadPage({
 
   useEffect(() => {
     setSelectedAgentModel(readStoredAssistantModel(detail.thread.id));
+  }, [detail.thread.id]);
+
+  useEffect(() => {
+    setIsSimulationSuccess(false);
   }, [detail.thread.id]);
 
   useEffect(() => {
@@ -2949,10 +2960,10 @@ export function ThreadPage({
           </div>
         ) : (
           <>
-            <h1 className="thread-view-title">
-              {detail.thread.title}{" "}
-              <span className="thread-view-title-number">#{detail.thread.id.slice(0, 8)}</span>
-            </h1>
+                    <h1 className="thread-view-title">
+                      {detail.thread.title}{" "}
+                      <span className="thread-view-title-number">#{threadDisplayId}</span>
+                    </h1>
             {effectiveCanEdit && (
               <button
                 className="btn btn-secondary thread-view-edit-btn"
@@ -3343,12 +3354,10 @@ export function ThreadPage({
                     </button>
                   </div>
                   <div className="thread-chat-model-row">
-                    <label htmlFor={`assistant-model-select-${detail.thread.id}`} className="sr-only">
-                      Assistant model
-                    </label>
                     <select
                       id={`assistant-model-select-${detail.thread.id}`}
-                      className="thread-chat-agent-select"
+                      className="field-input thread-chat-agent-select"
+                      aria-label="Assistant model"
                       value={selectedAgentModel}
                       onChange={(event) => setSelectedAgentModel(event.currentTarget.value as AssistantModel)}
                       disabled={!isAssistantModelSelectEnabled}
@@ -3364,6 +3373,29 @@ export function ThreadPage({
             ) : (
               <p className="thread-chat-disabled-copy">Only owners and editors can use the chat.</p>
             )}
+          </div>
+        );
+
+        const renderSimulationBody = () => (
+          <div className="thread-simulation-body">
+            <p className="thread-simulation-description">
+              Run your simulation flow from the thread context.
+            </p>
+            <div className="thread-simulation-actions">
+              <button
+                className="btn"
+                type="button"
+                onClick={() => setIsSimulationSuccess(true)}
+              >
+                Start simulation
+              </button>
+              {isSimulationSuccess ? (
+                <span className="thread-simulation-success">
+                  <CheckCircle2 size={16} />
+                  Success
+                </span>
+              ) : null}
+            </div>
           </div>
         );
 
@@ -3444,6 +3476,31 @@ export function ThreadPage({
               )}
             </section>
 
+            <section className="thread-card thread-collapsible">
+              <div className="thread-card-header" onClick={() => setIsSimulationCollapsed((current) => !current)}>
+                <h3>Simulation</h3>
+                <div className="thread-card-actions">
+                  <button
+                    className="btn-icon thread-card-action"
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); enterFullscreen("simulation"); }}
+                    aria-label="Enter fullscreen simulation"
+                  >
+                    <FullscreenIcon size={16} />
+                  </button>
+                  <span className="thread-card-action thread-collapse-icon" aria-hidden>
+                    {isSimulationCollapsed ? <ChevronRight size={16} /> : <ChevronDown size={16} />}
+                  </span>
+                </div>
+              </div>
+
+              {!isSimulationCollapsed && !isFullscreen && (
+                <div className="thread-card-body">
+                  {renderSimulationBody()}
+                </div>
+              )}
+            </section>
+
             {canCloneThread && (
               <section className="thread-card thread-commit-card">
                 <p className="thread-commit-text">
@@ -3520,6 +3577,13 @@ export function ThreadPage({
                   >
                     Chat
                   </button>
+                  <button
+                    type="button"
+                    className={`thread-fullscreen-tab${fullscreenTab === "simulation" ? " thread-fullscreen-tab--active" : ""}`}
+                    onClick={() => setFullscreenTab("simulation")}
+                  >
+                    Simulation
+                  </button>
                 </div>
                 <button
                   className="btn-icon thread-card-action"
@@ -3534,6 +3598,7 @@ export function ThreadPage({
                 {fullscreenTab === "topology" && renderTopologyBody()}
                 {fullscreenTab === "matrix" && renderMatrixBody()}
                 {fullscreenTab === "chat" && renderChatBody()}
+                {fullscreenTab === "simulation" && renderSimulationBody()}
               </div>
             </section>
           </>

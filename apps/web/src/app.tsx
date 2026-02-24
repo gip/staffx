@@ -1270,6 +1270,7 @@ function ThreadRoute({ onProjectMutated }: { onProjectMutated?: () => void }) {
   return (
     <ThreadPage
       detail={detail}
+      threadRouteId={threadId}
       integrationStatuses={integrationStatuses}
       disableChatInputs
       onUpdateThread={async (payload) => {
