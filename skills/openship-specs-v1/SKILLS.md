@@ -146,6 +146,7 @@ OpenShip v1 defines three edge types:
   "fromNodeId": "p.api",
   "toNodeId": "p.db",
   "metadata": {
+    "layer7": "postgresql-sql",
     "protocol": "pgwire",
     "speedMbps": 1000,
     "latencyMs": 2,
@@ -154,21 +155,35 @@ OpenShip v1 defines three edge types:
 }
 ```
 
-### 5.3 Endpoint Rules
+### 5.3 Network Connection Conventions
+
+For `Runtime`/`Dataflow` edges, implementations and authored bundles SHOULD encode connection semantics in metadata:
+
+- `metadata.protocol` SHOULD describe the transport-level protocol and SHOULD be used for compatibility checks. Examples include `"http"`, `"grpc"`, `"pgwire"`, `"filesystem"`.
+- `metadata.layer7` SHOULD describe the application-layer protocol for topology readability and routing intent. Examples include:
+  - `"rest-json"`
+  - `"grpc-json"`
+  - `"oidc-oauth2"`
+  - `"oidc-oauth2-pkce"`
+
+Tooling SHOULD display `metadata.layer7` first when rendering edge labels; if absent, it MAY fallback to `metadata.protocol`.
+
+### 5.4 Endpoint Rules
 
 - For `Runtime` and `Dataflow` edges: `fromNodeId` MUST reference a `Process` node. `toNodeId` MUST reference a `Process` or `Container` node.
 - For `Dependency` edges: `fromNodeId` MUST reference a `Process` node. `toNodeId` MUST reference a `Library` node.
 - Edges to or from `Root` are forbidden for all edge types.
 
-### 5.4 Edge Target Semantics for Containers
+### 5.5 Edge Target Semantics for Containers
 
 When a `Runtime` or `Dataflow` edge targets a `Container` node, this represents an opaque routing boundary. The edge indicates that the source Process communicates with the Container as a unit, without specifying which internal Process handles the interaction. Tooling SHOULD interpret this as: the Container exposes a stable entry point (such as a load balancer, ingress, or service mesh endpoint) and internal routing is an implementation detail.
 
 For analysis or flattening purposes, tooling MAY expand a Container-targeted edge into individual Process-targeted edges based on the Container's children, but this expansion is not required for conformance.
 
-### 5.5 Metadata Rules
+### 5.6 Metadata Rules
 
 - `metadata.protocol` is OPTIONAL. When present, it describes the wire protocol (e.g., `"http"`, `"grpc"`, `"pgwire"`, `"filesystem"`).
+- `metadata.layer7` is OPTIONAL. When present, it describes the application-layer protocol family (e.g., `"rest-json"`, `"grpc-json"`), and MAY be used by topology renderers as the preferred edge label.
 - `metadata.description` is OPTIONAL. A short human-readable description of the edge's purpose.
 - `metadata.speedMbps` is OPTIONAL numeric throughput.
 - Additional metadata fields MAY be included.
@@ -523,6 +538,7 @@ edges:
     fromNodeId: p.api
     toNodeId: p.db
     metadata:
+      layer7: postgresql-sql
       protocol: pgwire
       speedMbps: 1000
   - id: e.api.authlib

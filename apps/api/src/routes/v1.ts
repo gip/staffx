@@ -94,6 +94,7 @@ interface V1TopologyEdge {
   toNodeId: string;
   type: string;
   protocol?: string | null;
+  layer7?: string | null;
 }
 
 interface V1RunChatMessage {
@@ -894,6 +895,7 @@ function toTopology(nodes: Array<{ id: string; name: string; kind: string; paren
     toNodeId: edge.to_node_id,
     type: edge.type,
     protocol: edge.metadata?.protocol ? String(edge.metadata.protocol) : null,
+    layer7: edge.metadata?.layer7 ? String(edge.metadata.layer7) : null,
   }));
 
   return { nodes: topoNodes, edges: topoEdges };

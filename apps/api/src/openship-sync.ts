@@ -39,6 +39,7 @@ interface ParsedOpenShipEdge {
   type: "Runtime" | "Dataflow" | "Dependency";
   fromNodeId: string;
   toNodeId: string;
+  metadata: Record<string, YamlValue>;
 }
 
 interface ParsedNodeArtifactCode {
@@ -309,10 +310,14 @@ function parseOpenShipEdges(raw: string): ParsedOpenShipEdge[] {
     let from = "";
     let to = "";
     let type: ParsedOpenShipEdge["type"] = "Dependency";
+    let metadata: Record<string, YamlValue> = {};
     try {
       from = asString(edge.fromNodeId, `edge ${index} in ${filePath} fromNodeId`);
       to = asString(edge.toNodeId, `edge ${index} in ${filePath} toNodeId`);
       type = asString(edge.type, `edge ${index} in ${filePath} type`) as ParsedOpenShipEdge["type"];
+      if (edge.metadata !== undefined) {
+        metadata = asRecord(edge.metadata, `edge ${index} in ${filePath} metadata`) as Record<string, YamlValue>;
+      }
     } catch (error: unknown) {
       edgesError(
         `edge ${index} in ${filePath} has invalid fields; source=${describeYamlValue(entry as YamlValue)}; ` +
@@ -329,6 +334,7 @@ function parseOpenShipEdges(raw: string): ParsedOpenShipEdge[] {
       type,
       fromNodeId: from,
       toNodeId: to,
+      metadata,
     };
   });
 }
@@ -957,7 +963,7 @@ export async function applyOpenShipBundleToThreadSystemWithClient(
              from_node_id = EXCLUDED.from_node_id,
              to_node_id = EXCLUDED.to_node_id,
              metadata = EXCLUDED.metadata`,
-      [edge.id, systemId, edge.type, edge.fromNodeId, edge.toNodeId, {}],
+      [edge.id, systemId, edge.type, edge.fromNodeId, edge.toNodeId, edge.metadata],
     );
   }
 
