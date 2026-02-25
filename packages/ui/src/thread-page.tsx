@@ -1569,25 +1569,20 @@ export function ThreadPage({
 
   const scheduleTopologyFitView = useCallback(() => {
     const runFitView = () => {
-      const instance = reactFlowRef.current;
-      if (!instance) {
-        triggerVisibleFitViewControl();
-        return;
-      }
-      const fitResult = instance.fitView();
-      Promise.resolve(fitResult).then((didFit) => {
-        if (didFit === false) {
-          triggerVisibleFitViewControl();
-        }
-      }).catch(() => {
-        triggerVisibleFitViewControl();
-      });
+      const clicked = triggerVisibleFitViewControl();
+      if (clicked) return;
+      reactFlowRef.current?.fitView();
     };
-    if (typeof requestAnimationFrame === "function") {
-      requestAnimationFrame(() => requestAnimationFrame(runFitView));
-      return;
+    const attemptDelays = [0, 140, 320];
+    for (const delayMs of attemptDelays) {
+      setTimeout(() => {
+        if (typeof requestAnimationFrame === "function") {
+          requestAnimationFrame(() => requestAnimationFrame(runFitView));
+          return;
+        }
+        runFitView();
+      }, delayMs);
     }
-    setTimeout(runFitView, 0);
   }, [triggerVisibleFitViewControl]);
 
   useEffect(() => {
