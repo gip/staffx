@@ -648,6 +648,61 @@ async function resolveProjectAccess(projectId: string, user: AuthUser): Promise<
   return { ...row, access_role: accessRole };
 }
 
+async function resolveProjectAccessByHandle(
+  handle: string,
+  projectName: string,
+  user: AuthUser,
+): Promise<V1ProjectAccessRow | null> {
+  const normalizedHandle = handle.trim();
+  const normalizedProjectName = projectName.trim();
+  const result = await query<V1ProjectAccessRow>(
+    `SELECT
+       p.id AS project_id,
+       p.owner_id,
+       p.visibility::text AS visibility,
+       owner_u.handle AS owner_handle,
+       p.is_archived,
+       COALESCE(NULLIF(pc.role::text, ''),
+         CASE
+           WHEN p.owner_id = $3 THEN 'Owner'
+           WHEN p.visibility = 'public' THEN 'Viewer'
+           ELSE NULL
+         END
+       )::text AS access_role,
+       p.name
+     FROM projects p
+     JOIN users owner_u ON owner_u.id = p.owner_id
+     LEFT JOIN project_collaborators pc
+       ON pc.project_id = p.id
+      AND pc.user_id = $3
+     WHERE lower(owner_u.handle) = lower($1)
+       AND p.name = $2
+     LIMIT 1`,
+    [normalizedHandle, normalizedProjectName, user.id],
+  );
+  if (result.rowCount === 0) return null;
+
+  const row = result.rows[0];
+  if (row.is_archived) return null;
+
+  const accessRole = row.access_role as AccessRole | null;
+  if (!accessRole) return null;
+
+  return { ...row, access_role: accessRole };
+}
+
+async function resolveProjectSystemId(projectId: string): Promise<string | null> {
+  const result = await query<{ system_id: string }>(
+    `SELECT thread_current_system(t.id) AS system_id
+     FROM threads t
+     WHERE t.project_id = $1
+     ORDER BY t.project_thread_id ASC
+     LIMIT 1`,
+    [projectId],
+  );
+  return result.rows[0]?.system_id ?? null;
+}
+
 async function resolveThreadAccess(threadId: string, user: AuthUser): Promise<V1ThreadRow | null> {
   const result = await query<V1ThreadRow>(
     `SELECT
@@ -1280,6 +1335,509 @@ export async function v1Routes(app: FastifyInstance) {
         [user.id, name],
       );
       return { available: exists.rowCount === 0 };
+    },
+  );
+
+  app.get<{ Params: { handle: string; projectName: string } }>(
+    "/projects/:handle/:projectName/collaborators",
+    async (req, reply) => {
+      const user = (req as V1AuthRequest).auth;
+      const project = await resolveProjectAccessByHandle(req.params.handle, req.params.projectName, user);
+      if (!project) {
+        return writeProblem(reply, 404, "Project not found", "Project not found or access denied.");
+      }
+
+      const [collabResult, rolesResult] = await Promise.all([
+        query<{
+          handle: string;
+          name: string | null;
+          picture: string | null;
+          role: string;
+          project_roles: string[] | null;
+        }>(
+          `SELECT u.handle, u.name, u.picture, 'Owner' AS role,
+                  ARRAY(SELECT pmr.role_name FROM project_member_roles pmr
+                        JOIN project_roles pr ON pr.project_id = pmr.project_id AND pr.name = pmr.role_name
+                        WHERE pmr.project_id = $2 AND pmr.user_id = u.id
+                        ORDER BY pr.position) AS project_roles
+           FROM users u WHERE u.id = $1
+           UNION ALL
+           SELECT u.handle, u.name, u.picture, pc.role::text AS role,
+                  ARRAY(SELECT pmr.role_name FROM project_member_roles pmr
+                        JOIN project_roles pr ON pr.project_id = pmr.project_id AND pr.name = pmr.role_name
+                        WHERE pmr.project_id = $2 AND pmr.user_id = u.id
+                        ORDER BY pr.position) AS project_roles
+           FROM project_collaborators pc
+           JOIN users u ON u.id = pc.user_id
+           WHERE pc.project_id = $2`,
+          [project.owner_id, project.project_id],
+        ),
+        query<{ name: string }>(
+          `SELECT name FROM project_roles WHERE project_id = $1 ORDER BY position`,
+          [project.project_id],
+        ),
+      ]);
+
+      const systemId = await resolveProjectSystemId(project.project_id);
+      const concernsResult = systemId
+        ? await query<{
+          name: string;
+          position: number;
+          is_baseline: boolean;
+          scope: string | null;
+        }>(
+          `SELECT name, position, is_baseline, scope
+           FROM concerns
+           WHERE system_id = $1
+           ORDER BY position`,
+          [systemId],
+        )
+        : { rows: [] as { name: string; position: number; is_baseline: boolean; scope: string | null }[] };
+
+      return {
+        accessRole: project.access_role,
+        visibility: project.visibility,
+        projectRoles: rolesResult.rows.map((row) => row.name),
+        concerns: concernsResult.rows.map((row) => ({
+          name: row.name,
+          position: row.position,
+          isBaseline: row.is_baseline,
+          scope: row.scope,
+        })),
+        collaborators: collabResult.rows.map((row) => ({
+          handle: row.handle,
+          name: row.name,
+          picture: row.picture,
+          role: row.role,
+          projectRoles: row.project_roles ?? [],
+        })),
+      };
+    },
+  );
+
+  app.patch<{
+    Params: { handle: string; projectName: string };
+    Body: { visibility?: V1ProjectVisibility };
+  }>(
+    "/projects/:handle/:projectName/visibility",
+    async (req, reply) => {
+      const user = (req as V1AuthRequest).auth;
+      const project = await resolveProjectAccessByHandle(req.params.handle, req.params.projectName, user);
+      if (!project) {
+        return writeProblem(reply, 404, "Project not found", "Project not found or access denied.");
+      }
+      if (project.access_role !== "Owner") {
+        return forbiddenProblem(reply, "Only the owner can update visibility.");
+      }
+
+      const nextVisibility = req.body?.visibility;
+      if (nextVisibility !== "public" && nextVisibility !== "private") {
+        return writeProblem(reply, 400, "Invalid visibility", "visibility must be public or private.");
+      }
+
+      const result = await query<{ visibility: V1ProjectVisibility }>(
+        `UPDATE projects
+         SET visibility = $1::project_visibility
+         WHERE id = $2
+         RETURNING visibility::text AS visibility`,
+        [nextVisibility, project.project_id],
+      );
+      if (result.rowCount === 0) {
+        return writeProblem(reply, 404, "Project not found", "Project not found.");
+      }
+
+      return { visibility: result.rows[0].visibility };
+    },
+  );
+
+  app.post<{ Params: { handle: string; projectName: string } }>(
+    "/projects/:handle/:projectName/archive",
+    async (req, reply) => {
+      const user = (req as V1AuthRequest).auth;
+      const project = await resolveProjectAccessByHandle(req.params.handle, req.params.projectName, user);
+      if (!project) {
+        return writeProblem(reply, 404, "Project not found", "Project not found or access denied.");
+      }
+      if (project.access_role !== "Owner") {
+        return forbiddenProblem(reply, "Only the owner can archive this project.");
+      }
+
+      await query(
+        "UPDATE projects SET is_archived = true WHERE id = $1",
+        [project.project_id],
+      );
+      return reply.code(204).send();
+    },
+  );
+
+  app.post<{
+    Params: { handle: string; projectName: string };
+    Body: { name?: string };
+  }>(
+    "/projects/:handle/:projectName/roles",
+    async (req, reply) => {
+      const user = (req as V1AuthRequest).auth;
+      const project = await resolveProjectAccessByHandle(req.params.handle, req.params.projectName, user);
+      if (!project) {
+        return writeProblem(reply, 404, "Project not found", "Project not found or access denied.");
+      }
+      if (project.access_role !== "Owner") {
+        return forbiddenProblem(reply, "Only the owner can manage roles.");
+      }
+
+      const roleName = req.body?.name?.trim();
+      if (!roleName) {
+        return writeProblem(reply, 400, "Invalid role name", "name is required.");
+      }
+
+      const maxPos = await query<{ max: number | null }>(
+        "SELECT MAX(position) AS max FROM project_roles WHERE project_id = $1",
+        [project.project_id],
+      );
+      const nextPos = (maxPos.rows[0].max ?? -1) + 1;
+
+      try {
+        await query(
+          "INSERT INTO project_roles (project_id, name, position) VALUES ($1, $2, $3)",
+          [project.project_id, roleName, nextPos],
+        );
+      } catch (error: unknown) {
+        if (error instanceof Error && "code" in error && (error as { code: string }).code === "23505") {
+          return writeProblem(reply, 409, "Duplicate role", "A role with this name already exists.");
+        }
+        throw error;
+      }
+
+      return reply.code(201).send({ name: roleName, position: nextPos });
+    },
+  );
+
+  app.delete<{ Params: { handle: string; projectName: string; roleName: string } }>(
+    "/projects/:handle/:projectName/roles/:roleName",
+    async (req, reply) => {
+      const user = (req as V1AuthRequest).auth;
+      const project = await resolveProjectAccessByHandle(req.params.handle, req.params.projectName, user);
+      if (!project) {
+        return writeProblem(reply, 404, "Project not found", "Project not found or access denied.");
+      }
+      if (project.access_role !== "Owner") {
+        return forbiddenProblem(reply, "Only the owner can manage roles.");
+      }
+
+      const roleName = req.params.roleName;
+      const assignedCount = await query<{ count: string }>(
+        "SELECT COUNT(*) AS count FROM project_member_roles WHERE project_id = $1 AND role_name = $2",
+        [project.project_id, roleName],
+      );
+      if (Number(assignedCount.rows[0].count) > 0) {
+        return writeProblem(reply, 409, "Role in use", "Cannot delete role while users are still assigned to it.");
+      }
+
+      const result = await query(
+        "DELETE FROM project_roles WHERE project_id = $1 AND name = $2",
+        [project.project_id, roleName],
+      );
+      if (result.rowCount === 0) {
+        return writeProblem(reply, 404, "Role not found", "Role not found.");
+      }
+      return reply.code(204).send();
+    },
+  );
+
+  app.post<{
+    Params: { handle: string; projectName: string };
+    Body: { name?: string };
+  }>(
+    "/projects/:handle/:projectName/concerns",
+    async (req, reply) => {
+      const user = (req as V1AuthRequest).auth;
+      const project = await resolveProjectAccessByHandle(req.params.handle, req.params.projectName, user);
+      if (!project) {
+        return writeProblem(reply, 404, "Project not found", "Project not found or access denied.");
+      }
+      if (project.access_role !== "Owner") {
+        return forbiddenProblem(reply, "Only the owner can manage concerns.");
+      }
+
+      const concernName = req.body?.name?.trim();
+      if (!concernName) {
+        return writeProblem(reply, 400, "Invalid concern name", "name is required.");
+      }
+
+      const systemId = await resolveProjectSystemId(project.project_id);
+      if (!systemId) {
+        return writeProblem(reply, 404, "Project system not found", "Project system not found.");
+      }
+
+      const positionResult = await query<{ max: number | null }>(
+        "SELECT MAX(position) AS max FROM concerns WHERE system_id = $1",
+        [systemId],
+      );
+      const nextPosition = (positionResult.rows[0].max ?? -1) + 1;
+
+      try {
+        await query(
+          "INSERT INTO concerns (system_id, name, position, is_baseline, scope) VALUES ($1, $2, $3, $4, $5)",
+          [systemId, concernName, nextPosition, false, null],
+        );
+      } catch (error: unknown) {
+        if (error instanceof Error && "code" in error && (error as { code: string }).code === "23505") {
+          return writeProblem(reply, 409, "Duplicate concern", "A concern with this name already exists.");
+        }
+        throw error;
+      }
+
+      return reply.code(201).send({
+        name: concernName,
+        position: nextPosition,
+        isBaseline: false,
+        scope: null,
+      });
+    },
+  );
+
+  app.delete<{ Params: { handle: string; projectName: string; concernName: string } }>(
+    "/projects/:handle/:projectName/concerns/:concernName",
+    async (req, reply) => {
+      const user = (req as V1AuthRequest).auth;
+      const project = await resolveProjectAccessByHandle(req.params.handle, req.params.projectName, user);
+      if (!project) {
+        return writeProblem(reply, 404, "Project not found", "Project not found or access denied.");
+      }
+      if (project.access_role !== "Owner") {
+        return forbiddenProblem(reply, "Only the owner can manage concerns.");
+      }
+
+      const concernName = req.params.concernName;
+      const systemId = await resolveProjectSystemId(project.project_id);
+      if (!systemId) {
+        return writeProblem(reply, 404, "Project system not found", "Project system not found.");
+      }
+
+      const [matrixRefs, artifacts] = await Promise.all([
+        query<{ count: string }>(
+          "SELECT COUNT(*) AS count FROM matrix_refs WHERE system_id = $1 AND concern_hash = md5($2) AND concern = $2",
+          [systemId, concernName],
+        ),
+        query<{ count: string }>(
+          "SELECT COUNT(*) AS count FROM artifacts WHERE system_id = $1 AND concern = $2",
+          [systemId, concernName],
+        ),
+      ]);
+
+      const referenced = Number(matrixRefs.rows[0].count) + Number(artifacts.rows[0].count);
+      if (referenced > 0) {
+        return writeProblem(
+          reply,
+          409,
+          "Concern in use",
+          "Cannot delete concern while it is still linked to matrix docs or artifacts.",
+        );
+      }
+
+      const result = await query(
+        "DELETE FROM concerns WHERE system_id = $1 AND name = $2",
+        [systemId, concernName],
+      );
+      if (result.rowCount === 0) {
+        return writeProblem(reply, 404, "Concern not found", "Concern not found.");
+      }
+
+      return reply.code(204).send();
+    },
+  );
+
+  app.post<{
+    Params: { handle: string; projectName: string };
+    Body: { handle?: string; role?: string; projectRoles?: string[] };
+  }>(
+    "/projects/:handle/:projectName/collaborators",
+    async (req, reply) => {
+      const user = (req as V1AuthRequest).auth;
+      const project = await resolveProjectAccessByHandle(req.params.handle, req.params.projectName, user);
+      if (!project) {
+        return writeProblem(reply, 404, "Project not found", "Project not found or access denied.");
+      }
+      if (project.access_role !== "Owner") {
+        return forbiddenProblem(reply, "Only the owner can add collaborators.");
+      }
+
+      const targetHandle = req.body?.handle?.trim();
+      if (!targetHandle) {
+        return writeProblem(reply, 400, "Invalid collaborator handle", "handle is required.");
+      }
+
+      const projectRoles = req.body?.projectRoles;
+      if (!projectRoles || !Array.isArray(projectRoles) || projectRoles.length === 0) {
+        return writeProblem(reply, 400, "Invalid project roles", "At least one project role is required.");
+      }
+
+      const collabRole = req.body?.role === "Viewer" ? "Viewer" : "Editor";
+      const userResult = await query<{ id: string; handle: string; name: string | null; picture: string | null }>(
+        "SELECT id, handle, name, picture FROM users WHERE lower(handle) = lower($1)",
+        [targetHandle],
+      );
+      if (userResult.rowCount === 0) {
+        return writeProblem(reply, 404, "User not found", "User not found.");
+      }
+
+      const target = userResult.rows[0];
+      if (target.id === project.owner_id) {
+        return writeProblem(reply, 400, "Invalid collaborator", "Cannot add the owner as a collaborator.");
+      }
+
+      const validRoles = await query<{ name: string }>(
+        "SELECT name FROM project_roles WHERE project_id = $1",
+        [project.project_id],
+      );
+      const validSet = new Set(validRoles.rows.map((row) => row.name));
+      for (const roleName of projectRoles) {
+        if (!validSet.has(roleName)) {
+          return writeProblem(reply, 400, "Invalid project role", `Invalid project role: ${roleName}`);
+        }
+      }
+
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        await client.query(
+          "INSERT INTO project_collaborators (project_id, user_id, role) VALUES ($1, $2, $3::collaborator_role)",
+          [project.project_id, target.id, collabRole],
+        );
+        await client.query(
+          `INSERT INTO project_member_roles (project_id, user_id, role_name)
+           SELECT $1, $2, unnest($3::text[])`,
+          [project.project_id, target.id, projectRoles],
+        );
+        await client.query("COMMIT");
+      } catch (error: unknown) {
+        await client.query("ROLLBACK").catch(() => undefined);
+        if (error instanceof Error && "code" in error && (error as { code: string }).code === "23505") {
+          return writeProblem(reply, 409, "Duplicate collaborator", "User is already a collaborator.");
+        }
+        throw error;
+      } finally {
+        client.release();
+      }
+
+      return reply.code(201).send({
+        handle: target.handle,
+        name: target.name,
+        picture: target.picture,
+        role: collabRole,
+        projectRoles,
+      });
+    },
+  );
+
+  app.delete<{ Params: { handle: string; projectName: string; collaboratorHandle: string } }>(
+    "/projects/:handle/:projectName/collaborators/:collaboratorHandle",
+    async (req, reply) => {
+      const user = (req as V1AuthRequest).auth;
+      const project = await resolveProjectAccessByHandle(req.params.handle, req.params.projectName, user);
+      if (!project) {
+        return writeProblem(reply, 404, "Project not found", "Project not found or access denied.");
+      }
+      if (project.access_role !== "Owner") {
+        return forbiddenProblem(reply, "Only the owner can remove collaborators.");
+      }
+
+      const userResult = await query<{ id: string }>(
+        "SELECT id FROM users WHERE lower(handle) = lower($1)",
+        [req.params.collaboratorHandle],
+      );
+      if (userResult.rowCount === 0) {
+        return writeProblem(reply, 404, "User not found", "User not found.");
+      }
+
+      const targetId = userResult.rows[0].id;
+      await query(
+        "DELETE FROM project_member_roles WHERE project_id = $1 AND user_id = $2",
+        [project.project_id, targetId],
+      );
+      const result = await query(
+        "DELETE FROM project_collaborators WHERE project_id = $1 AND user_id = $2",
+        [project.project_id, targetId],
+      );
+      if (result.rowCount === 0) {
+        return writeProblem(reply, 404, "Collaborator not found", "Not a collaborator.");
+      }
+      return reply.code(204).send();
+    },
+  );
+
+  app.put<{
+    Params: { handle: string; projectName: string; collaboratorHandle: string };
+    Body: { projectRoles?: string[] };
+  }>(
+    "/projects/:handle/:projectName/collaborators/:collaboratorHandle/roles",
+    async (req, reply) => {
+      const user = (req as V1AuthRequest).auth;
+      const project = await resolveProjectAccessByHandle(req.params.handle, req.params.projectName, user);
+      if (!project) {
+        return writeProblem(reply, 404, "Project not found", "Project not found or access denied.");
+      }
+      if (project.access_role !== "Owner") {
+        return forbiddenProblem(reply, "Only the owner can manage project member roles.");
+      }
+
+      const projectRoles = req.body?.projectRoles;
+      if (!projectRoles || !Array.isArray(projectRoles) || projectRoles.length === 0) {
+        return writeProblem(reply, 400, "Invalid project roles", "At least one project role is required.");
+      }
+
+      const userResult = await query<{ id: string }>(
+        "SELECT id FROM users WHERE lower(handle) = lower($1)",
+        [req.params.collaboratorHandle],
+      );
+      if (userResult.rowCount === 0) {
+        return writeProblem(reply, 404, "User not found", "User not found.");
+      }
+      const targetId = userResult.rows[0].id;
+
+      const isOwner = targetId === project.owner_id;
+      if (!isOwner) {
+        const collabCheck = await query(
+          "SELECT 1 FROM project_collaborators WHERE project_id = $1 AND user_id = $2",
+          [project.project_id, targetId],
+        );
+        if (collabCheck.rowCount === 0) {
+          return writeProblem(reply, 404, "Project member not found", "Not a project member.");
+        }
+      }
+
+      const validRoles = await query<{ name: string }>(
+        "SELECT name FROM project_roles WHERE project_id = $1",
+        [project.project_id],
+      );
+      const validSet = new Set(validRoles.rows.map((row) => row.name));
+      for (const roleName of projectRoles) {
+        if (!validSet.has(roleName)) {
+          return writeProblem(reply, 400, "Invalid project role", `Invalid project role: ${roleName}`);
+        }
+      }
+
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        await client.query(
+          "DELETE FROM project_member_roles WHERE project_id = $1 AND user_id = $2",
+          [project.project_id, targetId],
+        );
+        await client.query(
+          `INSERT INTO project_member_roles (project_id, user_id, role_name)
+           SELECT $1, $2, unnest($3::text[])`,
+          [project.project_id, targetId, projectRoles],
+        );
+        await client.query("COMMIT");
+      } catch (error) {
+        await client.query("ROLLBACK").catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+      }
+
+      return { projectRoles };
     },
   );
 
