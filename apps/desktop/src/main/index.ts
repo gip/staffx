@@ -71,6 +71,7 @@ ipcMain.handle("assistant:run", async (_event, payload: {
   handle: string;
   projectName: string;
   threadId: string;
+  projectId?: string;
   runId: string;
 }) => {
   if (!isClaudeAgentEnabled) {

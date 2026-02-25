@@ -296,6 +296,10 @@ interface V1ThreadPatchBody {
   status?: V1ThreadStatus;
 }
 
+interface V1ThreadScopeQuerystring {
+  projectId?: string;
+}
+
 interface V1RunClaimBody {
   runnerId?: string;
 }
@@ -399,6 +403,14 @@ function parseProjectThreadId(raw: string): number | null {
   const parsed = Number(trimmed);
   if (!Number.isSafeInteger(parsed) || parsed <= 0) return null;
   return parsed;
+}
+
+function parseOptionalProjectId(raw: unknown): string | null | "invalid" {
+  if (typeof raw === "undefined") return null;
+  if (typeof raw !== "string") return "invalid";
+  const trimmed = raw.trim();
+  if (!trimmed) return "invalid";
+  return isUuid(trimmed) ? trimmed : "invalid";
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -674,46 +686,92 @@ async function resolveThreadAccess(threadId: string, user: AuthUser): Promise<V1
   return { ...row, access_role: accessRole };
 }
 
+type ThreadAccessResolution =
+  | { kind: "found"; thread: V1ThreadRow }
+  | { kind: "invalid_thread_id" }
+  | { kind: "invalid_project_id" }
+  | { kind: "ambiguous_project_thread_id" }
+  | { kind: "not_found" };
+
 async function resolveThreadAccessByProjectThreadId(
   projectThreadId: number,
   user: AuthUser,
-): Promise<V1ThreadRow | null> {
+  projectId: string | null,
+): Promise<ThreadAccessResolution> {
+  if (projectId) {
+    const result = await query<V1ThreadRow>(
+      `SELECT *
+         FROM (
+           SELECT
+             t.id,
+             t.project_id,
+             t.title,
+             t.description,
+             t.status,
+             t.created_at,
+             t.updated_at,
+             t.source_thread_id,
+             COALESCE(NULLIF(pc.role::text, ''),
+               CASE
+                 WHEN p.owner_id = $2 THEN 'Owner'
+                 WHEN p.visibility = 'public' THEN 'Viewer'
+                 ELSE NULL
+               END
+             )::text AS access_role
+           FROM threads t
+           JOIN projects p ON p.id = t.project_id
+           LEFT JOIN project_collaborators pc
+             ON pc.project_id = p.id
+            AND pc.user_id = $2
+           WHERE t.project_thread_id = $1
+             AND t.project_id = $3
+             AND p.is_archived = false
+         ) accessible
+        WHERE accessible.access_role IS NOT NULL
+        LIMIT 1`,
+      [projectThreadId, user.id, projectId],
+    );
+
+    if (result.rowCount === 0) return { kind: "not_found" };
+    return { kind: "found", thread: result.rows[0] };
+  }
+
   const result = await query<V1ThreadRow>(
-    `SELECT
-       t.id,
-       t.project_id,
-       t.title,
-       t.description,
-       t.status,
-       t.created_at,
-       t.updated_at,
-       t.source_thread_id,
-       COALESCE(NULLIF(pc.role::text, ''),
-         CASE
-           WHEN p.owner_id = $2 THEN 'Owner'
-           WHEN p.visibility = 'public' THEN 'Viewer'
-           ELSE NULL
-         END
-       )::text AS access_role
-     FROM threads t
-     JOIN projects p ON p.id = t.project_id
-     JOIN users owner_u ON owner_u.id = p.owner_id
-     LEFT JOIN project_collaborators pc
-       ON pc.project_id = p.id
-      AND pc.user_id = $2
-     WHERE t.project_thread_id = $1
-       AND p.is_archived = false
-     LIMIT 1`,
+    `SELECT *
+       FROM (
+         SELECT
+           t.id,
+           t.project_id,
+           t.title,
+           t.description,
+           t.status,
+           t.created_at,
+           t.updated_at,
+           t.source_thread_id,
+           COALESCE(NULLIF(pc.role::text, ''),
+             CASE
+               WHEN p.owner_id = $2 THEN 'Owner'
+               WHEN p.visibility = 'public' THEN 'Viewer'
+               ELSE NULL
+             END
+           )::text AS access_role
+         FROM threads t
+         JOIN projects p ON p.id = t.project_id
+         LEFT JOIN project_collaborators pc
+           ON pc.project_id = p.id
+          AND pc.user_id = $2
+         WHERE t.project_thread_id = $1
+           AND p.is_archived = false
+       ) accessible
+      WHERE accessible.access_role IS NOT NULL
+      LIMIT 2`,
     [projectThreadId, user.id],
   );
 
-  if (result.rowCount === 0) return null;
-
-  const row = result.rows[0];
-  const accessRole = row.access_role as AccessRole | null;
-  if (!accessRole) return null;
-
-  return { ...row, access_role: accessRole };
+  const rowCount = result.rowCount ?? 0;
+  if (rowCount === 0) return { kind: "not_found" };
+  if (rowCount > 1) return { kind: "ambiguous_project_thread_id" };
+  return { kind: "found", thread: result.rows[0] };
 }
 
 type V1ThreadRouteId = { kind: "uuid"; id: string } | { kind: "project"; projectThreadId: number };
@@ -728,14 +786,40 @@ function parseV1ThreadRouteId(raw: string): V1ThreadRouteId | null {
 async function resolveThreadAccessByRequestParam(
   rawThreadId: string,
   user: AuthUser,
-): Promise<V1ThreadRow | null> {
+  rawProjectId: unknown,
+): Promise<ThreadAccessResolution> {
   const parsed = parseV1ThreadRouteId(rawThreadId);
-  if (!parsed) return null;
+  if (!parsed) return { kind: "invalid_thread_id" };
 
   if (parsed.kind === "uuid") {
-    return resolveThreadAccess(parsed.id, user);
+    const byUuid = await resolveThreadAccess(parsed.id, user);
+    return byUuid ? { kind: "found", thread: byUuid } : { kind: "not_found" };
   }
-  return resolveThreadAccessByProjectThreadId(parsed.projectThreadId, user);
+
+  const parsedProjectId = parseOptionalProjectId(rawProjectId);
+  if (parsedProjectId === "invalid") return { kind: "invalid_project_id" };
+  return resolveThreadAccessByProjectThreadId(parsed.projectThreadId, user, parsedProjectId);
+}
+
+function writeThreadAccessFailure(reply: FastifyReply, result: Exclude<ThreadAccessResolution, { kind: "found" }>): void {
+  if (result.kind === "invalid_thread_id") {
+    writeProblem(reply, 400, "Invalid threadId", "threadId must be a UUID or project thread id.");
+    return;
+  }
+  if (result.kind === "invalid_project_id") {
+    writeProblem(reply, 400, "Invalid projectId", "projectId must be a UUID when provided.");
+    return;
+  }
+  if (result.kind === "ambiguous_project_thread_id") {
+    writeProblem(
+      reply,
+      400,
+      "Ambiguous threadId",
+      "threadId matches multiple accessible projects. Provide projectId query parameter.",
+    );
+    return;
+  }
+  notFoundProblem(reply, "Thread not found");
 }
 
 
@@ -1155,9 +1239,8 @@ export async function v1Routes(app: FastifyInstance) {
           [rootNodeId, systemId, name],
         );
         await client.query(
-          `INSERT INTO threads (id, title, description, project_id, created_by, seed_system_id, status)
-           VALUES ($1, 'Project Creation', $2, $3, $4, $5, 'open')`,
-          [threadId, description, projectId, user.id, systemId],
+          "SELECT create_thread($1, $2, $3, $4, $5, $6)",
+          [threadId, projectId, user.id, systemId, "Project Creation", description],
         );
 
         await client.query("COMMIT");
@@ -1426,18 +1509,17 @@ export async function v1Routes(app: FastifyInstance) {
     },
   );
 
-  app.get<{ Params: { threadId: string } }>(
+  app.get<{ Params: { threadId: string }; Querystring: V1ThreadScopeQuerystring }>(
     "/threads/:threadId",
     async (req, reply) => {
       const user = (req as V1AuthRequest).auth;
       const threadId = req.params.threadId;
-      const thread = await resolveThreadAccessByRequestParam(threadId, user);
-      if (!thread) {
-        if (!parseV1ThreadRouteId(threadId)) {
-          return writeProblem(reply, 400, "Invalid threadId", "threadId must be a UUID or project thread id.");
-        }
-        return notFoundProblem(reply, "Thread not found");
+      const threadAccess = await resolveThreadAccessByRequestParam(threadId, user, req.query.projectId);
+      if (threadAccess.kind !== "found") {
+        writeThreadAccessFailure(reply, threadAccess);
+        return;
       }
+      const thread = threadAccess.thread;
       const resolvedThreadId = thread.id;
 
       const [projectRow, messagesResult, systemTopology, systemEdges, matrixCells, concernRows, matrixDocumentsRows] = await Promise.all([
@@ -1576,18 +1658,17 @@ export async function v1Routes(app: FastifyInstance) {
     },
   );
 
-  app.patch<{ Params: { threadId: string }; Body: V1ThreadPatchBody }>(
+  app.patch<{ Params: { threadId: string }; Querystring: V1ThreadScopeQuerystring; Body: V1ThreadPatchBody }>(
     "/threads/:threadId",
     async (req, reply) => {
       const user = (req as V1AuthRequest).auth;
       const threadId = req.params.threadId;
-      const thread = await resolveThreadAccessByRequestParam(threadId, user);
-      if (!thread) {
-        if (!parseV1ThreadRouteId(threadId)) {
-          return writeProblem(reply, 400, "Invalid threadId", "threadId must be a UUID or project thread id.");
-        }
-        return notFoundProblem(reply, "Thread not found");
+      const threadAccess = await resolveThreadAccessByRequestParam(threadId, user, req.query.projectId);
+      if (threadAccess.kind !== "found") {
+        writeThreadAccessFailure(reply, threadAccess);
+        return;
       }
+      const thread = threadAccess.thread;
       const resolvedThreadId = thread.id;
 
       if (!canEdit(thread.access_role)) {
@@ -1645,18 +1726,17 @@ export async function v1Routes(app: FastifyInstance) {
     },
   );
 
-  app.delete<{ Params: { threadId: string } }>(
+  app.delete<{ Params: { threadId: string }; Querystring: V1ThreadScopeQuerystring }>(
     "/threads/:threadId",
     async (req, reply) => {
       const user = (req as V1AuthRequest).auth;
       const threadId = req.params.threadId;
-      const thread = await resolveThreadAccessByRequestParam(threadId, user);
-      if (!thread) {
-        if (!parseV1ThreadRouteId(threadId)) {
-          return writeProblem(reply, 400, "Invalid threadId", "threadId must be a UUID or project thread id.");
-        }
-        return notFoundProblem(reply, "Thread not found");
+      const threadAccess = await resolveThreadAccessByRequestParam(threadId, user, req.query.projectId);
+      if (threadAccess.kind !== "found") {
+        writeThreadAccessFailure(reply, threadAccess);
+        return;
       }
+      const thread = threadAccess.thread;
       const resolvedThreadId = thread.id;
 
       if (!canEdit(thread.access_role)) {
@@ -1668,18 +1748,17 @@ export async function v1Routes(app: FastifyInstance) {
     },
   );
 
-  app.get<{ Params: { threadId: string } }>(
+  app.get<{ Params: { threadId: string }; Querystring: V1ThreadScopeQuerystring }>(
     "/threads/:threadId/matrix",
     async (req, reply) => {
       const user = (req as V1AuthRequest).auth;
       const threadId = req.params.threadId;
-      const thread = await resolveThreadAccessByRequestParam(threadId, user);
-      if (!thread) {
-        if (!parseV1ThreadRouteId(threadId)) {
-          return writeProblem(reply, 400, "Invalid threadId", "threadId must be a UUID or project thread id.");
-        }
-        return notFoundProblem(reply, "Thread not found");
+      const threadAccess = await resolveThreadAccessByRequestParam(threadId, user, req.query.projectId);
+      if (threadAccess.kind !== "found") {
+        writeThreadAccessFailure(reply, threadAccess);
+        return;
       }
+      const thread = threadAccess.thread;
       const resolvedThreadId = thread.id;
 
       const systemId = await getThreadSystemId(resolvedThreadId);
@@ -1740,18 +1819,17 @@ export async function v1Routes(app: FastifyInstance) {
     },
   );
 
-  app.patch<{ Params: { threadId: string }; Body: V1MatrixPatchBody }>(
+  app.patch<{ Params: { threadId: string }; Querystring: V1ThreadScopeQuerystring; Body: V1MatrixPatchBody }>(
     "/threads/:threadId/matrix",
     async (req, reply) => {
       const user = (req as V1AuthRequest).auth;
       const threadId = req.params.threadId;
-      const thread = await resolveThreadAccessByRequestParam(threadId, user);
-      if (!thread) {
-        if (!parseV1ThreadRouteId(threadId)) {
-          return writeProblem(reply, 400, "Invalid threadId", "threadId must be a UUID or project thread id.");
-        }
-        return notFoundProblem(reply, "Thread not found");
+      const threadAccess = await resolveThreadAccessByRequestParam(threadId, user, req.query.projectId);
+      if (threadAccess.kind !== "found") {
+        writeThreadAccessFailure(reply, threadAccess);
+        return;
       }
+      const thread = threadAccess.thread;
       const resolvedThreadId = thread.id;
 
       if (!canEdit(thread.access_role)) {
@@ -1809,18 +1887,17 @@ export async function v1Routes(app: FastifyInstance) {
     },
   );
 
-  app.get<{ Params: { threadId: string } }>(
+  app.get<{ Params: { threadId: string }; Querystring: V1ThreadScopeQuerystring }>(
     "/threads/:threadId/openship/bundle",
     async (req, reply) => {
       const user = (req as V1AuthRequest).auth;
       const threadId = req.params.threadId;
-      const thread = await resolveThreadAccessByRequestParam(threadId, user);
-      if (!thread) {
-        if (!parseV1ThreadRouteId(threadId)) {
-          return writeProblem(reply, 400, "Invalid threadId", "threadId must be a UUID or project thread id.");
-        }
-        return notFoundProblem(reply, "Thread not found");
+      const threadAccess = await resolveThreadAccessByRequestParam(threadId, user, req.query.projectId);
+      if (threadAccess.kind !== "found") {
+        writeThreadAccessFailure(reply, threadAccess);
+        return;
       }
+      const thread = threadAccess.thread;
       const resolvedThreadId = thread.id;
 
       if (!canEdit(thread.access_role)) {
@@ -1849,18 +1926,17 @@ export async function v1Routes(app: FastifyInstance) {
     },
   );
 
-  app.post<{ Params: { threadId: string }; Body: V1ChatMessageRequest }>(
+  app.post<{ Params: { threadId: string }; Querystring: V1ThreadScopeQuerystring; Body: V1ChatMessageRequest }>(
     "/threads/:threadId/chat",
     async (req, reply) => {
       const user = (req as V1AuthRequest).auth;
       const threadId = req.params.threadId;
-      const thread = await resolveThreadAccessByRequestParam(threadId, user);
-      if (!thread) {
-        if (!parseV1ThreadRouteId(threadId)) {
-          return writeProblem(reply, 400, "Invalid threadId", "threadId must be a UUID or project thread id.");
-        }
-        return notFoundProblem(reply, "Thread not found");
+      const threadAccess = await resolveThreadAccessByRequestParam(threadId, user, req.query.projectId);
+      if (threadAccess.kind !== "found") {
+        writeThreadAccessFailure(reply, threadAccess);
+        return;
       }
+      const thread = threadAccess.thread;
       const resolvedThreadId = thread.id;
 
       if (!canEdit(thread.access_role)) {
@@ -1925,7 +2001,11 @@ export async function v1Routes(app: FastifyInstance) {
     },
   );
 
-  app.post<{ Params: { threadId: string; assistantType: AssistantMode }; Body: V1RunStartBody }>(
+  app.post<{
+    Params: { threadId: string; assistantType: AssistantMode };
+    Querystring: V1ThreadScopeQuerystring;
+    Body: V1RunStartBody;
+  }>(
     "/threads/:threadId/assistants/:assistantType/runs",
     async (req, reply) => {
       const user = (req as V1AuthRequest).auth;
@@ -1946,13 +2026,12 @@ export async function v1Routes(app: FastifyInstance) {
       }
 
 
-      const thread = await resolveThreadAccessByRequestParam(threadId, user);
-      if (!thread) {
-        if (!parseV1ThreadRouteId(threadId)) {
-          return writeProblem(reply, 400, "Invalid threadId", "threadId must be a UUID or project thread id.");
-        }
-        return notFoundProblem(reply, "Thread not found");
+      const threadAccess = await resolveThreadAccessByRequestParam(threadId, user, req.query.projectId);
+      if (threadAccess.kind !== "found") {
+        writeThreadAccessFailure(reply, threadAccess);
+        return;
       }
+      const thread = threadAccess.thread;
 
       if (!canEdit(thread.access_role)) {
         return forbiddenProblem(reply);

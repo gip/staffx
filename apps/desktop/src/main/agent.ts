@@ -360,6 +360,7 @@ export async function startAssistantRunLocal(payload: {
   handle: string;
   projectName: string;
   threadId: string;
+  projectId?: string;
   runId: string;
 }): Promise<unknown> {
   const toError = (error: unknown): string =>
@@ -419,11 +420,15 @@ export async function startAssistantRunLocal(payload: {
     }
   }
 
+  const bundlePath = payload.projectId
+    ? `/threads/${encodeURIComponent(payload.threadId)}/openship/bundle?projectId=${encodeURIComponent(payload.projectId)}`
+    : `/threads/${encodeURIComponent(payload.threadId)}/openship/bundle`;
+
   let descriptor: OpenShipBundleDescriptor;
   try {
     descriptor = await apiRequest<OpenShipBundleDescriptor>(
       token,
-      `/threads/${encodeURIComponent(payload.threadId)}/openship/bundle`,
+      bundlePath,
       {
         method: "GET",
         headers: { Accept: "application/json" },

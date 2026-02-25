@@ -416,8 +416,6 @@ begin
   end if;
 end $$;
 
-create sequence if not exists threads_project_thread_id_seq;
-
 create table threads (
   id               text primary key,
   title            text,
@@ -425,7 +423,7 @@ create table threads (
   project_id       text not null references projects(id) on delete cascade,
   created_by       uuid not null references users(id),
   seed_system_id   text not null references systems(id),
-  project_thread_id integer not null default nextval('threads_project_thread_id_seq'),
+  project_thread_id integer not null,
   source_thread_id text references threads(id),
   status           text not null default 'open'
     check (status in ('open', 'closed', 'committed')),
@@ -434,7 +432,8 @@ create table threads (
 );
 
 create index idx_threads_project on threads (project_id);
-create unique index idx_threads_project_thread_id on threads (project_thread_id);
+create unique index idx_threads_project_project_thread_id on threads (project_id, project_thread_id);
+create index idx_threads_project_thread_id on threads (project_thread_id);
 create index idx_threads_created_by on threads (created_by);
 create index idx_threads_seed on threads (seed_system_id);
 create index idx_threads_source on threads (source_thread_id) where source_thread_id is not null;
@@ -706,6 +705,30 @@ returns text as $$
   );
 $$ language sql stable;
 
+create or replace function next_project_thread_id(
+  p_project_id text
+) returns integer as $$
+declare
+  v_project_thread_id integer;
+begin
+  perform 1
+  from projects p
+  where p.id = p_project_id
+  for update;
+
+  if not found then
+    raise exception 'Project % not found', p_project_id;
+  end if;
+
+  select coalesce(max(t.project_thread_id), 0) + 1
+  into v_project_thread_id
+  from threads t
+  where t.project_id = p_project_id;
+
+  return v_project_thread_id;
+end;
+$$ language plpgsql;
+
 create or replace function create_thread(
   p_thread_id text,
   p_project_id text,
@@ -714,9 +737,13 @@ create or replace function create_thread(
   p_title text,
   p_description text default null
 ) returns text as $$
+declare
+  v_project_thread_id integer;
 begin
-  insert into threads (id, title, description, project_id, created_by, seed_system_id, status)
-  values (p_thread_id, p_title, p_description, p_project_id, p_created_by, p_seed_system_id, 'open');
+  v_project_thread_id := next_project_thread_id(p_project_id);
+
+  insert into threads (id, title, description, project_id, created_by, seed_system_id, project_thread_id, status)
+  values (p_thread_id, p_title, p_description, p_project_id, p_created_by, p_seed_system_id, v_project_thread_id, 'open');
 
   return p_thread_id;
 end;
@@ -732,11 +759,13 @@ create or replace function clone_thread(
 ) returns text as $$
 declare
   v_current_system text;
+  v_project_thread_id integer;
 begin
   v_current_system := thread_current_system(p_source_thread_id);
+  v_project_thread_id := next_project_thread_id(p_project_id);
 
-  insert into threads (id, title, description, project_id, created_by, seed_system_id, source_thread_id, status)
-  values (p_new_thread_id, p_title, p_description, p_project_id, p_created_by, v_current_system, p_source_thread_id, 'open');
+  insert into threads (id, title, description, project_id, created_by, seed_system_id, project_thread_id, source_thread_id, status)
+  values (p_new_thread_id, p_title, p_description, p_project_id, p_created_by, v_current_system, v_project_thread_id, p_source_thread_id, 'open');
 
   return p_new_thread_id;
 end;
