@@ -49,7 +49,7 @@ export function Header({
               StaffX
             </Link>
             {onToggleSidebar && isAuthenticated && (
-              <button className="btn-icon btn-icon-theme" onClick={onToggleSidebar} aria-label="Toggle sidebar">
+              <button className="btn-icon btn-icon-theme header-sidebar-toggle-web" onClick={onToggleSidebar} aria-label="Toggle sidebar">
                 <PanelLeft size={14} />
               </button>
             )}

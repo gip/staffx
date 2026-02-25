@@ -85,6 +85,8 @@ a.header-logo {
 }
 
 .header--desktop .header-left {
+  display: grid;
+  grid-template-columns: auto 1fr;
   flex: 1;
   justify-content: flex-start;
   padding-left: 48px;
@@ -104,15 +106,24 @@ a.header-logo {
 }
 
 a.header-project-label {
-  flex: 1;
+  flex: 0 0 auto;
   text-align: center;
-  padding-right: 120px;
   font-size: 14px;
   font-weight: 500;
   letter-spacing: -0.01em;
   text-decoration: none;
   color: var(--fg-muted);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   transition: color 0.15s;
+}
+
+.header--desktop .header-project-label {
+  justify-self: center;
+  padding-right: 0;
+  max-width: min(42vw, 420px);
 }
 
 a.header-project-label:hover {
@@ -123,6 +134,10 @@ a.header-project-label:hover {
   display: flex;
   align-items: center;
   gap: 12px;
+}
+
+.header:not(.header--desktop) .header-sidebar-toggle-web {
+  margin-left: 8px;
 }
 
 .header--desktop .header-right {
