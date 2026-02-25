@@ -5,15 +5,18 @@ import {
   ChevronRight,
   ExternalLink,
   CheckCircle2,
+  LayoutGrid,
   Minimize2,
   Pencil,
   Plus,
   Send,
   X,
 } from "lucide-react";
+import ELK, { type ElkExtendedEdge, type ElkNode } from "elkjs/lib/elk.bundled.js";
 import { Marked } from "marked";
 import ReactFlow, {
   Background,
+  ControlButton,
   Controls,
   Handle,
   MarkerType,
@@ -139,6 +142,14 @@ const ASSISTANT_MODELS: AssistantModelOption[] = [
 const DEFAULT_ASSISTANT_MODEL: AssistantModel = "claude-opus-4-6";
 const MODEL_STORAGE_KEY_PREFIX = "staffx-thread-agent-model";
 const MODEL_STORAGE_KEY_GLOBAL = "staffx-thread-agent-model-default";
+const TOPOLOGY_ELK = new ELK();
+const TOPOLOGY_ELK_LAYOUT_OPTIONS = {
+  "elk.algorithm": "layered",
+  "elk.direction": "RIGHT",
+  "elk.layered.spacing.nodeNodeBetweenLayers": "120",
+  "elk.spacing.nodeNode": "80",
+  "elk.spacing.edgeNode": "40",
+} as const;
 
 function resolveAssistantModel(raw: string | null | undefined): AssistantModel {
   const normalized = raw?.trim() ?? "";
@@ -540,6 +551,16 @@ interface TopologyFlowNodeData {
 interface FlowEndpoint {
   nodeId: string;
   handleId: string;
+}
+
+interface AppliedElkLayout {
+  nodes: Node[];
+  positions: Array<{ nodeId: string; x: number; y: number }>;
+}
+
+interface AutoLayoutRunOptions {
+  sourceNodes?: Node[];
+  persist?: boolean;
 }
 
 function FullscreenIcon({ size = 16 }: { size?: number }) {
@@ -1124,6 +1145,98 @@ const ROOT_GROUP_PADDING_BOTTOM = 80;
 const ESTIMATED_NODE_WIDTH = 240;
 const ESTIMATED_NODE_HEIGHT = 120;
 
+function resolveFlowNodeWidth(node: Node | undefined): number {
+  const width =
+    (typeof node?.width === "number" && Number.isFinite(node.width) ? node.width : null)
+    ?? (typeof node?.style?.width === "number" && Number.isFinite(node.style.width) ? node.style.width : null)
+    ?? (typeof node?.style?.minWidth === "number" && Number.isFinite(node.style.minWidth) ? node.style.minWidth : null);
+  return width ?? ESTIMATED_NODE_WIDTH;
+}
+
+function resolveFlowNodeHeight(node: Node | undefined): number {
+  const height =
+    (typeof node?.height === "number" && Number.isFinite(node.height) ? node.height : null)
+    ?? (typeof node?.style?.height === "number" && Number.isFinite(node.style.height) ? node.style.height : null)
+    ?? (typeof node?.style?.minHeight === "number" && Number.isFinite(node.style.minHeight) ? node.style.minHeight : null);
+  return height ?? ESTIMATED_NODE_HEIGHT;
+}
+
+function buildElkGraph(flowNodes: Node[], topologyEdges: TopologyEdge[], model: FlowLayoutModel): ElkNode {
+  const visibleNodeIds = new Set(model.visibleNodes.map((node) => node.id));
+  const flowNodeById = new Map(
+    flowNodes
+      .filter((node) => node.id !== ROOT_GROUP_ID)
+      .map((node) => [node.id, node]),
+  );
+
+  const children: ElkNode[] = model.visibleNodes.map((node) => {
+    const flowNode = flowNodeById.get(node.id);
+    return {
+      id: node.id,
+      width: resolveFlowNodeWidth(flowNode),
+      height: resolveFlowNodeHeight(flowNode),
+    };
+  });
+
+  const dedupedEdges = new Set<string>();
+  const edges: ElkExtendedEdge[] = [];
+
+  for (const edge of topologyEdges) {
+    const source = resolveFlowEndpoint(edge.fromNodeId, "source", model);
+    const target = resolveFlowEndpoint(edge.toNodeId, "target", model);
+    if (!source || !target) continue;
+    if (!visibleNodeIds.has(source.nodeId) || !visibleNodeIds.has(target.nodeId)) continue;
+
+    const edgeKey = `${source.nodeId}->${target.nodeId}`;
+    if (dedupedEdges.has(edgeKey)) continue;
+    dedupedEdges.add(edgeKey);
+
+    edges.push({
+      id: `elk-edge-${edges.length}`,
+      sources: [source.nodeId],
+      targets: [target.nodeId],
+    });
+  }
+
+  return {
+    id: "topology-root",
+    layoutOptions: TOPOLOGY_ELK_LAYOUT_OPTIONS,
+    children,
+    edges,
+  };
+}
+
+function applyElkPositionsToFlowNodes(layout: ElkNode, flowNodes: Node[]): AppliedElkLayout {
+  const byNodeId = new Map<string, { x: number; y: number }>();
+  for (const child of layout.children ?? []) {
+    if (typeof child.id !== "string" || child.id.trim().length === 0) continue;
+    if (typeof child.x !== "number" || !Number.isFinite(child.x)) continue;
+    if (typeof child.y !== "number" || !Number.isFinite(child.y)) continue;
+    byNodeId.set(child.id, { x: child.x, y: child.y });
+  }
+
+  const nodes = flowNodes.map((node) => {
+    if (node.id === ROOT_GROUP_ID) return node;
+    const position = byNodeId.get(node.id);
+    if (!position) return node;
+    return {
+      ...node,
+      position: { x: position.x, y: position.y },
+    };
+  });
+
+  const positions = flowNodes
+    .filter((node) => node.id !== ROOT_GROUP_ID)
+    .map((node) => {
+      const position = byNodeId.get(node.id);
+      if (!position) return null;
+      return { nodeId: node.id, x: position.x, y: position.y };
+    })
+    .filter((entry): entry is { nodeId: string; x: number; y: number } => entry !== null);
+
+  return { nodes, positions };
+}
+
 function buildRootGroupNode(
   childNodes: Node[],
   rootNode: TopologyNode,
@@ -1296,6 +1409,18 @@ function buildFlowEdges(
   return flowEdges;
 }
 
+function buildTopologyStructureSignature(nodes: TopologyNode[], edges: TopologyEdge[]): string {
+  const nodeSignature = nodes
+    .map((node) => `${node.id}|${node.parentId ?? ""}|${node.kind}`)
+    .sort()
+    .join(";");
+  const edgeSignature = edges
+    .map((edge) => `${edge.id}|${edge.fromNodeId}|${edge.toNodeId}|${edge.type}`)
+    .sort()
+    .join(";");
+  return `${nodeSignature}::${edgeSignature}`;
+}
+
 export function ThreadPage({
   detail,
   threadRouteId,
@@ -1358,6 +1483,7 @@ export function ThreadPage({
   const [showDependencyEdges, setShowDependencyEdges] = useState(true);
   const [topologyError, setTopologyError] = useState("");
   const [isSavingTopologyLayout, setIsSavingTopologyLayout] = useState(false);
+  const [isAutoLayouting, setIsAutoLayouting] = useState(false);
   const [isSimulationSuccess, setIsSimulationSuccess] = useState(false);
   const [documentModal, setDocumentModal] = useState<(MatrixDocumentModal & {
     mode: MatrixDocumentModalMode;
@@ -1426,8 +1552,43 @@ export function ThreadPage({
   const titleInputRef = useRef<HTMLInputElement>(null);
   const fullscreenRef = useRef<HTMLDivElement>(null);
   const reactFlowRef = useRef<ReactFlowInstance | null>(null);
+  const autoLayoutInFlightRef = useRef(false);
+  const pendingAutoLayoutFitViewRef = useRef(false);
+  const previousTopologySignatureRef = useRef<string | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [fullscreenTab, setFullscreenTab] = useState<FullscreenTab>("topology");
+
+  const triggerVisibleFitViewControl = useCallback(() => {
+    if (typeof document === "undefined") return false;
+    const buttons = Array.from(document.querySelectorAll<HTMLButtonElement>(".react-flow__controls-fitview"));
+    if (buttons.length === 0) return false;
+    const visibleButton = buttons.find((button) => button.offsetParent !== null) ?? buttons[0];
+    visibleButton.click();
+    return true;
+  }, []);
+
+  const scheduleTopologyFitView = useCallback(() => {
+    const runFitView = () => {
+      const instance = reactFlowRef.current;
+      if (!instance) {
+        triggerVisibleFitViewControl();
+        return;
+      }
+      const fitResult = instance.fitView();
+      Promise.resolve(fitResult).then((didFit) => {
+        if (didFit === false) {
+          triggerVisibleFitViewControl();
+        }
+      }).catch(() => {
+        triggerVisibleFitViewControl();
+      });
+    };
+    if (typeof requestAnimationFrame === "function") {
+      requestAnimationFrame(() => requestAnimationFrame(runFitView));
+      return;
+    }
+    setTimeout(runFitView, 0);
+  }, [triggerVisibleFitViewControl]);
 
   useEffect(() => {
     if (!isTitleEditing) {
@@ -1803,6 +1964,38 @@ export function ThreadPage({
     () => buildFlowEdges(detail.topology.edges, flowLayoutModel, showNetworkEdges, showDependencyEdges),
     [detail.topology.edges, flowLayoutModel, showNetworkEdges, showDependencyEdges],
   );
+  const topologyStructureSignature = useMemo(
+    () => buildTopologyStructureSignature(detail.topology.nodes, detail.topology.edges),
+    [detail.topology.nodes, detail.topology.edges],
+  );
+  const canComputeAutoLayout = flowLayoutModel.visibleNodes.length > 1;
+  const canPersistAutoLayout = effectiveCanEdit && Boolean(onSaveTopologyLayout);
+  const canAutoLayout = canPersistAutoLayout && canComputeAutoLayout;
+
+  const rebuildRootGroupNodeInFlow = useCallback(
+    (nodes: Node[]): Node[] => {
+      if (!flowLayoutModel.rootNode) return nodes;
+      const childNodes = nodes.filter((node) => node.id !== ROOT_GROUP_ID);
+      const updatedRootNode = buildRootGroupNode(
+        childNodes,
+        flowLayoutModel.rootNode,
+        nodeDocumentGroups.get(flowLayoutModel.rootNode.id) ?? { document: [], skill: [] },
+        nodeArtifacts.get(flowLayoutModel.rootNode.id) ?? [],
+        effectiveCanEdit,
+        openTopologyDocumentPicker,
+        openRootPromptCreator,
+        openEditDocumentModal,
+        detail.systemPrompt,
+        detail.systemPromptTitle,
+        detail.systemPrompts,
+      );
+      if (!updatedRootNode) return nodes;
+      return nodes.some((node) => node.id === ROOT_GROUP_ID)
+        ? nodes.map((node) => (node.id === ROOT_GROUP_ID ? updatedRootNode : node))
+        : [updatedRootNode, ...childNodes];
+    },
+    [flowLayoutModel.rootNode, nodeDocumentGroups, nodeArtifacts, effectiveCanEdit, openTopologyDocumentPicker, openRootPromptCreator, openEditDocumentModal, detail.systemPrompt, detail.systemPromptTitle, detail.systemPrompts],
+  );
 
   const handleNodesChange = useCallback(
     (changes: NodeChange[]) => {
@@ -1812,31 +2005,71 @@ export function ThreadPage({
         (c) => (c.type === "position" && c.dragging) || c.type === "dimensions",
       );
       if (!needsRecalc) return;
-      setFlowNodes((currentNodes) => {
-        const childNodes = currentNodes.filter((n) => n.id !== ROOT_GROUP_ID);
-        const updated = buildRootGroupNode(
-          childNodes,
-          flowLayoutModel.rootNode!,
-          nodeDocumentGroups.get(flowLayoutModel.rootNode!.id) ?? { document: [], skill: [] },
-          nodeArtifacts.get(flowLayoutModel.rootNode!.id) ?? [],
-          effectiveCanEdit,
-          openTopologyDocumentPicker,
-          openRootPromptCreator,
-          openEditDocumentModal,
-          detail.systemPrompt,
-          detail.systemPromptTitle,
-          detail.systemPrompts,
-        );
-        if (!updated) return currentNodes;
-        return currentNodes.map((n) => (n.id === ROOT_GROUP_ID ? updated : n));
-      });
+      setFlowNodes((currentNodes) => rebuildRootGroupNodeInFlow(currentNodes));
     },
-    [onFlowNodesChange, flowLayoutModel.rootNode, setFlowNodes, nodeDocumentGroups, nodeArtifacts, effectiveCanEdit, openTopologyDocumentPicker, openRootPromptCreator, openEditDocumentModal, detail.systemPrompt, detail.systemPromptTitle, detail.systemPrompts],
+    [onFlowNodesChange, flowLayoutModel.rootNode, setFlowNodes, rebuildRootGroupNodeInFlow],
   );
 
   useEffect(() => {
     setFlowNodes(initialFlowNodes);
   }, [initialFlowNodes, setFlowNodes]);
+
+  useEffect(() => {
+    if (!pendingAutoLayoutFitViewRef.current) return;
+    scheduleTopologyFitView();
+    if (!isAutoLayouting && !isSavingTopologyLayout) {
+      pendingAutoLayoutFitViewRef.current = false;
+    }
+  }, [flowNodes, isAutoLayouting, isSavingTopologyLayout, scheduleTopologyFitView]);
+
+  const runAutoLayout = useCallback(async ({ sourceNodes, persist }: AutoLayoutRunOptions = {}) => {
+    if (!canComputeAutoLayout) return;
+    if (autoLayoutInFlightRef.current) return;
+    autoLayoutInFlightRef.current = true;
+
+    const nodesForLayout = sourceNodes ?? flowNodes;
+    const shouldPersist = persist ?? canPersistAutoLayout;
+    setTopologyError("");
+    setIsAutoLayouting(true);
+
+    try {
+      const elkGraph = buildElkGraph(nodesForLayout, detail.topology.edges, flowLayoutModel);
+      const laidOutGraph = await TOPOLOGY_ELK.layout(elkGraph);
+      const appliedLayout = applyElkPositionsToFlowNodes(laidOutGraph, nodesForLayout);
+      if (appliedLayout.positions.length === 0) {
+        throw new Error("Auto layout did not return any node positions.");
+      }
+
+      const nextNodes = rebuildRootGroupNodeInFlow(appliedLayout.nodes);
+      pendingAutoLayoutFitViewRef.current = true;
+      setFlowNodes(nextNodes);
+
+      if (shouldPersist && onSaveTopologyLayout) {
+        setIsSavingTopologyLayout(true);
+        try {
+          const result = await onSaveTopologyLayout({ positions: appliedLayout.positions });
+          const error = getErrorMessage(result);
+          if (error) {
+            setTopologyError(error);
+          }
+        } finally {
+          setIsSavingTopologyLayout(false);
+        }
+      }
+    } catch (error: unknown) {
+      setTopologyError(error instanceof Error ? error.message : "Failed to auto layout topology.");
+    } finally {
+      setIsAutoLayouting(false);
+      autoLayoutInFlightRef.current = false;
+    }
+  }, [canComputeAutoLayout, flowNodes, canPersistAutoLayout, detail.topology.edges, flowLayoutModel, rebuildRootGroupNodeInFlow, setFlowNodes, onSaveTopologyLayout, scheduleTopologyFitView]);
+
+  useEffect(() => {
+    const previous = previousTopologySignatureRef.current;
+    previousTopologySignatureRef.current = topologyStructureSignature;
+    if (previous === null || previous === topologyStructureSignature) return;
+    void runAutoLayout({ sourceNodes: initialFlowNodes, persist: canPersistAutoLayout });
+  }, [topologyStructureSignature, initialFlowNodes, canPersistAutoLayout, runAutoLayout]);
 
   const cellsByKey = useMemo(() => {
     const map = new Map<string, MatrixCell>();
@@ -2549,6 +2782,11 @@ export function ThreadPage({
     [effectiveCanEdit, onSaveTopologyLayout],
   );
 
+  const handleAutoLayout = useCallback(() => {
+    if (!canAutoLayout) return;
+    void runAutoLayout();
+  }, [canAutoLayout, runAutoLayout]);
+
   const renderDocumentModal = () => {
     if (!documentModal) return null;
 
@@ -3147,9 +3385,19 @@ export function ThreadPage({
                 deleteKeyCode={null}
               >
                 <Background gap={14} size={1} />
-                <Controls />
+                <Controls>
+                  <ControlButton
+                    onClick={handleAutoLayout}
+                    aria-label="Auto layout"
+                    title="Auto layout"
+                    disabled={!canAutoLayout || isSavingTopologyLayout || isAutoLayouting}
+                  >
+                    <LayoutGrid size={14} />
+                  </ControlButton>
+                </Controls>
               </ReactFlow>
             </div>
+            {isAutoLayouting && <p className="matrix-empty">Calculating layout...</p>}
             {isSavingTopologyLayout && <p className="matrix-empty">Saving layout…</p>}
             {topologyError && <p className="field-error">{topologyError}</p>}
           </>

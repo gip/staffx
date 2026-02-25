@@ -273,6 +273,16 @@ function normalizeApiUrl(raw: string): string {
   return trimmed.endsWith("/v1") ? trimmed : `${trimmed}/v1`;
 }
 
+function isNumericThreadRouteId(threadId: string): boolean {
+  return /^\d+$/.test(threadId.trim());
+}
+
+function appendProjectScope(path: string, projectId: string | null): string {
+  if (!projectId) return path;
+  const separator = path.includes("?") ? "&" : "?";
+  return `${path}${separator}projectId=${encodeURIComponent(projectId)}`;
+}
+
 const API_URL = normalizeApiUrl(import.meta.env.VITE_API_URL ?? "http://localhost:3001");
 
 function upsertMatrixCell(cells: MatrixCell[], nextCell: MatrixCell): MatrixCell[] {
@@ -832,7 +842,7 @@ function ProjectRoute({ onProjectMutated }: { onProjectMutated?: () => void }) {
       onCloseThread={async (threadProjectId) => {
         try {
           const res = await apiFetch(
-            `/threads/${encodeURIComponent(threadProjectId)}`,
+            appendProjectScope(`/threads/${encodeURIComponent(threadProjectId)}`, project.id),
             {
               method: "PATCH",
               headers: { "Content-Type": "application/json" },
@@ -848,7 +858,12 @@ function ProjectRoute({ onProjectMutated }: { onProjectMutated?: () => void }) {
               ? {
                   ...current,
                   threads: current.threads.map((thread) =>
-                    thread.id === threadProjectId ? { ...thread, status: data.thread.status } : thread,
+                    (
+                      thread.id === threadProjectId
+                      || (thread.projectThreadId != null && String(thread.projectThreadId) === threadProjectId)
+                    )
+                      ? { ...thread, status: data.thread.status }
+                      : thread,
                   ),
                 }
               : current
@@ -864,7 +879,7 @@ function ProjectRoute({ onProjectMutated }: { onProjectMutated?: () => void }) {
       onCommitThread={async (threadProjectId) => {
         try {
           const res = await apiFetch(
-            `/threads/${encodeURIComponent(threadProjectId)}`,
+            appendProjectScope(`/threads/${encodeURIComponent(threadProjectId)}`, project.id),
             {
               method: "PATCH",
               headers: { "Content-Type": "application/json" },
@@ -880,7 +895,12 @@ function ProjectRoute({ onProjectMutated }: { onProjectMutated?: () => void }) {
               ? {
                   ...current,
                   threads: current.threads.map((thread) =>
-                    thread.id === threadProjectId ? { ...thread, status: data.thread.status } : thread,
+                    (
+                      thread.id === threadProjectId
+                      || (thread.projectThreadId != null && String(thread.projectThreadId) === threadProjectId)
+                    )
+                      ? { ...thread, status: data.thread.status }
+                      : thread,
                   ),
                 }
               : current
@@ -975,6 +995,7 @@ function ThreadRoute({ onProjectMutated }: { onProjectMutated?: () => void }) {
   const apiFetch = useApi();
   const [searchParams, setSearchParams] = useSearchParams();
   const [detail, setDetail] = useState<ThreadDetailPayload | null>(null);
+  const [threadProjectId, setThreadProjectId] = useState<string | null>(null);
   const [notFound, setNotFound] = useState(false);
   const eventCursorRef = useRef<string | null>(null);
   const eventStreamAbortRef = useRef<AbortController | null>(null);
@@ -1005,13 +1026,41 @@ function ThreadRoute({ onProjectMutated }: { onProjectMutated?: () => void }) {
     setIntegrationStatuses(nextStatuses);
   }, [apiFetch]);
 
+  useEffect(() => {
+    if (!isAuthenticated || !handle || !projectName) {
+      setThreadProjectId(null);
+      return;
+    }
+    setThreadProjectId(null);
+    let cancelled = false;
+    resolveProject(apiFetch, handle, projectName)
+      .then((projectRecord) => {
+        if (!cancelled) setThreadProjectId(projectRecord?.id ?? null);
+      })
+      .catch(() => {
+        if (!cancelled) setThreadProjectId(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [apiFetch, handle, isAuthenticated, projectName]);
+
+  const threadPathWithScope = useCallback((suffix = ""): string | null => {
+    if (!threadId) return null;
+    const path = `/threads/${encodeURIComponent(threadId)}${suffix}`;
+    return appendProjectScope(path, threadProjectId);
+  }, [threadId, threadProjectId]);
+
   const refreshThread = useCallback(async () => {
     if (!threadId) return;
-    const threadRes = await apiFetch(`/threads/${encodeURIComponent(threadId)}`, undefined, { auth: "required" });
+    if (isNumericThreadRouteId(threadId) && !threadProjectId) return;
+    const scopedPath = threadPathWithScope();
+    if (!scopedPath) return;
+    const threadRes = await apiFetch(scopedPath, undefined, { auth: "required" });
     if (!threadRes.ok) return;
     const nextDetail = await threadRes.json() as ThreadDetailPayload;
     setDetail(nextDetail);
-  }, [apiFetch, threadId]);
+  }, [apiFetch, threadId, threadPathWithScope, threadProjectId]);
 
   const refreshThreadDebounced = useCallback(() => {
     if (eventRefreshPromiseRef.current) return;
@@ -1029,10 +1078,13 @@ function ThreadRoute({ onProjectMutated }: { onProjectMutated?: () => void }) {
   }, [refreshThread]);
 
   const resolveThreadProjectId = useCallback(async (): Promise<string | null> => {
+    if (threadProjectId) return threadProjectId;
     if (!handle || !projectName) return null;
     const projectRecord = await resolveProject(apiFetch, handle, projectName);
-    return projectRecord?.id ?? null;
-  }, [apiFetch, handle, projectName]);
+    const resolved = projectRecord?.id ?? null;
+    if (resolved) setThreadProjectId(resolved);
+    return resolved;
+  }, [apiFetch, handle, projectName, threadProjectId]);
 
   const handleThreadEvent = useCallback(
     async (event: V1EventItem) => {
@@ -1233,11 +1285,17 @@ function ThreadRoute({ onProjectMutated }: { onProjectMutated?: () => void }) {
 
   useEffect(() => {
     if (!threadId) return;
+    if (isNumericThreadRouteId(threadId) && !threadProjectId) return;
     setNotFound(false);
     setDetail(null);
 
     const loadThread = async () => {
-      const res = await apiFetch(`/threads/${encodeURIComponent(threadId)}`, undefined, { auth: "required" });
+      const scopedPath = threadPathWithScope();
+      if (!scopedPath) {
+        setNotFound(true);
+        return;
+      }
+      const res = await apiFetch(scopedPath, undefined, { auth: "required" });
       if (res.status === 404) {
         setNotFound(true);
         return;
@@ -1249,7 +1307,7 @@ function ThreadRoute({ onProjectMutated }: { onProjectMutated?: () => void }) {
     };
 
     loadThread().catch(() => setNotFound(true));
-  }, [threadId, apiFetch]);
+  }, [threadId, apiFetch, threadPathWithScope, threadProjectId]);
 
   if (notFound) {
     return (
@@ -1275,8 +1333,12 @@ function ThreadRoute({ onProjectMutated }: { onProjectMutated?: () => void }) {
       disableChatInputs
       onUpdateThread={async (payload) => {
         try {
+          const scopedPath = threadPathWithScope();
+          if (!scopedPath) {
+            return { error: "Unable to determine thread context." };
+          }
           const res = await apiFetch(
-            `/threads/${encodeURIComponent(threadId!)}`,
+            scopedPath,
             {
               method: "PATCH",
               headers: { "Content-Type": "application/json" },
@@ -1298,8 +1360,12 @@ function ThreadRoute({ onProjectMutated }: { onProjectMutated?: () => void }) {
         }
       }}
       onSaveTopologyLayout={async (payload) => {
+        const scopedPath = threadPathWithScope("/matrix");
+        if (!scopedPath) {
+          return { error: "Unable to determine thread context." };
+        }
         const res = await apiFetch(
-          `/threads/${encodeURIComponent(threadId!)}/matrix`,
+          scopedPath,
           {
             method: "PATCH",
             headers: { "Content-Type": "application/json" },
@@ -1325,8 +1391,12 @@ function ThreadRoute({ onProjectMutated }: { onProjectMutated?: () => void }) {
       onCreateMatrixDocument={undefined}
       onReplaceMatrixDocument={undefined}
       onSendChatMessage={async (payload) => {
+        const scopedPath = threadPathWithScope("/chat");
+        if (!scopedPath) {
+          return { error: "Unable to determine thread context." };
+        }
         const res = await apiFetch(
-          `/threads/${encodeURIComponent(threadId!)}/chat`,
+          scopedPath,
           {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -1352,8 +1422,12 @@ function ThreadRoute({ onProjectMutated }: { onProjectMutated?: () => void }) {
       }}
       onRunAssistant={async (payload) => {
         const assistantType = payload.mode === "plan" ? "plan" : "direct";
+        const scopedRunPath = threadPathWithScope(`/assistants/${assistantType}/runs`);
+        if (!scopedRunPath) {
+          return { error: "Unable to determine thread context." };
+        }
         const res = await apiFetch(
-          `/threads/${encodeURIComponent(threadId!)}/assistants/${assistantType}/runs`,
+          scopedRunPath,
           {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -1365,8 +1439,10 @@ function ThreadRoute({ onProjectMutated }: { onProjectMutated?: () => void }) {
         }
         const data = (await res.json()) as AssistantRunResponse;
         const refreshThread = async () => {
+          const scopedPath = threadPathWithScope();
+          if (!scopedPath) return null;
           const threadRes = await apiFetch(
-            `/threads/${encodeURIComponent(threadId!)}`,
+            scopedPath,
           );
           if (!threadRes.ok) {
             return null;
@@ -1403,8 +1479,12 @@ function ThreadRoute({ onProjectMutated }: { onProjectMutated?: () => void }) {
       }}
       onCloseThread={async () => {
         try {
+          const scopedPath = threadPathWithScope();
+          if (!scopedPath) {
+            return { error: "Unable to determine thread context." };
+          }
           const res = await apiFetch(
-            `/threads/${encodeURIComponent(threadId!)}`,
+            scopedPath,
             {
               method: "PATCH",
               headers: { "Content-Type": "application/json" },
@@ -1426,8 +1506,12 @@ function ThreadRoute({ onProjectMutated }: { onProjectMutated?: () => void }) {
       }}
       onCommitThread={async () => {
         try {
+          const scopedPath = threadPathWithScope();
+          if (!scopedPath) {
+            return { error: "Unable to determine thread context." };
+          }
           const res = await apiFetch(
-            `/threads/${encodeURIComponent(threadId!)}`,
+            scopedPath,
             {
               method: "PATCH",
               headers: { "Content-Type": "application/json" },
