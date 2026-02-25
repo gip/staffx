@@ -7,6 +7,10 @@ import { query } from "./db.js";
 interface Auth0Payload extends JWTPayload {
   sub: string;
   scope?: string;
+  email?: string;
+  name?: string;
+  picture?: string;
+  nickname?: string;
   orgId?: string;
   org_id?: string;
   organization?: string;
@@ -42,6 +46,13 @@ declare module "fastify" {
   interface FastifyRequest {
     auth: AuthUser;
   }
+}
+
+export interface AuthenticatedTokenContext {
+  token: string;
+  payload: Auth0Payload;
+  user: AuthUser;
+  scopes: Set<string>;
 }
 
 function withProblem(
@@ -117,6 +128,20 @@ async function fetchUserProfile(
   return res.json() as Promise<{ email?: string; name?: string; picture?: string; nickname?: string }>;
 }
 
+function fallbackProfileFromPayload(payload: Auth0Payload): {
+  email?: string;
+  name?: string;
+  picture?: string;
+  nickname?: string;
+} {
+  return {
+    email: typeof payload.email === "string" ? payload.email : undefined,
+    name: typeof payload.name === "string" ? payload.name : undefined,
+    picture: typeof payload.picture === "string" ? payload.picture : undefined,
+    nickname: typeof payload.nickname === "string" ? payload.nickname : undefined,
+  };
+}
+
 async function findOrCreateUser(domain: string, payload: Auth0Payload, token: string): Promise<AuthUser> {
   const orgId = extractOrgId(payload);
   const requestedScope = toScope(payload.scope);
@@ -126,7 +151,10 @@ async function findOrCreateUser(domain: string, payload: Auth0Payload, token: st
     return mapRow(existing.rows[0], requestedScope, orgId ?? null);
   }
 
-  const profile = await fetchUserProfile(domain, token);
+  const fallbackProfile = fallbackProfileFromPayload(payload);
+  const profile = await fetchUserProfile(domain, token)
+    .then((value) => ({ ...fallbackProfile, ...value }))
+    .catch(() => fallbackProfile);
 
   const isGitHub = payload.sub.startsWith("github|");
   const githubHandle = isGitHub ? (profile.nickname ?? null) : null;
@@ -175,6 +203,7 @@ async function findOrCreateUser(domain: string, payload: Auth0Payload, token: st
 
 const AUTH0_DOMAIN = process.env.AUTH0_DOMAIN;
 const AUTH0_AUDIENCE = process.env.AUTH0_AUDIENCE;
+const AUTH0_MCP_AUDIENCE = process.env.AUTH0_MCP_AUDIENCE?.trim() || null;
 
 if (!AUTH0_DOMAIN || !AUTH0_AUDIENCE) {
   throw new Error("AUTH0_DOMAIN and AUTH0_AUDIENCE must be set");
@@ -185,49 +214,119 @@ const audience: string = AUTH0_AUDIENCE;
 const issuer = `https://${domain}/`;
 const jwks = createRemoteJWKSet(new URL(`${issuer}.well-known/jwks.json`));
 
+function normalizeAudiences(value: string | string[] | undefined): string | string[] {
+  if (!value) return audience;
+  if (Array.isArray(value)) {
+    const filtered = value.map((entry) => entry.trim()).filter((entry) => entry.length > 0);
+    return filtered.length <= 1 ? (filtered[0] ?? audience) : filtered;
+  }
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : audience;
+}
+
+class AuthTokenVerificationError extends Error {}
+class AuthUserResolutionError extends Error {}
+
+export function parseBearerToken(headerValue: string | string[] | undefined): string | null {
+  if (!headerValue) return null;
+  const rawHeader = Array.isArray(headerValue) ? headerValue[0] : headerValue;
+  if (!rawHeader || !rawHeader.startsWith("Bearer ")) return null;
+  const token = rawHeader.slice(7).trim();
+  return token.length > 0 ? token : null;
+}
+
+export function parseScopeSet(scope: string | null | undefined): Set<string> {
+  if (!scope) return new Set();
+  return new Set(
+    scope
+      .split(/\s+/g)
+      .map((entry) => entry.trim())
+      .filter((entry) => entry.length > 0),
+  );
+}
+
+export function listMissingScopes(scopes: Iterable<string>, requiredScopes: readonly string[]): string[] {
+  const existing = new Set(scopes);
+  return requiredScopes.filter((required) => !existing.has(required));
+}
+
+export function getMcpAudiences(): string[] {
+  const values = [AUTH0_MCP_AUDIENCE, audience]
+    .map((entry) => entry?.trim())
+    .filter((entry): entry is string => Boolean(entry));
+  return Array.from(new Set(values));
+}
+
+async function verifyAuthToken(
+  token: string,
+  options?: { audience?: string | string[] },
+): Promise<Auth0Payload> {
+  try {
+    const { payload } = await jwtVerify(token, jwks, { issuer, audience: normalizeAudiences(options?.audience) });
+    const auth0Payload = payload as Auth0Payload;
+    if (!auth0Payload.sub || typeof auth0Payload.sub !== "string") {
+      throw new AuthTokenVerificationError("Missing subject claim");
+    }
+    return auth0Payload;
+  } catch (error) {
+    throw new AuthTokenVerificationError(error instanceof Error ? error.message : "Invalid token");
+  }
+}
+
+export async function authenticateBearerToken(
+  token: string,
+  options?: { audience?: string | string[] },
+): Promise<AuthenticatedTokenContext> {
+  const payload = await verifyAuthToken(token, options);
+  try {
+    const user = await findOrCreateUser(domain, payload, token);
+    return {
+      token,
+      payload,
+      user,
+      scopes: parseScopeSet(user.scope),
+    };
+  } catch (error) {
+    throw new AuthUserResolutionError(error instanceof Error ? error.message : "User lookup failed");
+  }
+}
+
 async function authenticateRequest(
   req: FastifyRequest,
   reply: FastifyReply,
-  options: { required: boolean },
+  options: { required: boolean; audience?: string | string[] },
 ): Promise<AuthUser | null> {
-  const header = req.headers.authorization;
-  if (!header) {
+  const token = parseBearerToken(req.headers.authorization);
+  if (!token) {
     if (options.required) {
       withProblem(reply, 401, "Unauthorized", "Missing or invalid Authorization header", req.url);
     }
     return null;
   }
-  if (!header.startsWith("Bearer ")) {
-    withProblem(reply, 401, "Unauthorized", "Missing or invalid Authorization header", req.url);
-    return null;
-  }
-
-  const token = header.slice(7);
-
-  let auth0Payload: Auth0Payload;
   try {
-    const { payload } = await jwtVerify(token, jwks, { issuer, audience });
-    auth0Payload = payload as Auth0Payload;
-  } catch (err) {
-    req.log.warn({ err }, "JWT verification failed");
-    withProblem(reply, 401, "Unauthorized", "Invalid bearer token", req.url);
-    return null;
-  }
-
-  try {
-    req.auth = await findOrCreateUser(domain, auth0Payload, token);
+    const context = await authenticateBearerToken(token, { audience: options.audience });
+    req.auth = context.user;
     return req.auth;
   } catch (err) {
-    req.log.error({ err }, "User lookup/creation failed");
-    withProblem(reply, 500, "Internal Server Error", "User lookup or creation failed", req.url);
+    if (err instanceof AuthUserResolutionError) {
+      req.log.error({ err }, "User lookup/creation failed");
+      withProblem(reply, 500, "Internal Server Error", "User lookup or creation failed", req.url);
+      return null;
+    }
+    req.log.warn({ err }, "JWT verification failed");
+    withProblem(reply, 401, "Unauthorized", "Invalid bearer token", req.url);
     return null;
   }
 }
 
 export async function verifyAuth(req: FastifyRequest, reply: FastifyReply) {
-  await authenticateRequest(req, reply, { required: true });
+  await authenticateRequest(req, reply, { required: true, audience });
 }
 
 export async function verifyOptionalAuth(req: FastifyRequest, reply: FastifyReply) {
-  await authenticateRequest(req, reply, { required: false });
+  await authenticateRequest(req, reply, { required: false, audience });
+}
+
+export async function verifyMcpAuth(req: FastifyRequest, reply: FastifyReply) {
+  await authenticateRequest(req, reply, { required: true, audience: getMcpAudiences() });
 }
