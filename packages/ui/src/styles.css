@@ -1653,6 +1653,54 @@ a.project-card {
   color: var(--fg-muted);
 }
 
+.matrix-node-path {
+  font-size: 10px;
+  opacity: 0.85;
+}
+
+.matrix-node-row {
+  position: relative;
+}
+
+.matrix-node-guides {
+  position: absolute;
+  left: 0;
+  top: -10px;
+  bottom: -10px;
+  width: 100%;
+  pointer-events: none;
+}
+
+.matrix-node-guide-line {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--border);
+  opacity: 0.45;
+}
+
+.matrix-node-content {
+  position: relative;
+}
+
+.matrix-system-root-row .matrix-node-cell--system-root {
+  z-index: 2;
+}
+
+.matrix-separator-row td {
+  height: 6px;
+  padding: 0;
+  border-right: none;
+  border-bottom: none;
+  background: var(--sidebar-bg);
+}
+
+.matrix-separator-row--host-break td {
+  height: 14px;
+  background: var(--border);
+}
+
 .matrix-cell {
   min-width: 160px;
   padding: 8px;

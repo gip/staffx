@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import {
   ChevronDown,
@@ -517,6 +517,17 @@ function sortNodes(a: TopologyNode, b: TopologyNode) {
   const byName = a.name.localeCompare(b.name);
   if (byName !== 0) return byName;
   return a.id.localeCompare(b.id);
+}
+
+function sortMatrixTopLevelNodes(a: TopologyNode, b: TopologyNode) {
+  const priority = (node: TopologyNode) => {
+    if (node.kind === "Library") return 0;
+    if (node.kind === "Host") return 1;
+    return 2;
+  };
+  const byPriority = priority(a) - priority(b);
+  if (byPriority !== 0) return byPriority;
+  return sortNodes(a, b);
 }
 
 interface FlowLayoutModel {
@@ -2082,10 +2093,20 @@ export function ThreadPage({
     [detail.matrix.concerns, visibleConcerns],
   );
 
+  const matrixSystemRootNode = useMemo(() => {
+    const explicitRootNode = detail.matrix.nodes.find((node) => node.kind === "Root");
+    if (explicitRootNode) return explicitRootNode;
+    const rootCandidates = detail.matrix.nodes.filter((node) => node.parentId === null);
+    return rootCandidates.length === 1 ? rootCandidates[0] : null;
+  }, [detail.matrix.nodes]);
+
   const treeOrderedMatrixNodes = useMemo(() => {
     const childrenOf = new Map<string | null, TopologyNode[]>();
     for (const node of detail.matrix.nodes) {
-      const key = node.parentId ?? null;
+      if (matrixSystemRootNode && node.id === matrixSystemRootNode.id) continue;
+      const key = matrixSystemRootNode && node.parentId === matrixSystemRootNode.id
+        ? null
+        : node.parentId ?? null;
       const list = childrenOf.get(key) ?? [];
       list.push(node);
       childrenOf.set(key, list);
@@ -2093,17 +2114,63 @@ export function ThreadPage({
     for (const list of childrenOf.values()) {
       list.sort(sortNodes);
     }
+    const topLevelNodes = childrenOf.get(null);
+    if (topLevelNodes) {
+      topLevelNodes.sort(sortMatrixTopLevelNodes);
+    }
 
     const result: Array<{ node: TopologyNode; depth: number }> = [];
+    const visited = new Set<string>();
     const walk = (parentId: string | null, depth: number) => {
       for (const node of childrenOf.get(parentId) ?? []) {
+        if (visited.has(node.id)) continue;
+        visited.add(node.id);
         result.push({ node, depth });
         walk(node.id, depth + 1);
       }
     };
     walk(null, 0);
+
+    const remainingNodes = detail.matrix.nodes
+      .filter((node) => (!matrixSystemRootNode || node.id !== matrixSystemRootNode.id) && !visited.has(node.id))
+      .sort(sortNodes);
+    for (const node of remainingNodes) {
+      result.push({ node, depth: 0 });
+      walk(node.id, 1);
+    }
+
     return result;
-  }, [detail.matrix.nodes]);
+  }, [detail.matrix.nodes, matrixSystemRootNode]);
+
+  const matrixNodePathById = useMemo(() => {
+    const byId = new Map(detail.matrix.nodes.map((node) => [node.id, node]));
+    const paths = new Map<string, string>();
+
+    for (const node of detail.matrix.nodes) {
+      if (matrixSystemRootNode && node.id === matrixSystemRootNode.id) continue;
+
+      const pathParts: string[] = [node.name];
+      let parentId = node.parentId;
+      while (parentId) {
+        const parent = byId.get(parentId);
+        if (!parent) break;
+        if (matrixSystemRootNode && parent.id === matrixSystemRootNode.id) {
+          pathParts.unshift("System");
+          break;
+        }
+        pathParts.unshift(parent.name);
+        parentId = parent.parentId;
+      }
+
+      if (matrixSystemRootNode && pathParts[0] !== "System") {
+        pathParts.unshift("System");
+      }
+
+      paths.set(node.id, pathParts.join(" / "));
+    }
+
+    return paths;
+  }, [detail.matrix.nodes, matrixSystemRootNode]);
 
   const selectedConcernsForModal = useMemo(() => {
     if (!documentModal) return [];
@@ -3427,18 +3494,11 @@ export function ThreadPage({
                   </tr>
                 </thead>
                 <tbody>
-                  {treeOrderedMatrixNodes.map(({ node, depth }) => {
-                    const isSystemNode = node.parentId === null;
-                    const displayName = isSystemNode ? "System" : node.name;
-                    return (
-                    <tr key={node.id}>
-                      <th className="matrix-node-cell">
-                        <div style={{ paddingLeft: depth * 16 }}>
-                          <strong>{displayName}</strong>
-                          <span>{node.kind}</span>
-                        </div>
-                      </th>
-                      {filteredConcerns.map((concern) => {
+                  {(() => {
+                    const primaryDocType = DOC_TYPES[0] as DocKind;
+                    const matrixColumnSpan = filteredConcerns.length + 1;
+                    const renderMatrixConcernCells = (node: TopologyNode, displayName: string) => {
+                      return filteredConcerns.map((concern) => {
                         const key = buildMatrixCellKey(node.id, concern.name);
                         const cell = cellsByKey.get(key) ?? {
                           nodeId: node.id,
@@ -3457,7 +3517,7 @@ export function ThreadPage({
                             className={isEmpty ? "matrix-td-empty" : undefined}
                             onClick={
                               isEmpty && effectiveCanEdit
-                                ? () => openMatrixCellDocumentPicker(node.id, concern.name, DOC_TYPES[0] as DocKind)
+                                ? () => openMatrixCellDocumentPicker(node.id, concern.name, primaryDocType)
                                 : undefined
                             }
                           >
@@ -3532,7 +3592,7 @@ export function ThreadPage({
                                   type="button"
                                   onClick={(e) => {
                                     e.stopPropagation();
-                                    openMatrixCellDocumentPicker(node.id, concern.name, DOC_TYPES[0] as DocKind);
+                                    openMatrixCellDocumentPicker(node.id, concern.name, primaryDocType);
                                   }}
                                   aria-label={`Add document to ${displayName} × ${concern.name}`}
                                 >
@@ -3542,10 +3602,67 @@ export function ThreadPage({
                             </div>
                           </td>
                         );
-                      })}
-                    </tr>
-                    );
-                  })}
+                      });
+                    };
+
+                    const rows: ReactNode[] = [];
+
+                    if (matrixSystemRootNode) {
+                      rows.push(
+                        <tr key={`${matrixSystemRootNode.id}:system-root`} className="matrix-system-root-row">
+                          <th className="matrix-node-cell matrix-node-cell--system-root">
+                            <div>
+                              <strong>System</strong>
+                              <span>{matrixSystemRootNode.kind}</span>
+                            </div>
+                          </th>
+                          {renderMatrixConcernCells(matrixSystemRootNode, "System")}
+                        </tr>,
+                      );
+                    }
+
+                    for (const { node, depth } of treeOrderedMatrixNodes) {
+                      const visualDepth = depth + 1;
+                      const nodePath = matrixNodePathById.get(node.id);
+                      const isTopLevelHost = node.kind === "Host" && depth === 0;
+                      const isTopLevelLibrary = node.kind === "Library" && depth === 0;
+                      const separatorClassName = isTopLevelHost || isTopLevelLibrary
+                        ? "matrix-separator-row matrix-separator-row--host-break"
+                        : "matrix-separator-row";
+                      rows.push(
+                        <tr key={`${node.id}:separator`} className={separatorClassName} aria-hidden="true">
+                          <td colSpan={matrixColumnSpan} />
+                        </tr>,
+                      );
+                      rows.push(
+                        <tr key={node.id}>
+                          <th className="matrix-node-cell">
+                            <div className="matrix-node-row">
+                              {visualDepth > 0 ? (
+                                <div className="matrix-node-guides" aria-hidden="true">
+                                  {Array.from({ length: visualDepth }).map((_, lineIndex) => (
+                                    <span
+                                      key={`${node.id}:line:${lineIndex}`}
+                                      className="matrix-node-guide-line"
+                                      style={{ left: `${lineIndex * 12 + 6}px` }}
+                                    />
+                                  ))}
+                                </div>
+                              ) : null}
+                              <div className="matrix-node-content" style={{ paddingLeft: visualDepth * 12 + 8 }}>
+                                <strong>{node.name}</strong>
+                                {nodePath ? <span className="matrix-node-path">{nodePath}</span> : null}
+                                <span>{node.kind}</span>
+                              </div>
+                            </div>
+                          </th>
+                          {renderMatrixConcernCells(node, node.name)}
+                        </tr>,
+                      );
+                    }
+
+                    return rows;
+                  })()}
                 </tbody>
               </table>
             </div>
