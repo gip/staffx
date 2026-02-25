@@ -7,6 +7,7 @@ import {
   Sidebar,
   Home,
   ProjectPage,
+  ProjectSettingsPage,
   ThreadPage,
   SettingsPage,
   UserProfilePage,
@@ -24,6 +25,9 @@ import {
   type IntegrationStatusRecord,
   type ThreadDetail,
   type ThreadDetailPayload,
+  type Collaborator,
+  type Concern,
+  type SearchResult,
 } from "@staffx/ui";
 
 function normalizeApiUrl(raw: string): string {
@@ -90,6 +94,14 @@ interface V1ThreadListResponse {
   page?: number;
   pageSize?: number;
   nextCursor?: string | null;
+}
+
+interface V1ProjectSettingsPayload {
+  accessRole: string;
+  visibility: "public" | "private";
+  projectRoles: string[];
+  concerns: Concern[];
+  collaborators: Collaborator[];
 }
 
 interface V1RunStartResponse {
@@ -998,17 +1010,234 @@ function ProjectRoute({ isAuthenticated, onProjectMutated }: { isAuthenticated: 
   );
 }
 
-function SettingsRoute() {
+function SettingsRoute({
+  isAuthenticated,
+  onProjectMutated,
+}: {
+  isAuthenticated: boolean;
+  onProjectMutated?: () => void;
+}) {
+  const { handle, project: projectName } = useParams<{ handle: string; project: string }>();
+  const navigate = useNavigate();
+  const apiFetch = useApi();
+  const [settings, setSettings] = useState<V1ProjectSettingsPayload | null>(null);
+  const [notFound, setNotFound] = useState(false);
+
+  useEffect(() => {
+    if (!isAuthenticated) {
+      setSettings(null);
+      setNotFound(false);
+      return;
+    }
+    if (!handle || !projectName) {
+      setSettings(null);
+      setNotFound(true);
+      return;
+    }
+
+    setSettings(null);
+    setNotFound(false);
+    let cancelled = false;
+
+    apiFetch(
+      `/projects/${encodeURIComponent(handle)}/${encodeURIComponent(projectName)}/collaborators`,
+    )
+      .then(async (res) => {
+        if (cancelled) return;
+        if (res.status === 404) {
+          setNotFound(true);
+          return;
+        }
+        if (!res.ok) {
+          throw new Error(await readError(res, "Failed to load project settings"));
+        }
+        const data = await res.json() as V1ProjectSettingsPayload;
+        if (!cancelled) setSettings(data);
+      })
+      .catch(() => {
+        if (!cancelled) setNotFound(true);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [apiFetch, handle, isAuthenticated, projectName]);
+
+  if (!isAuthenticated) {
+    return (
+      <main className="main">
+        <p className="status-text">Sign in to access project settings.</p>
+      </main>
+    );
+  }
+
+  if (!notFound && !settings) {
+    return (
+      <main className="main">
+        <p className="status-text">Loading…</p>
+      </main>
+    );
+  }
+
+  if (notFound || !settings || !handle || !projectName) {
+    return (
+      <main className="main">
+        <p className="status-text">Project not found</p>
+      </main>
+    );
+  }
+
+  const encodedHandle = encodeURIComponent(handle);
+  const encodedProject = encodeURIComponent(projectName);
+  const basePath = `/projects/${encodedHandle}/${encodedProject}`;
+
   return (
-    <main className="main">
-      <div className="page">
-        <h1>Project settings</h1>
-        <p className="status-text">Project settings are not available in StaffX v1.</p>
-        <p className="page-description">
-          Settings APIs were intentionally excluded from the v1 public contract.
-        </p>
-      </div>
-    </main>
+    <ProjectSettingsPage
+      projectOwnerHandle={handle}
+      projectName={projectName}
+      accessRole={settings.accessRole}
+      visibility={settings.visibility}
+      collaborators={settings.collaborators}
+      projectRoles={settings.projectRoles}
+      concerns={settings.concerns}
+      onSearchUsers={async (query) => {
+        if (!query.trim()) return [];
+        try {
+          const res = await apiFetch(`/users/search?q=${encodeURIComponent(query.trim())}`);
+          if (!res.ok) return [];
+          return await res.json() as SearchResult[];
+        } catch {
+          return [];
+        }
+      }}
+      onAddCollaborator={async (targetHandle, role, projectRoles) => {
+        try {
+          const res = await apiFetch(`${basePath}/collaborators`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ handle: targetHandle, role, projectRoles }),
+          });
+          if (!res.ok) {
+            return { error: await readError(res, "Failed to add collaborator") };
+          }
+        } catch (error: unknown) {
+          if (error instanceof Error && error.message.trim()) return { error: error.message };
+          return { error: "Failed to add collaborator" };
+        }
+      }}
+      onRemoveCollaborator={async (targetHandle) => {
+        try {
+          const res = await apiFetch(`${basePath}/collaborators/${encodeURIComponent(targetHandle)}`, {
+            method: "DELETE",
+          });
+          if (!res.ok) {
+            return { error: await readError(res, "Failed to remove collaborator") };
+          }
+        } catch (error: unknown) {
+          if (error instanceof Error && error.message.trim()) return { error: error.message };
+          return { error: "Failed to remove collaborator" };
+        }
+      }}
+      onAddRole={async (name) => {
+        try {
+          const res = await apiFetch(`${basePath}/roles`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ name }),
+          });
+          if (!res.ok) {
+            return { error: await readError(res, "Failed to add role") };
+          }
+        } catch (error: unknown) {
+          if (error instanceof Error && error.message.trim()) return { error: error.message };
+          return { error: "Failed to add role" };
+        }
+      }}
+      onDeleteRole={async (name) => {
+        try {
+          const res = await apiFetch(`${basePath}/roles/${encodeURIComponent(name)}`, {
+            method: "DELETE",
+          });
+          if (!res.ok) {
+            return { error: await readError(res, "Failed to delete role") };
+          }
+        } catch (error: unknown) {
+          if (error instanceof Error && error.message.trim()) return { error: error.message };
+          return { error: "Failed to delete role" };
+        }
+      }}
+      onAddConcern={async (name) => {
+        try {
+          const res = await apiFetch(`${basePath}/concerns`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ name }),
+          });
+          if (!res.ok) {
+            return { error: await readError(res, "Failed to add concern") };
+          }
+        } catch (error: unknown) {
+          if (error instanceof Error && error.message.trim()) return { error: error.message };
+          return { error: "Failed to add concern" };
+        }
+      }}
+      onDeleteConcern={async (name) => {
+        try {
+          const res = await apiFetch(`${basePath}/concerns/${encodeURIComponent(name)}`, {
+            method: "DELETE",
+          });
+          if (!res.ok) {
+            return { error: await readError(res, "Failed to delete concern") };
+          }
+        } catch (error: unknown) {
+          if (error instanceof Error && error.message.trim()) return { error: error.message };
+          return { error: "Failed to delete concern" };
+        }
+      }}
+      onUpdateMemberRoles={async (targetHandle, projectRoles) => {
+        try {
+          const res = await apiFetch(`${basePath}/collaborators/${encodeURIComponent(targetHandle)}/roles`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ projectRoles }),
+          });
+          if (!res.ok) {
+            return { error: await readError(res, "Failed to update member roles") };
+          }
+        } catch (error: unknown) {
+          if (error instanceof Error && error.message.trim()) return { error: error.message };
+          return { error: "Failed to update member roles" };
+        }
+      }}
+      onUpdateVisibility={async (visibility) => {
+        try {
+          const res = await apiFetch(`${basePath}/visibility`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ visibility }),
+          });
+          if (!res.ok) {
+            return { error: await readError(res, "Failed to update visibility") };
+          }
+        } catch (error: unknown) {
+          if (error instanceof Error && error.message.trim()) return { error: error.message };
+          return { error: "Failed to update visibility" };
+        }
+      }}
+      onArchiveProject={async () => {
+        try {
+          const res = await apiFetch(`${basePath}/archive`, { method: "POST" });
+          if (!res.ok) {
+            return { error: await readError(res, "Failed to archive project") };
+          }
+          onProjectMutated?.();
+          navigate("/");
+        } catch (error: unknown) {
+          if (error instanceof Error && error.message.trim()) return { error: error.message };
+          return { error: "Failed to archive project" };
+        }
+      }}
+    />
   );
 }
 
@@ -1740,7 +1969,10 @@ function AppShell({
             <Route path="/" element={<HomeRoute projects={projects} setProjects={setProjects} />} />
             <Route path="/:handle/:project" element={<ProjectRoute isAuthenticated={isAuthenticated} onProjectMutated={refreshProjects} />} />
             <Route path="/settings" element={<AccountSettingsRoute isAuthenticated={isAuthenticated} />} />
-            <Route path="/:handle/:project/settings" element={<SettingsRoute isAuthenticated={isAuthenticated} />} />
+            <Route
+              path="/:handle/:project/settings"
+              element={<SettingsRoute isAuthenticated={isAuthenticated} onProjectMutated={refreshProjects} />}
+            />
             <Route path="/:handle" element={<ProfileRoute isAuthenticated={isAuthenticated} />} />
             <Route
               path="/:handle/:project/thread/:threadId"

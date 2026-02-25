@@ -71,6 +71,16 @@ Query helpers:
 - `GET /v1/projects`
 - `POST /v1/projects`
 - `GET /v1/projects/check-name`
+- `GET /v1/projects/:handle/:projectName/collaborators`
+- `PATCH /v1/projects/:handle/:projectName/visibility`
+- `POST /v1/projects/:handle/:projectName/archive`
+- `POST /v1/projects/:handle/:projectName/collaborators`
+- `DELETE /v1/projects/:handle/:projectName/collaborators/:collaboratorHandle`
+- `PUT /v1/projects/:handle/:projectName/collaborators/:collaboratorHandle/roles`
+- `POST /v1/projects/:handle/:projectName/roles`
+- `DELETE /v1/projects/:handle/:projectName/roles/:roleName`
+- `POST /v1/projects/:handle/:projectName/concerns`
+- `DELETE /v1/projects/:handle/:projectName/concerns/:concernName`
 
 - `GET /v1/integrations`  
 - `GET /v1/integrations/:provider/authorize-url`
