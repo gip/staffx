@@ -7,6 +7,7 @@
     "dev:desktop": "pnpm --filter @staffx/desktop dev",
     "dev:desktop:with-api": "STAFFX_ENABLE_CLAUDE_AGENT=1 pnpm --parallel --filter @staffx/api --filter @staffx/desktop run dev",
     "build:web": "pnpm --filter @staffx/web build",
+    "build:api": "pnpm --filter @staffx/api build",
     "build:desktop": "pnpm --filter @staffx/desktop build",
     "migrate": "pnpm --filter @staffx/api migrate"
   },
