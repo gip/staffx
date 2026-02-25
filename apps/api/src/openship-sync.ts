@@ -39,6 +39,7 @@ interface ParsedOpenShipEdge {
   type: "Runtime" | "Dataflow" | "Dependency";
   fromNodeId: string;
   toNodeId: string;
+  metadata: Record<string, YamlValue>;
 }
 
 interface ParsedNodeArtifactCode {
@@ -309,10 +310,14 @@ function parseOpenShipEdges(raw: string): ParsedOpenShipEdge[] {
     let from = "";
     let to = "";
     let type: ParsedOpenShipEdge["type"] = "Dependency";
+    let metadata: Record<string, YamlValue> = {};
     try {
       from = asString(edge.fromNodeId, `edge ${index} in ${filePath} fromNodeId`);
       to = asString(edge.toNodeId, `edge ${index} in ${filePath} toNodeId`);
       type = asString(edge.type, `edge ${index} in ${filePath} type`) as ParsedOpenShipEdge["type"];
+      if (edge.metadata !== undefined) {
+        metadata = asRecord(edge.metadata, `edge ${index} in ${filePath} metadata`) as Record<string, YamlValue>;
+      }
     } catch (error: unknown) {
       edgesError(
         `edge ${index} in ${filePath} has invalid fields; source=${describeYamlValue(entry as YamlValue)}; ` +
@@ -329,6 +334,7 @@ function parseOpenShipEdges(raw: string): ParsedOpenShipEdge[] {
       type,
       fromNodeId: from,
       toNodeId: to,
+      metadata,
     };
   });
 }
@@ -578,6 +584,38 @@ function validateMatrixRefTargets(parsed: ParsedOpenShipBundle): void {
   throw new Error(`OpenShip matrix references missing documents: ${preview}${suffix}`);
 }
 
+function validateLibraryContainmentAndDependencyEdges(parsed: ParsedOpenShipBundle): void {
+  const nodeKindById = new Map<string, ParsedNodeManifest["kind"]>(
+    parsed.nodes.map((node) => [node.id, node.kind]),
+  );
+
+  for (const node of parsed.nodes) {
+    if (node.kind === "Library" && node.parentId !== undefined) {
+      throw new Error(`Invalid Library placement for node "${node.id}"; libraries must be top-level and cannot define parentId.`);
+    }
+  }
+
+  for (const edge of parsed.edges) {
+    if (edge.type !== "Dependency") {
+      continue;
+    }
+
+    const fromKind = nodeKindById.get(edge.fromNodeId);
+    if (fromKind !== "Process") {
+      throw new Error(
+        `Invalid Dependency edge "${edge.id}": fromNodeId "${edge.fromNodeId}" must exist and be a Process.`,
+      );
+    }
+
+    const toKind = nodeKindById.get(edge.toNodeId);
+    if (toKind !== "Library") {
+      throw new Error(
+        `Invalid Dependency edge "${edge.id}": toNodeId "${edge.toNodeId}" must exist and be a Library.`,
+      );
+    }
+  }
+}
+
 function resolveOpenShipRootNodeId(manifestRootNodeId: string, nodeLookup: Map<string, ParsedNodeManifest>): string {
   if (manifestRootNodeId === OPENSHIP_ROOT_NODE_ID) {
     if (!nodeLookup.has(OPENSHIP_ROOT_NODE_ID)) {
@@ -789,6 +827,7 @@ export async function applyOpenShipBundleToThreadSystemWithClient(
 
   const nodeLookup = new Map<string, ParsedNodeManifest>(parsed.nodes.map((node) => [node.id, node]));
   const resolvedSystemNodeId = resolveOpenShipRootNodeId(manifest.systemNodeId, nodeLookup);
+  validateLibraryContainmentAndDependencyEdges(parsed);
   if (typedNodeSchemeEnabled) {
     validateTypedNodeScheme(parsed, resolvedSystemNodeId, baseNodeKinds);
   }
@@ -924,7 +963,7 @@ export async function applyOpenShipBundleToThreadSystemWithClient(
              from_node_id = EXCLUDED.from_node_id,
              to_node_id = EXCLUDED.to_node_id,
              metadata = EXCLUDED.metadata`,
-      [edge.id, systemId, edge.type, edge.fromNodeId, edge.toNodeId, {}],
+      [edge.id, systemId, edge.type, edge.fromNodeId, edge.toNodeId, edge.metadata],
     );
   }
 

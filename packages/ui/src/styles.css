@@ -1218,6 +1218,18 @@ a.project-card {
   z-index: 10 !important;
 }
 
+.thread-topology-canvas .react-flow__edge.thread-topology-edge--network .react-flow__edge-path {
+  stroke: var(--fg-muted);
+}
+
+.thread-topology-canvas .react-flow__edge.thread-topology-edge .react-flow__edge-text {
+  white-space: pre-line !important;
+}
+
+.thread-topology-canvas .react-flow__edge.thread-topology-edge text {
+  white-space: pre-line !important;
+}
+
 .thread-topology-canvas .react-flow__node-topology {
   overflow: visible;
 }

@@ -59,6 +59,7 @@ export interface TopologyEdge {
   fromNodeId: string;
   toNodeId: string;
   protocol?: string | null;
+  layer7?: string | null;
 }
 
 export interface MatrixCellDoc {
@@ -930,7 +931,7 @@ function buildFlowLayoutModel(nodes: TopologyNode[]): FlowLayoutModel {
   const byId = new Map(nodes.map((node) => [node.id, node]));
   const hiddenNodeIds = new Set<string>();
   const nestedChildrenByHost = new Map<string, TopologyNode[]>();
-  const nestedKinds = new Set(["Container", "Process", "Library"]);
+  const nestedKinds = new Set(["Container", "Process"]);
 
   // Extract Root node — rendered as a background boundary, not a regular card
   let rootNode: TopologyNode | null = null;
@@ -961,6 +962,9 @@ function buildFlowLayoutModel(nodes: TopologyNode[]): FlowLayoutModel {
   const visibleParentById = new Map<string, string | null>();
   for (const node of visibleNodes) {
     let parentId = node.parentId;
+    if (node.kind === "Library") {
+      parentId = null;
+    }
     while (parentId && hiddenNodeIds.has(parentId)) {
       parentId = byId.get(parentId)?.parentId ?? null;
     }
@@ -1242,12 +1246,34 @@ function resolveFlowEndpoint(
   return null;
 }
 
-function buildFlowEdges(edges: TopologyEdge[], model: FlowLayoutModel): Edge[] {
+function buildFlowEdges(
+  edges: TopologyEdge[],
+  model: FlowLayoutModel,
+  showNetworkEdges: boolean,
+  showDependencyEdges: boolean,
+): Edge[] {
   const flowEdges: Edge[] = [];
   for (const edge of edges) {
+    const isDependencyEdge = edge.type === "Dependency";
+    const isNetworkEdge = edge.type === "Runtime" || edge.type === "Dataflow";
+    if (isDependencyEdge && !showDependencyEdges) continue;
+    if (isNetworkEdge && !showNetworkEdges) continue;
+
     const source = resolveFlowEndpoint(edge.fromNodeId, "source", model);
     const target = resolveFlowEndpoint(edge.toNodeId, "target", model);
     if (!source || !target) continue;
+    const layer7 = edge.layer7?.trim();
+    const protocol = edge.protocol?.trim();
+    const dependencyLabel = edge.type === "Dependency" ? "library" : edge.type;
+    const label = layer7
+      ? protocol
+        ? `${layer7}\n${protocol}`
+        : layer7
+      : protocol || dependencyLabel;
+    const edgeClassName = `thread-topology-edge ${isDependencyEdge ? "thread-topology-edge--dependency" : isNetworkEdge ? "thread-topology-edge--network" : ""}`.trim();
+    const stroke = isDependencyEdge ? "var(--fg)" : "var(--fg-muted)";
+    const labelFill = "var(--fg-muted)";
+    const strokeDasharray = isDependencyEdge ? "6 4" : undefined;
 
     flowEdges.push({
       id: edge.id,
@@ -1255,10 +1281,15 @@ function buildFlowEdges(edges: TopologyEdge[], model: FlowLayoutModel): Edge[] {
       sourceHandle: source.handleId,
       target: target.nodeId,
       targetHandle: target.handleId,
+      className: edgeClassName,
       markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16 },
-      style: { stroke: "var(--fg-muted)", strokeWidth: 1.2 },
-      label: edge.protocol?.trim() || edge.type,
-      labelStyle: { fill: "var(--fg-muted)", fontSize: 11 },
+      style: {
+        stroke,
+        strokeWidth: 1.2,
+        strokeDasharray,
+      },
+      label,
+      labelStyle: { fill: labelFill, fontSize: 11, whiteSpace: "pre-line" },
       zIndex: 1000,
     });
   }
@@ -1323,6 +1354,8 @@ export function ThreadPage({
   const [cloneTitle, setCloneTitle] = useState(detail.thread.title);
   const [cloneDescription, setCloneDescription] = useState(detail.thread.description ?? "");
   const [pendingPlanActionId, setPendingPlanActionId] = useState<string | null>(null);
+  const [showNetworkEdges, setShowNetworkEdges] = useState(true);
+  const [showDependencyEdges, setShowDependencyEdges] = useState(true);
   const [topologyError, setTopologyError] = useState("");
   const [isSavingTopologyLayout, setIsSavingTopologyLayout] = useState(false);
   const [isSimulationSuccess, setIsSimulationSuccess] = useState(false);
@@ -1766,7 +1799,10 @@ export function ThreadPage({
       [flowLayoutModel, nodeDocumentGroups, nodeArtifacts, openTopologyDocumentPicker, openRootPromptCreator, openEditDocumentModal, effectiveCanEdit, detail.systemPrompt, detail.systemPromptTitle, detail.systemPrompts],
   );
   const [flowNodes, setFlowNodes, onFlowNodesChange] = useNodesState(initialFlowNodes);
-  const flowEdges = useMemo(() => buildFlowEdges(detail.topology.edges, flowLayoutModel), [detail.topology.edges, flowLayoutModel]);
+  const flowEdges = useMemo(
+    () => buildFlowEdges(detail.topology.edges, flowLayoutModel, showNetworkEdges, showDependencyEdges),
+    [detail.topology.edges, flowLayoutModel, showNetworkEdges, showDependencyEdges],
+  );
 
   const handleNodesChange = useCallback(
     (changes: NodeChange[]) => {
@@ -3076,6 +3112,25 @@ export function ThreadPage({
       {(() => {
         const renderTopologyBody = () => (
           <>
+            <div className="matrix-concern-filter">
+              <span className="matrix-concern-filter-label">Edges</span>
+              <label className={`matrix-concern-chip ${showNetworkEdges ? "matrix-concern-chip--active" : ""}`}>
+                <input
+                  type="checkbox"
+                  checked={showNetworkEdges}
+                  onChange={() => setShowNetworkEdges((value) => !value)}
+                />
+                Network
+              </label>
+              <label className={`matrix-concern-chip ${showDependencyEdges ? "matrix-concern-chip--active" : ""}`}>
+                <input
+                  type="checkbox"
+                  checked={showDependencyEdges}
+                  onChange={() => setShowDependencyEdges((value) => !value)}
+                />
+                Dependency
+              </label>
+            </div>
             <div className="thread-topology-canvas">
               <ReactFlow
                 nodes={flowNodes}

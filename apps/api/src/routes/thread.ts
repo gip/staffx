@@ -177,6 +177,7 @@ interface TopologyEdgeRow {
   from_node_id: string;
   to_node_id: string;
   protocol: string | null;
+  layer7: string | null;
 }
 
 interface ConcernRow {
@@ -1488,6 +1489,7 @@ interface ThreadDetailPayload {
       fromNodeId: string;
       toNodeId: string;
       protocol: string | null;
+      layer7: string | null;
     }>;
   };
   systemPrompt: string | null;
@@ -1787,7 +1789,7 @@ async function buildThreadStatePayload(context: ThreadContext): Promise<ThreadDe
         [systemId],
       ),
       query<TopologyEdgeRow>(
-        `SELECT id, type, from_node_id, to_node_id, metadata->>'protocol' AS protocol
+        `SELECT id, type, from_node_id, to_node_id, metadata->>'protocol' AS protocol, metadata->>'layer7' AS layer7
          FROM edges
          WHERE system_id = $1
          ORDER BY id`,
@@ -1931,6 +1933,7 @@ async function buildThreadStatePayload(context: ThreadContext): Promise<ThreadDe
         fromNodeId: row.from_node_id,
         toNodeId: row.to_node_id,
         protocol: row.protocol,
+        layer7: row.layer7,
       })),
     },
     matrix: {
