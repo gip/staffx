@@ -5,9 +5,9 @@ Project settings endpoints are scoped to `/:handle/:projectName` and require Bea
 ## Authorization model
 
 - Read settings (`GET .../collaborators`): any accessible project member/viewer.
-- Mutations: owner only.
+- Mutations: owner only, except project description (`PATCH .../description`) which allows Owner or Editor.
 
-Non-owner mutation attempts return `403 Forbidden`.
+Unauthorized mutation attempts return `403 Forbidden`.
 
 ## Endpoints
 
@@ -41,6 +41,16 @@ Response:
 
 - `PATCH /v1/projects/:handle/:projectName/visibility`
 - Body: `{ "visibility": "public" | "private" }`
+
+### Update project description
+
+- `PATCH /v1/projects/:handle/:projectName/description`
+- Body: `{ "description": string | null }`
+- Access: Owner or Editor
+- Behavior:
+  - Missing `description` in request body returns `400`.
+  - String descriptions are trimmed.
+  - Empty trimmed descriptions are stored as `null`.
 
 ### Archive project
 

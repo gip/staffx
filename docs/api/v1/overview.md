@@ -72,6 +72,7 @@ Query helpers:
 - `POST /v1/projects`
 - `GET /v1/projects/check-name`
 - `GET /v1/projects/:handle/:projectName/collaborators`
+- `PATCH /v1/projects/:handle/:projectName/description`
 - `PATCH /v1/projects/:handle/:projectName/visibility`
 - `POST /v1/projects/:handle/:projectName/archive`
 - `POST /v1/projects/:handle/:projectName/collaborators`

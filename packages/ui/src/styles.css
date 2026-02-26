@@ -581,6 +581,43 @@ select.field-input {
   line-height: 1.5;
 }
 
+.project-description-card {
+  margin-bottom: 24px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-secondary);
+}
+
+.project-description-display {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  margin-bottom: 12px;
+  gap: 12px;
+}
+
+.project-description-content {
+  flex: 1;
+  min-width: 0;
+}
+
+.project-description-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.project-description-body {
+  margin-top: 0;
+}
+
+.project-description-empty {
+  font-size: 14px;
+  color: var(--fg-muted);
+  line-height: 1.5;
+}
+
 /* Thread section */
 
 .thread-section {

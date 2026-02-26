@@ -615,6 +615,45 @@ export async function projectRoutes(app: FastifyInstance) {
 
   app.patch<{
     Params: { handle: string; projectName: string };
+    Body: { description?: string | null };
+  }>(
+    "/projects/:handle/:projectName/description",
+    async (req, reply) => {
+      const viewerUserId = await getOptionalViewerUserId(req, reply);
+      if (typeof viewerUserId === "undefined") return;
+
+      const project = await resolveProject(req.params.handle, req.params.projectName, viewerUserId);
+      if (!project) return reply.code(404).send({ error: "Project not found" });
+      if (project.accessRole !== "Owner" && project.accessRole !== "Editor") {
+        return reply.code(403).send({ error: "Only the owner or editors can update project description" });
+      }
+      if (typeof req.body?.description === "undefined") {
+        return reply.code(400).send({ error: "description is required" });
+      }
+      if (req.body.description !== null && typeof req.body.description !== "string") {
+        return reply.code(400).send({ error: "description must be a string or null" });
+      }
+
+      const nextDescription = req.body.description === null
+        ? null
+        : (req.body.description.trim() || null);
+      const result = await query<{ description: string | null }>(
+        `UPDATE projects
+         SET description = $1
+         WHERE id = $2
+         RETURNING description`,
+        [nextDescription, project.projectId],
+      );
+      if (result.rowCount === 0) return reply.code(404).send({ error: "Project not found" });
+
+      return {
+        description: result.rows[0].description,
+      };
+    },
+  );
+
+  app.patch<{
+    Params: { handle: string; projectName: string };
     Body: { visibility?: ProjectVisibility };
   }>(
     "/projects/:handle/:projectName/visibility",

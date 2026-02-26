@@ -1417,6 +1417,45 @@ export async function v1Routes(app: FastifyInstance) {
 
   app.patch<{
     Params: { handle: string; projectName: string };
+    Body: { description?: string | null };
+  }>(
+    "/projects/:handle/:projectName/description",
+    async (req, reply) => {
+      const user = (req as V1AuthRequest).auth;
+      const project = await resolveProjectAccessByHandle(req.params.handle, req.params.projectName, user);
+      if (!project) {
+        return writeProblem(reply, 404, "Project not found", "Project not found or access denied.");
+      }
+      if (!canEdit(project.access_role)) {
+        return forbiddenProblem(reply, "Only the owner or editors can update project description.");
+      }
+      if (typeof req.body?.description === "undefined") {
+        return writeProblem(reply, 400, "Invalid description", "description is required.");
+      }
+      if (req.body.description !== null && typeof req.body.description !== "string") {
+        return writeProblem(reply, 400, "Invalid description", "description must be a string or null.");
+      }
+
+      const nextDescription = req.body.description === null
+        ? null
+        : (req.body.description.trim() || null);
+      const result = await query<{ description: string | null }>(
+        `UPDATE projects
+         SET description = $1
+         WHERE id = $2
+         RETURNING description`,
+        [nextDescription, project.project_id],
+      );
+      if (result.rowCount === 0) {
+        return writeProblem(reply, 404, "Project not found", "Project not found.");
+      }
+
+      return { description: result.rows[0].description };
+    },
+  );
+
+  app.patch<{
+    Params: { handle: string; projectName: string };
     Body: { visibility?: V1ProjectVisibility };
   }>(
     "/projects/:handle/:projectName/visibility",
