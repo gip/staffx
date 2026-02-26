@@ -24,6 +24,17 @@ import { generateOpenShipFileBundle } from "../agent-runner.js";
 
 const EDIT_ROLES = new Set(["Owner", "Editor"]);
 const SYSTEM_PROMPT_CONCERN = "__system_prompt__";
+type NodeOwnership = "first_party" | "third_party";
+type NodeBoundary = "internal" | "external";
+
+function normalizeNodeOwnership(value: string | null): NodeOwnership {
+  return value === "third_party" ? "third_party" : "first_party";
+}
+
+function normalizeNodeBoundary(value: string | null): NodeBoundary {
+  return value === "external" ? "external" : "internal";
+}
+
 function parsePositiveMs(value: string, fallback: number): number {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
@@ -169,6 +180,8 @@ interface TopologyNodeRow {
   parent_id: string | null;
   layout_x: number | null;
   layout_y: number | null;
+  ownership: string | null;
+  boundary: string | null;
 }
 
 interface TopologyEdgeRow {
@@ -1482,6 +1495,8 @@ interface ThreadDetailPayload {
       parentId: string | null;
       layoutX: number | null;
       layoutY: number | null;
+      ownership: "first_party" | "third_party";
+      boundary: "internal" | "external";
     }>;
     edges: Array<{
       id: string;
@@ -1507,6 +1522,8 @@ interface ThreadDetailPayload {
       parentId: string | null;
       layoutX: number | null;
       layoutY: number | null;
+      ownership: "first_party" | "third_party";
+      boundary: "internal" | "external";
     }>;
     cells: MatrixCell[];
   documents: Array<{
@@ -1782,7 +1799,9 @@ async function buildThreadStatePayload(context: ThreadContext): Promise<ThreadDe
            kind,
            parent_id,
            (metadata->'layout'->>'x')::double precision AS layout_x,
-           (metadata->'layout'->>'y')::double precision AS layout_y
+           (metadata->'layout'->>'y')::double precision AS layout_y,
+           metadata->>'ownership' AS ownership,
+           metadata->>'boundary' AS boundary
          FROM nodes
          WHERE system_id = $1
          ORDER BY name, id`,
@@ -1858,6 +1877,8 @@ async function buildThreadStatePayload(context: ThreadContext): Promise<ThreadDe
     parentId: row.parent_id,
     layoutX: row.layout_x,
     layoutY: row.layout_y,
+    ownership: normalizeNodeOwnership(row.ownership),
+    boundary: normalizeNodeBoundary(row.boundary),
   }));
 
   const concerns = concernsResult.rows.map((row) => ({

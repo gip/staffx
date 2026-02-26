@@ -86,6 +86,8 @@ interface V1TopologyNode {
   parentId: string | null;
   layoutX?: number | null;
   layoutY?: number | null;
+  ownership: "first_party" | "third_party";
+  boundary: "internal" | "external";
 }
 
 interface V1TopologyEdge {
@@ -1014,6 +1016,11 @@ async function loadThreadMatrix(systemId: string): Promise<V1ThreadMatrixNodeCel
 function toTopology(nodes: Array<{ id: string; name: string; kind: string; parent_id: string | null; metadata: Record<string, unknown> }> ,
   edges: Array<{ id: string; from_node_id: string; to_node_id: string; type: string; metadata: Record<string, unknown> }>,
 ): { nodes: V1TopologyNode[]; edges: V1TopologyEdge[] } {
+  const normalizeNodeOwnership = (value: unknown): "first_party" | "third_party" =>
+    value === "third_party" ? "third_party" : "first_party";
+  const normalizeNodeBoundary = (value: unknown): "internal" | "external" =>
+    value === "external" ? "external" : "internal";
+
   const topoNodes = nodes.map((node) => {
     const layout = (node.metadata?.layout as Record<string, unknown>) ?? {};
     const layoutX = typeof layout.x === "number" ? layout.x : null;
@@ -1025,6 +1032,8 @@ function toTopology(nodes: Array<{ id: string; name: string; kind: string; paren
       parentId: node.parent_id,
       layoutX,
       layoutY,
+      ownership: normalizeNodeOwnership(node.metadata?.ownership),
+      boundary: normalizeNodeBoundary(node.metadata?.boundary),
     };
   });
 
@@ -1290,8 +1299,16 @@ export async function v1Routes(app: FastifyInstance) {
         );
         await client.query(
           `INSERT INTO nodes (id, system_id, kind, name, parent_id, metadata)
-           VALUES ($1, $2, 'Root'::node_kind, $3, NULL, '{}'::jsonb)`,
-          [rootNodeId, systemId, name],
+           VALUES ($1, $2, 'Root'::node_kind, $3, NULL, $4::jsonb)`,
+          [
+            rootNodeId,
+            systemId,
+            name,
+            JSON.stringify({
+              ownership: "first_party",
+              boundary: "internal",
+            }),
+          ],
         );
         await client.query(
           "SELECT create_thread($1, $2, $3, $4, $5, $6)",

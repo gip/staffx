@@ -54,6 +54,8 @@ export interface TopologyNode {
   parentId: string | null;
   layoutX?: number | null;
   layoutY?: number | null;
+  ownership: "first_party" | "third_party";
+  boundary: "internal" | "external";
 }
 
 export interface TopologyEdge {
@@ -521,8 +523,35 @@ function sortMatrixTopLevelNodes(a: TopologyNode, b: TopologyNode) {
   return sortNodes(a, b);
 }
 
+type TopologyOwnership = TopologyNode["ownership"];
+type TopologyBoundary = TopologyNode["boundary"];
+
+function normalizeTopologyOwnership(value: unknown): "first_party" | "third_party" | null {
+  if (value === "first_party" || value === "third_party") return value;
+  return null;
+}
+
+function normalizeTopologyBoundary(value: unknown): "internal" | "external" | null {
+  if (value === "internal" || value === "external") return value;
+  return null;
+}
+
+function shouldDisplayTopologyNode(
+  node: TopologyNode,
+  visibleOwnerships: Set<TopologyOwnership>,
+  visibleBoundaries: Set<TopologyBoundary>,
+): boolean {
+  if (node.kind === "Root") return true;
+  const ownership = normalizeTopologyOwnership(node.ownership);
+  const boundary = normalizeTopologyBoundary(node.boundary);
+  const ownershipVisible = ownership !== null && visibleOwnerships.has(ownership);
+  const boundaryVisible = boundary !== null && visibleBoundaries.has(boundary);
+  return ownershipVisible && boundaryVisible;
+}
+
 interface FlowLayoutModel {
   byId: Map<string, TopologyNode>;
+  includedNodeIds: Set<string>;
   visibleNodes: TopologyNode[];
   hiddenNodeIds: Set<string>;
   visibleParentById: Map<string, string | null>;
@@ -950,8 +979,17 @@ const FLOW_NODE_TYPES = {
   rootGroup: RootGroupNode,
 };
 
-function buildFlowLayoutModel(nodes: TopologyNode[]): FlowLayoutModel {
+function buildFlowLayoutModel(
+  nodes: TopologyNode[],
+  visibleOwnerships: Set<TopologyOwnership>,
+  visibleBoundaries: Set<TopologyBoundary>,
+): FlowLayoutModel {
   const byId = new Map(nodes.map((node) => [node.id, node]));
+  const includedNodeIds = new Set(
+    nodes
+      .filter((node) => shouldDisplayTopologyNode(node, visibleOwnerships, visibleBoundaries))
+      .map((node) => node.id),
+  );
   const hiddenNodeIds = new Set<string>();
   const nestedChildrenByHost = new Map<string, TopologyNode[]>();
   const nestedKinds = new Set(["Container", "Process"]);
@@ -968,8 +1006,10 @@ function buildFlowLayoutModel(nodes: TopologyNode[]): FlowLayoutModel {
 
   for (const node of nodes) {
     if (!node.parentId) continue;
+    if (!includedNodeIds.has(node.id)) continue;
     const parent = byId.get(node.parentId);
     if (!parent || parent.kind !== "Host") continue;
+    if (!includedNodeIds.has(parent.id)) continue;
     if (!nestedKinds.has(node.kind)) continue;
     hiddenNodeIds.add(node.id);
     const nested = nestedChildrenByHost.get(parent.id) ?? [];
@@ -981,15 +1021,24 @@ function buildFlowLayoutModel(nodes: TopologyNode[]): FlowLayoutModel {
     nested.sort(sortNodes);
   }
 
-  const visibleNodes = nodes.filter((node) => !hiddenNodeIds.has(node.id));
+  const visibleNodes = nodes.filter((node) => includedNodeIds.has(node.id) && !hiddenNodeIds.has(node.id));
   const visibleParentById = new Map<string, string | null>();
   for (const node of visibleNodes) {
     let parentId = node.parentId;
     if (node.kind === "Library") {
       parentId = null;
     }
-    while (parentId && hiddenNodeIds.has(parentId)) {
-      parentId = byId.get(parentId)?.parentId ?? null;
+    while (parentId) {
+      const parent = byId.get(parentId);
+      if (!parent) {
+        parentId = null;
+        break;
+      }
+      if (hiddenNodeIds.has(parentId) || !includedNodeIds.has(parentId)) {
+        parentId = parent.parentId ?? null;
+        continue;
+      }
+      break;
     }
     if (parentId && !byId.has(parentId)) {
       parentId = null;
@@ -999,6 +1048,7 @@ function buildFlowLayoutModel(nodes: TopologyNode[]): FlowLayoutModel {
 
   return {
     byId,
+    includedNodeIds,
     visibleNodes,
     hiddenNodeIds,
     visibleParentById,
@@ -1337,6 +1387,7 @@ function resolveFlowEndpoint(
 ): FlowEndpoint | null {
   const endpoint = model.byId.get(nodeId);
   if (!endpoint) return null;
+  if (!model.includedNodeIds.has(nodeId)) return null;
 
   if (!model.hiddenNodeIds.has(nodeId)) {
     return {
@@ -1349,7 +1400,7 @@ function resolveFlowEndpoint(
   while (parentId) {
     const parentNode = model.byId.get(parentId);
     if (!parentNode) break;
-    if (!model.hiddenNodeIds.has(parentNode.id)) {
+    if (!model.hiddenNodeIds.has(parentNode.id) && model.includedNodeIds.has(parentNode.id)) {
       return {
         nodeId: parentNode.id,
         handleId: direction === "source" ? `child-out:${endpoint.id}` : `child-in:${endpoint.id}`,
@@ -1368,6 +1419,7 @@ function buildFlowEdges(
   showDependencyEdges: boolean,
 ): Edge[] {
   const flowEdges: Edge[] = [];
+  const visibleNodeIds = new Set(model.visibleNodes.map((node) => node.id));
   for (const edge of edges) {
     const isDependencyEdge = edge.type === "Dependency";
     const isNetworkEdge = edge.type === "Runtime" || edge.type === "Dataflow";
@@ -1377,6 +1429,7 @@ function buildFlowEdges(
     const source = resolveFlowEndpoint(edge.fromNodeId, "source", model);
     const target = resolveFlowEndpoint(edge.toNodeId, "target", model);
     if (!source || !target) continue;
+    if (!visibleNodeIds.has(source.nodeId) || !visibleNodeIds.has(target.nodeId)) continue;
     const layer7 = edge.layer7?.trim();
     const protocol = edge.protocol?.trim();
     const dependencyLabel = edge.type === "Dependency" ? "library" : edge.type;
@@ -1483,6 +1536,12 @@ export function ThreadPage({
   const [pendingPlanActionId, setPendingPlanActionId] = useState<string | null>(null);
   const [showNetworkEdges, setShowNetworkEdges] = useState(true);
   const [showDependencyEdges, setShowDependencyEdges] = useState(true);
+  const [visibleOwnerships, setVisibleOwnerships] = useState<Set<TopologyOwnership>>(
+    () => new Set(["first_party", "third_party"]),
+  );
+  const [visibleBoundaries, setVisibleBoundaries] = useState<Set<TopologyBoundary>>(
+    () => new Set(["internal", "external"]),
+  );
   const [topologyError, setTopologyError] = useState("");
   const [isSavingTopologyLayout, setIsSavingTopologyLayout] = useState(false);
   const [isAutoLayouting, setIsAutoLayouting] = useState(false);
@@ -1649,6 +1708,32 @@ export function ThreadPage({
         next.add(name);
       }
       return next.size > 0 ? next : prev;
+    });
+  }, []);
+
+  const toggleVisibleOwnership = useCallback((ownership: TopologyOwnership) => {
+    setVisibleOwnerships((prev) => {
+      const next = new Set(prev);
+      if (next.has(ownership)) {
+        if (next.size === 1) return prev;
+        next.delete(ownership);
+        return next;
+      }
+      next.add(ownership);
+      return next;
+    });
+  }, []);
+
+  const toggleVisibleBoundary = useCallback((boundary: TopologyBoundary) => {
+    setVisibleBoundaries((prev) => {
+      const next = new Set(prev);
+      if (next.has(boundary)) {
+        if (next.size === 1) return prev;
+        next.delete(boundary);
+        return next;
+      }
+      next.add(boundary);
+      return next;
     });
   }, []);
 
@@ -1939,7 +2024,10 @@ export function ThreadPage({
     [detail.matrix.documents, openDocumentPicker],
   );
 
-  const flowLayoutModel = useMemo(() => buildFlowLayoutModel(detail.topology.nodes), [detail.topology.nodes]);
+  const flowLayoutModel = useMemo(
+    () => buildFlowLayoutModel(detail.topology.nodes, visibleOwnerships, visibleBoundaries),
+    [detail.topology.nodes, visibleOwnerships, visibleBoundaries],
+  );
   const initialFlowNodes = useMemo(
     () =>
       buildFlowNodes(
@@ -3403,24 +3491,64 @@ export function ThreadPage({
       {(() => {
         const renderTopologyBody = () => (
           <>
-            <div className="matrix-concern-filter">
-              <span className="matrix-concern-filter-label">Edges</span>
-              <label className={`matrix-concern-chip ${showNetworkEdges ? "matrix-concern-chip--active" : ""}`}>
-                <input
-                  type="checkbox"
-                  checked={showNetworkEdges}
-                  onChange={() => setShowNetworkEdges((value) => !value)}
-                />
-                Network
-              </label>
-              <label className={`matrix-concern-chip ${showDependencyEdges ? "matrix-concern-chip--active" : ""}`}>
-                <input
-                  type="checkbox"
-                  checked={showDependencyEdges}
-                  onChange={() => setShowDependencyEdges((value) => !value)}
-                />
-                Dependency
-              </label>
+            <div className="thread-topology-filters">
+              <div className="thread-topology-filter-group">
+                <span className="matrix-concern-filter-label">Edges</span>
+                <label className={`matrix-concern-chip thread-topology-filter-chip ${showNetworkEdges ? "matrix-concern-chip--active" : ""}`}>
+                  <input
+                    type="checkbox"
+                    checked={showNetworkEdges}
+                    onChange={() => setShowNetworkEdges((value) => !value)}
+                  />
+                  Network
+                </label>
+                <label className={`matrix-concern-chip thread-topology-filter-chip ${showDependencyEdges ? "matrix-concern-chip--active" : ""}`}>
+                  <input
+                    type="checkbox"
+                    checked={showDependencyEdges}
+                    onChange={() => setShowDependencyEdges((value) => !value)}
+                  />
+                  Dependency
+                </label>
+              </div>
+              <div className="thread-topology-filter-group">
+                <span className="matrix-concern-filter-label">Ownership</span>
+                <label className={`matrix-concern-chip thread-topology-filter-chip ${visibleOwnerships.has("first_party") ? "matrix-concern-chip--active" : ""}`}>
+                  <input
+                    type="checkbox"
+                    checked={visibleOwnerships.has("first_party")}
+                    onChange={() => toggleVisibleOwnership("first_party")}
+                  />
+                  First-party
+                </label>
+                <label className={`matrix-concern-chip thread-topology-filter-chip ${visibleOwnerships.has("third_party") ? "matrix-concern-chip--active" : ""}`}>
+                  <input
+                    type="checkbox"
+                    checked={visibleOwnerships.has("third_party")}
+                    onChange={() => toggleVisibleOwnership("third_party")}
+                  />
+                  Third-party
+                </label>
+              </div>
+              <div className="thread-topology-filter-group">
+                <span className="matrix-concern-filter-label">Boundary</span>
+                <label className={`matrix-concern-chip thread-topology-filter-chip ${visibleBoundaries.has("internal") ? "matrix-concern-chip--active" : ""}`}>
+                  <input
+                    type="checkbox"
+                    checked={visibleBoundaries.has("internal")}
+                    onChange={() => toggleVisibleBoundary("internal")}
+                  />
+                  Internal
+                </label>
+                <label className={`matrix-concern-chip thread-topology-filter-chip ${visibleBoundaries.has("external") ? "matrix-concern-chip--active" : ""}`}>
+                  <input
+                    type="checkbox"
+                    checked={visibleBoundaries.has("external")}
+                    onChange={() => toggleVisibleBoundary("external")}
+                  />
+                  External
+                </label>
+              </div>
             </div>
             <div className="thread-topology-canvas">
               <ReactFlow
