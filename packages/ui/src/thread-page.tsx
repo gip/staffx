@@ -536,17 +536,67 @@ function normalizeTopologyBoundary(value: unknown): "internal" | "external" | nu
   return null;
 }
 
-function shouldDisplayTopologyNode(
+function matchesTopologyFilters(
   node: TopologyNode,
   visibleOwnerships: Set<TopologyOwnership>,
   visibleBoundaries: Set<TopologyBoundary>,
 ): boolean {
-  if (node.kind === "Root") return true;
   const ownership = normalizeTopologyOwnership(node.ownership);
   const boundary = normalizeTopologyBoundary(node.boundary);
   const ownershipVisible = ownership !== null && visibleOwnerships.has(ownership);
   const boundaryVisible = boundary !== null && visibleBoundaries.has(boundary);
   return ownershipVisible && boundaryVisible;
+}
+
+function computeVisibleTopologyNodeIds(
+  nodes: TopologyNode[],
+  visibleOwnerships: Set<TopologyOwnership>,
+  visibleBoundaries: Set<TopologyBoundary>,
+): Set<string> {
+  const childrenByParent = new Map<string, TopologyNode[]>();
+  for (const node of nodes) {
+    if (!node.parentId) continue;
+    const list = childrenByParent.get(node.parentId) ?? [];
+    list.push(node);
+    childrenByParent.set(node.parentId, list);
+  }
+
+  const directMatches = new Map<string, boolean>();
+  for (const node of nodes) {
+    directMatches.set(node.id, matchesTopologyFilters(node, visibleOwnerships, visibleBoundaries));
+  }
+
+  const cache = new Map<string, boolean>();
+  const inProgress = new Set<string>();
+
+  const subtreeMatches = (nodeId: string): boolean => {
+    const cached = cache.get(nodeId);
+    if (typeof cached === "boolean") return cached;
+    if (inProgress.has(nodeId)) {
+      return directMatches.get(nodeId) ?? false;
+    }
+    inProgress.add(nodeId);
+
+    let visible = directMatches.get(nodeId) ?? false;
+    if (!visible) {
+      for (const child of childrenByParent.get(nodeId) ?? []) {
+        if (!subtreeMatches(child.id)) continue;
+        visible = true;
+        break;
+      }
+    }
+
+    inProgress.delete(nodeId);
+    cache.set(nodeId, visible);
+    return visible;
+  };
+
+  const includedNodeIds = new Set<string>();
+  for (const node of nodes) {
+    if (!subtreeMatches(node.id)) continue;
+    includedNodeIds.add(node.id);
+  }
+  return includedNodeIds;
 }
 
 interface FlowLayoutModel {
@@ -985,11 +1035,7 @@ function buildFlowLayoutModel(
   visibleBoundaries: Set<TopologyBoundary>,
 ): FlowLayoutModel {
   const byId = new Map(nodes.map((node) => [node.id, node]));
-  const includedNodeIds = new Set(
-    nodes
-      .filter((node) => shouldDisplayTopologyNode(node, visibleOwnerships, visibleBoundaries))
-      .map((node) => node.id),
-  );
+  const includedNodeIds = computeVisibleTopologyNodeIds(nodes, visibleOwnerships, visibleBoundaries);
   const hiddenNodeIds = new Set<string>();
   const nestedChildrenByHost = new Map<string, TopologyNode[]>();
   const nestedKinds = new Set(["Container", "Process"]);
@@ -997,7 +1043,7 @@ function buildFlowLayoutModel(
   // Extract Root node — rendered as a background boundary, not a regular card
   let rootNode: TopologyNode | null = null;
   for (const node of nodes) {
-    if (node.kind === "Root") {
+    if (node.kind === "Root" && includedNodeIds.has(node.id)) {
       rootNode = node;
       hiddenNodeIds.add(node.id);
       break;
@@ -2172,16 +2218,26 @@ export function ThreadPage({
     [detail.matrix.concerns, visibleConcerns],
   );
 
+  const visibleMatrixNodeIds = useMemo(
+    () => computeVisibleTopologyNodeIds(detail.matrix.nodes, visibleOwnerships, visibleBoundaries),
+    [detail.matrix.nodes, visibleOwnerships, visibleBoundaries],
+  );
+
+  const filteredMatrixNodes = useMemo(
+    () => detail.matrix.nodes.filter((node) => visibleMatrixNodeIds.has(node.id)),
+    [detail.matrix.nodes, visibleMatrixNodeIds],
+  );
+
   const matrixSystemRootNode = useMemo(() => {
-    const explicitRootNode = detail.matrix.nodes.find((node) => node.kind === "Root");
+    const explicitRootNode = filteredMatrixNodes.find((node) => node.kind === "Root");
     if (explicitRootNode) return explicitRootNode;
-    const rootCandidates = detail.matrix.nodes.filter((node) => node.parentId === null);
+    const rootCandidates = filteredMatrixNodes.filter((node) => node.parentId === null);
     return rootCandidates.length === 1 ? rootCandidates[0] : null;
-  }, [detail.matrix.nodes]);
+  }, [filteredMatrixNodes]);
 
   const treeOrderedMatrixNodes = useMemo(() => {
     const childrenOf = new Map<string | null, TopologyNode[]>();
-    for (const node of detail.matrix.nodes) {
+    for (const node of filteredMatrixNodes) {
       if (matrixSystemRootNode && node.id === matrixSystemRootNode.id) continue;
       const key = matrixSystemRootNode && node.parentId === matrixSystemRootNode.id
         ? null
@@ -2210,7 +2266,7 @@ export function ThreadPage({
     };
     walk(null, 0);
 
-    const remainingNodes = detail.matrix.nodes
+    const remainingNodes = filteredMatrixNodes
       .filter((node) => (!matrixSystemRootNode || node.id !== matrixSystemRootNode.id) && !visited.has(node.id))
       .sort(sortNodes);
     for (const node of remainingNodes) {
@@ -2219,13 +2275,13 @@ export function ThreadPage({
     }
 
     return result;
-  }, [detail.matrix.nodes, matrixSystemRootNode]);
+  }, [filteredMatrixNodes, matrixSystemRootNode]);
 
   const matrixNodePathById = useMemo(() => {
-    const byId = new Map(detail.matrix.nodes.map((node) => [node.id, node]));
+    const byId = new Map(filteredMatrixNodes.map((node) => [node.id, node]));
     const paths = new Map<string, string>();
 
-    for (const node of detail.matrix.nodes) {
+    for (const node of filteredMatrixNodes) {
       if (matrixSystemRootNode && node.id === matrixSystemRootNode.id) continue;
 
       const pathParts: string[] = [node.name];
@@ -2249,7 +2305,7 @@ export function ThreadPage({
     }
 
     return paths;
-  }, [detail.matrix.nodes, matrixSystemRootNode]);
+  }, [filteredMatrixNodes, matrixSystemRootNode]);
 
   const selectedConcernsForModal = useMemo(() => {
     if (!documentModal) return [];
@@ -3586,6 +3642,46 @@ export function ThreadPage({
 
         const renderMatrixBody = () => (
           <>
+            <div className="thread-topology-filters">
+              <div className="thread-topology-filter-group">
+                <span className="matrix-concern-filter-label">Ownership</span>
+                <label className={`matrix-concern-chip thread-topology-filter-chip ${visibleOwnerships.has("first_party") ? "matrix-concern-chip--active" : ""}`}>
+                  <input
+                    type="checkbox"
+                    checked={visibleOwnerships.has("first_party")}
+                    onChange={() => toggleVisibleOwnership("first_party")}
+                  />
+                  First-party
+                </label>
+                <label className={`matrix-concern-chip thread-topology-filter-chip ${visibleOwnerships.has("third_party") ? "matrix-concern-chip--active" : ""}`}>
+                  <input
+                    type="checkbox"
+                    checked={visibleOwnerships.has("third_party")}
+                    onChange={() => toggleVisibleOwnership("third_party")}
+                  />
+                  Third-party
+                </label>
+              </div>
+              <div className="thread-topology-filter-group">
+                <span className="matrix-concern-filter-label">Boundary</span>
+                <label className={`matrix-concern-chip thread-topology-filter-chip ${visibleBoundaries.has("internal") ? "matrix-concern-chip--active" : ""}`}>
+                  <input
+                    type="checkbox"
+                    checked={visibleBoundaries.has("internal")}
+                    onChange={() => toggleVisibleBoundary("internal")}
+                  />
+                  Internal
+                </label>
+                <label className={`matrix-concern-chip thread-topology-filter-chip ${visibleBoundaries.has("external") ? "matrix-concern-chip--active" : ""}`}>
+                  <input
+                    type="checkbox"
+                    checked={visibleBoundaries.has("external")}
+                    onChange={() => toggleVisibleBoundary("external")}
+                  />
+                  External
+                </label>
+              </div>
+            </div>
             <div className="matrix-concern-filter">
               <span className="matrix-concern-filter-label">Concerns</span>
               {normalizeMatrixConcerns(detail.matrix.concerns).map((c) => (

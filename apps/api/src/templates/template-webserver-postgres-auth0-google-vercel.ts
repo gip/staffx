@@ -7,7 +7,7 @@ export const templateWebserverPostgresAuth0GoogleVercel: TemplateDefinition = {
   nodes: [
     {
       key: "browser_host",
-      name: "Third-Party Service Host (Browser)",
+      name: "Browser",
       kind: "Host",
       metadata: {
         ownership: "third_party",
@@ -21,7 +21,7 @@ export const templateWebserverPostgresAuth0GoogleVercel: TemplateDefinition = {
     },
     {
       key: "react_frontend",
-      name: "React App",
+      name: "Frontend (React)",
       kind: "Process",
       metadata: {
         ownership: "first_party",
@@ -35,10 +35,10 @@ export const templateWebserverPostgresAuth0GoogleVercel: TemplateDefinition = {
     },
     {
       key: "vercel_host",
-      name: "First-Party Host (Vercel)",
+      name: "Vercel",
       kind: "Host",
       metadata: {
-        ownership: "first_party",
+        ownership: "third_party",
         boundary: "external",
       },
       parentKey: "root",
@@ -49,7 +49,7 @@ export const templateWebserverPostgresAuth0GoogleVercel: TemplateDefinition = {
     },
     {
       key: "webserver_process",
-      name: "Webserver",
+      name: "Backend (Vercel)",
       kind: "Process",
       metadata: {
         ownership: "first_party",
@@ -63,7 +63,7 @@ export const templateWebserverPostgresAuth0GoogleVercel: TemplateDefinition = {
     },
     {
       key: "postgres_host",
-      name: "First-Party Host (Postgres Runtime)",
+      name: "Postgres Runtime",
       kind: "Host",
       metadata: {
         ownership: "first_party",
@@ -91,7 +91,7 @@ export const templateWebserverPostgresAuth0GoogleVercel: TemplateDefinition = {
     },
     {
       key: "auth0_host",
-      name: "Third-Party Service Host (Auth0)",
+      name: "Auth0",
       kind: "Host",
       metadata: {
         ownership: "third_party",
@@ -119,7 +119,7 @@ export const templateWebserverPostgresAuth0GoogleVercel: TemplateDefinition = {
     },
     {
       key: "google_host",
-      name: "External Service Host (Google Identity)",
+      name: "Google Identity",
       kind: "Host",
       metadata: {
         ownership: "third_party",
@@ -237,7 +237,7 @@ export const templateWebserverPostgresAuth0GoogleVercel: TemplateDefinition = {
       title: "Stack overview",
       language: "en",
       text:
-        "The system is composed of host-wrapped runtime components: Third-Party Service Host (Browser)/React frontend, First-Party Host (Vercel)/Webserver backend, First-Party Host (Postgres Runtime)/Postgres database, Third-Party Service Host (Auth0)/Auth0 Service, and External Service Host (Google Identity)/Google OAuth.",
+        "The system is composed of host-wrapped runtime components: Browser/Frontend (React), Vercel/Backend (Vercel), Postgres Runtime/Postgres, Auth0/Auth0 Service, and Google Identity/Google OAuth.",
     },
     {
       key: "spec_browser_host",
@@ -261,15 +261,15 @@ export const templateWebserverPostgresAuth0GoogleVercel: TemplateDefinition = {
       title: "Vercel host",
       language: "en",
       text:
-        "Vercel hosts the webserver process and provides deployment lifecycle controls, public HTTPS ingress, and runtime isolation.",
+        "Vercel is a third-party host that runs the first-party backend process and provides deployment lifecycle controls, public HTTPS ingress, and runtime isolation.",
     },
     {
       key: "spec_webserver_process",
       kind: "Document",
-      title: "Webserver process",
+      title: "Backend process",
       language: "en",
       text:
-        "The webserver process serves backend APIs consumed by the frontend over HTTPS and reads/writes persistent records in Postgres over PG Wire.",
+        "The first-party backend process serves APIs consumed by the frontend over HTTPS and reads/writes persistent records in Postgres over PG Wire.",
     },
     {
       key: "spec_postgres_host",
@@ -277,7 +277,7 @@ export const templateWebserverPostgresAuth0GoogleVercel: TemplateDefinition = {
       title: "Postgres host",
       language: "en",
       text:
-        "First-Party Host (Postgres Runtime) encapsulates database runtime concerns including process isolation, network exposure, and operational configuration for persistence.",
+        "Postgres Runtime encapsulates database runtime concerns including process isolation, network exposure, and operational configuration for persistence.",
     },
     {
       key: "spec_postgres_process",
@@ -293,7 +293,7 @@ export const templateWebserverPostgresAuth0GoogleVercel: TemplateDefinition = {
       title: "Auth0 identity host",
       language: "en",
       text:
-        "Third-Party Service Host (Auth0) provides the managed identity boundary that encapsulates OAuth/OIDC flows and token management capabilities.",
+        "Auth0 provides the managed identity boundary that encapsulates OAuth/OIDC flows and token management capabilities.",
     },
     {
       key: "spec_auth0_process",
@@ -309,7 +309,7 @@ export const templateWebserverPostgresAuth0GoogleVercel: TemplateDefinition = {
       title: "Google identity host",
       language: "en",
       text:
-        "External Service Host (Google Identity) is an external identity boundary that hosts the Google OAuth service used by Auth0 social login federation.",
+        "Google Identity is an external identity boundary that hosts the Google OAuth service used by Auth0 social login federation.",
     },
     {
       key: "spec_google_oauth_process",
