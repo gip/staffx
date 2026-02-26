@@ -1765,7 +1765,7 @@ a.project-card {
 
 .matrix-doc-list {
   display: flex;
-  flex-wrap: wrap;
+  flex-direction: column;
   gap: 4px;
 }
 

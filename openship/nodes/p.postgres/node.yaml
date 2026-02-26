@@ -1,0 +1,61 @@
+"id": "p.postgres"
+"kind": "Process"
+"name": "PostgreSQL Runtime"
+"parentId": "h.postgres-host"
+"metadata":
+  "runtime": "postgresql"
+  "schemaSource": "apps/api/db/migrations/001_init_full_schema.sql"
+"matrix":
+  "Features":
+    "documentRefs":
+      - "sha256:247d75b43409fa012a6c501d7da9df68cd0d983f2cf86c9aa31afb160f4a6451"
+      - "sha256:b0cec0f7f50bc65fd870424506d0c02918f9d53b409d82b64b29e77a34441156"
+      - "sha256:b171da2b2a987bb95cdba6bd608ea5a0cb22b9c59b012d5341226baf48b4d94e"
+      - "sha256:ebf18c528c81b9c52959cb05031d3001bb6177280765aa8c89bb836d00e1176e"
+      - "sha256:f0aa742303743b67f5127e2d821f7728972210f62e1c81a18d6af1849ba321ad"
+    "skillRefs": []
+  "General Specs":
+    "documentRefs":
+      - "sha256:19dbfb185c4fec122ff838311d1d90e36bbb8a1ec252a1c45a93f821ae6cfcff"
+      - "sha256:e44cf7d6b7c28c9710f77142f219f80d8bd41a061eb4818af62179bb60b7d1d9"
+    "skillRefs": []
+  "General Skills":
+    "documentRefs": []
+    "skillRefs":
+      - "sha256:3156e45736d50ac36bf8fcbfef4a98b246a6efe946a6297f995b6c88df659656"
+      - "sha256:3c5ad91fddb319ebbce2095c55c8bc4dcdf1f46de1832ef6ec1a355c74d84209"
+  "Data Model":
+    "documentRefs":
+      - "sha256:f4912a741dcde8846aabf516b31555254d3279d1347938732de3cfe124cf8701"
+    "skillRefs": []
+  "Interfaces":
+    "documentRefs":
+      - "sha256:c3d14eaf0a3806b8fe2c24e90f7873f24543cf5ac9347965fe9f3587e26decb8"
+    "skillRefs": []
+  "Connectivity":
+    "documentRefs":
+      - "sha256:edd66cee075833dabaff2c6c7166bfa08c199d6a9bda6522940e469487136ed7"
+    "skillRefs": []
+  "Security":
+    "documentRefs":
+      - "sha256:fded629d186e0aeef494d538cc344c55c6540d2733f80bf729f3687bf8fe1d7e"
+    "skillRefs":
+      - "sha256:248ea18d4d74cabd9dc2c370ba832bbc26168ce96ce368785de27bdc3cb8acd6"
+  "Implementation":
+    "documentRefs":
+      - "sha256:ee24e8077c150e499fc955f05ad72ab220614f58d60d692377d60c1e255f3877"
+    "skillRefs": []
+  "Deployment":
+    "documentRefs":
+      - "sha256:902614151d5df93bf05eead358e9bbf776354cc98e2095c3e5dc29f948ae6d72"
+    "skillRefs": []
+  "Functional Testing":
+    "documentRefs":
+      - "sha256:a2ad9548f9579e7856cae6e842fe95ba1ac21bf428e4ae59fdcf5ef32349d144"
+    "skillRefs":
+      - "sha256:3156e45736d50ac36bf8fcbfef4a98b246a6efe946a6297f995b6c88df659656"
+"artifacts":
+  "Summary":
+    - "a.p.postgres.general-summary.v1"
+  "Docs":
+    - "a.p.postgres.general-docs.v1"

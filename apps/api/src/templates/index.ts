@@ -20,7 +20,9 @@ export const DEFAULT_CONCERNS: DefaultConcern[] = [
 ];
 
 export const BLANK_TEMPLATE_ID = "blank" as const;
-export type NonBlankTemplateId = "webserver-postgres-auth0-google-vercel";
+export const OPENSHIP_IMPORT_TEMPLATE_ID = "staffx-openship-import" as const;
+export type SeedTemplateId = "webserver-postgres-auth0-google-vercel";
+export type NonBlankTemplateId = SeedTemplateId | typeof OPENSHIP_IMPORT_TEMPLATE_ID;
 export type TemplateId = typeof BLANK_TEMPLATE_ID | NonBlankTemplateId;
 
 export type TemplateNodeKind = "Host" | "Container" | "Process" | "Library";
@@ -71,7 +73,7 @@ export interface TemplateMatrixRef {
 }
 
 export interface TemplateDefinition {
-  id: NonBlankTemplateId;
+  id: SeedTemplateId;
   label: string;
   description: string;
   nodes: TemplateNode[];
@@ -81,15 +83,15 @@ export interface TemplateDefinition {
   matrixRefs: TemplateMatrixRef[];
 }
 
-const templateRegistry: Record<NonBlankTemplateId, TemplateDefinition> = {
+const templateRegistry: Record<SeedTemplateId, TemplateDefinition> = {
   [templateWebserverPostgresAuth0GoogleVercel.id]: templateWebserverPostgresAuth0GoogleVercel,
 };
 
 export function isKnownTemplateId(templateId: string): templateId is TemplateId {
-  return templateId === BLANK_TEMPLATE_ID || templateId in templateRegistry;
+  return templateId === BLANK_TEMPLATE_ID || templateId === OPENSHIP_IMPORT_TEMPLATE_ID || templateId in templateRegistry;
 }
 
 export function getTemplateById(templateId: TemplateId): TemplateDefinition | null {
-  if (templateId === BLANK_TEMPLATE_ID) return null;
-  return templateRegistry[templateId];
+  if (templateId === BLANK_TEMPLATE_ID || templateId === OPENSHIP_IMPORT_TEMPLATE_ID) return null;
+  return templateRegistry[templateId as SeedTemplateId];
 }

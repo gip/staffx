@@ -1,0 +1,56 @@
+"id": "p.notion-api"
+"kind": "Process"
+"name": "Notion API"
+"parentId": "h.notion-cloud"
+"metadata":
+  "protocol": "https-rest"
+"matrix":
+  "Features":
+    "documentRefs":
+      - "sha256:89a5423a98192527443b283ed215297d075175802025f546bf7219f3adf8efcd"
+    "skillRefs": []
+  "General Specs":
+    "documentRefs":
+      - "sha256:19dbfb185c4fec122ff838311d1d90e36bbb8a1ec252a1c45a93f821ae6cfcff"
+      - "sha256:6de19a2aa28bd286ecae5a64efe35da30862708cbae104f2598fe170480c6779"
+    "skillRefs": []
+  "General Skills":
+    "documentRefs": []
+    "skillRefs":
+      - "sha256:3156e45736d50ac36bf8fcbfef4a98b246a6efe946a6297f995b6c88df659656"
+      - "sha256:3c5ad91fddb319ebbce2095c55c8bc4dcdf1f46de1832ef6ec1a355c74d84209"
+  "Data Model":
+    "documentRefs": []
+    "skillRefs": []
+  "Interfaces":
+    "documentRefs":
+      - "sha256:c3d14eaf0a3806b8fe2c24e90f7873f24543cf5ac9347965fe9f3587e26decb8"
+    "skillRefs": []
+  "Connectivity":
+    "documentRefs":
+      - "sha256:edd66cee075833dabaff2c6c7166bfa08c199d6a9bda6522940e469487136ed7"
+    "skillRefs": []
+  "Security":
+    "documentRefs":
+      - "sha256:89a5423a98192527443b283ed215297d075175802025f546bf7219f3adf8efcd"
+      - "sha256:fded629d186e0aeef494d538cc344c55c6540d2733f80bf729f3687bf8fe1d7e"
+    "skillRefs":
+      - "sha256:248ea18d4d74cabd9dc2c370ba832bbc26168ce96ce368785de27bdc3cb8acd6"
+  "Implementation":
+    "documentRefs":
+      - "sha256:ee24e8077c150e499fc955f05ad72ab220614f58d60d692377d60c1e255f3877"
+    "skillRefs": []
+  "Deployment":
+    "documentRefs":
+      - "sha256:902614151d5df93bf05eead358e9bbf776354cc98e2095c3e5dc29f948ae6d72"
+    "skillRefs": []
+  "Functional Testing":
+    "documentRefs":
+      - "sha256:a2ad9548f9579e7856cae6e842fe95ba1ac21bf428e4ae59fdcf5ef32349d144"
+    "skillRefs":
+      - "sha256:3156e45736d50ac36bf8fcbfef4a98b246a6efe946a6297f995b6c88df659656"
+"artifacts":
+  "Summary":
+    - "a.p.notion-api.general-summary.v1"
+  "Docs":
+    - "a.p.notion-api.general-docs.v1"

@@ -39,6 +39,11 @@ const TEMPLATES = [
     label: "Webserver + Postgres + Auth0 Google login + Vercel",
     description: "Seeded stack with topology, architecture concern, and spec docs",
   },
+  {
+    id: "staffx-openship-import",
+    label: "StaffX OpenShip Import (./openship)",
+    description: "Import the repository openship bundle into project topology and matrix",
+  },
 ];
 
 interface CreateModalProps {

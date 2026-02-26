@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdtemp, readdir, readFile, rm, stat } from "node:fs/promises";
+import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
+import { fileURLToPath } from "node:url";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 
 import pool, { query } from "../db.js";
@@ -13,7 +14,7 @@ import {
   getAgentRunById,
   updateAgentRunResult,
 } from "../agent-queue.js";
-import { applyOpenShipBundleToThreadSystem } from "../openship-sync.js";
+import { applyOpenShipBundleToThreadSystem, applyOpenShipBundleToThreadSystemWithClient } from "../openship-sync.js";
 import type { AgentRunPlanChange } from "@staffx/agent-runtime";
 import {
   publishEvent,
@@ -22,6 +23,14 @@ import {
   parseCursor,
   type StaffXEvent,
 } from "../events.js";
+import {
+  BLANK_TEMPLATE_ID,
+  OPENSHIP_IMPORT_TEMPLATE_ID,
+  getTemplateById,
+  isKnownTemplateId,
+  type TemplateId,
+} from "../templates/index.js";
+import { OPENSHIP_ROOT_NODE_ID, seedSystemTemplate } from "../templates/seed.js";
 
 type AccessRole = "Owner" | "Editor" | "Viewer";
 
@@ -265,6 +274,8 @@ const DEFAULT_SYSTEM_PROMPT =
   "If changes are to be made, keep the changes to a minimum. In particular do not update name if existing objects like node or names unless it is absolutely necessary. " +
   "Node IDs and directory names should not be changed " +
   "Your response should be a summary of everything that has been done. No need to include checks and validation made.";
+const OPENSHIP_TEMPLATE_DIR_NAME = "openship";
+const OPENSHIP_MANIFEST_FILE_NAME = "openship.yaml";
 type AssistantModel = (typeof ALLOWED_ASSISTANT_MODELS)[number];
 
 function resolveAssistantModel(raw: unknown): AssistantModel | null {
@@ -1067,6 +1078,31 @@ async function collectOpenShipBundleFiles(bundleDir: string): Promise<V1OpenShip
   return files;
 }
 
+async function isOpenShipBundleDir(dirPath: string): Promise<boolean> {
+  try {
+    const dirStats = await stat(dirPath);
+    if (!dirStats.isDirectory()) return false;
+    const manifestStats = await stat(join(dirPath, OPENSHIP_MANIFEST_FILE_NAME));
+    return manifestStats.isFile();
+  } catch {
+    return false;
+  }
+}
+
+async function resolveRepoOpenShipBundleDir(): Promise<string | null> {
+  const moduleDir = dirname(fileURLToPath(import.meta.url));
+  const candidates = [
+    resolve(process.cwd(), OPENSHIP_TEMPLATE_DIR_NAME),
+    resolve(process.cwd(), "..", "..", OPENSHIP_TEMPLATE_DIR_NAME),
+    resolve(moduleDir, "..", "..", "..", "..", OPENSHIP_TEMPLATE_DIR_NAME),
+  ];
+
+  for (const candidate of candidates) {
+    if (await isOpenShipBundleDir(candidate)) return candidate;
+  }
+  return null;
+}
+
 function mapAssistantRunRow(run: V1AgentRunRow): {
   runId: string;
   threadId: string;
@@ -1240,13 +1276,17 @@ export async function v1Routes(app: FastifyInstance) {
     },
   );
 
-  app.post<{ Body: { name?: string; description?: string; visibility?: V1ProjectVisibility } }>(
+  app.post<{ Body: { name?: string; description?: string; visibility?: V1ProjectVisibility; template?: string } }>(
     "/projects",
     async (req, reply) => {
       const user = (req as V1AuthRequest).auth;
       const name = req.body?.name?.trim();
       const description = req.body?.description?.trim() || null;
       const visibility = req.body?.visibility ?? "private";
+      const rawTemplateId = typeof req.body?.template === "string"
+        ? req.body.template.trim()
+        : BLANK_TEMPLATE_ID;
+      const templateIdValue = rawTemplateId || BLANK_TEMPLATE_ID;
 
       if (!name) {
         return writeProblem(reply, 400, "Invalid name", "name is required.");
@@ -1256,6 +1296,23 @@ export async function v1Routes(app: FastifyInstance) {
       }
       if (!/^[a-zA-Z0-9]([a-zA-Z0-9_-]*[a-zA-Z0-9])?$/.test(name) || name.length > 80) {
         return writeProblem(reply, 400, "Invalid project name", "Use a valid project name.");
+      }
+      if (!isKnownTemplateId(templateIdValue)) {
+        return writeProblem(reply, 400, "Invalid template", "template must be blank, webserver-postgres-auth0-google-vercel, or staffx-openship-import.");
+      }
+
+      const selectedTemplateId = templateIdValue as TemplateId;
+      const selectedTemplate = getTemplateById(selectedTemplateId);
+      const openShipImportBundleDir = selectedTemplateId === OPENSHIP_IMPORT_TEMPLATE_ID
+        ? await resolveRepoOpenShipBundleDir()
+        : null;
+      if (selectedTemplateId === OPENSHIP_IMPORT_TEMPLATE_ID && !openShipImportBundleDir) {
+        return writeProblem(
+          reply,
+          500,
+          "OpenShip template unavailable",
+          "Unable to locate repository ./openship bundle for template import.",
+        );
       }
 
       const existing = await query<{ id: string }>(
@@ -1269,7 +1326,7 @@ export async function v1Routes(app: FastifyInstance) {
       const projectId = randomUUID();
       const threadId = randomUUID();
       const systemId = randomUUID();
-      const rootNodeId = "s.root";
+      const rootNodeId = OPENSHIP_ROOT_NODE_ID;
       const now = new Date();
 
       const client = await pool.connect();
@@ -1297,6 +1354,20 @@ export async function v1Routes(app: FastifyInstance) {
           "SELECT create_thread($1, $2, $3, $4, $5, $6)",
           [threadId, projectId, user.id, systemId, "Project Creation", description],
         );
+        if (selectedTemplate) {
+          await seedSystemTemplate(client, systemId, rootNodeId, selectedTemplate);
+        }
+        if (selectedTemplateId === OPENSHIP_IMPORT_TEMPLATE_ID) {
+          const templateBundleDir = openShipImportBundleDir;
+          if (!templateBundleDir) {
+            throw new Error("OpenShip template bundle directory was not resolved.");
+          }
+          const bundleFiles = await collectOpenShipBundleFiles(templateBundleDir);
+          await applyOpenShipBundleToThreadSystemWithClient(client, {
+            threadId,
+            bundleFiles,
+          });
+        }
 
         await client.query("COMMIT");
         inTransaction = false;

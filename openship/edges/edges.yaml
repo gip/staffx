@@ -1,0 +1,164 @@
+"edges":
+  -
+    "id": "e.web.api"
+    "type": "Runtime"
+    "fromNodeId": "p.web-spa"
+    "toNodeId": "p.api"
+    "metadata":
+      "protocol": "https"
+      "layer7": "rest-json"
+      "description": "Web client API access"
+  -
+    "id": "e.desktop-renderer.api"
+    "type": "Runtime"
+    "fromNodeId": "p.desktop-renderer"
+    "toNodeId": "p.api"
+    "metadata":
+      "protocol": "https"
+      "layer7": "rest-json"
+      "description": "Desktop renderer API access"
+  -
+    "id": "e.desktop-renderer.main"
+    "type": "Runtime"
+    "fromNodeId": "p.desktop-renderer"
+    "toNodeId": "p.desktop-main"
+    "metadata":
+      "protocol": "electron-ipc"
+      "layer7": "ipc-json"
+      "description": "Renderer to main requests"
+  -
+    "id": "e.desktop-main.renderer"
+    "type": "Runtime"
+    "fromNodeId": "p.desktop-main"
+    "toNodeId": "p.desktop-renderer"
+    "metadata":
+      "protocol": "electron-ipc"
+      "layer7": "ipc-events"
+      "description": "Main to renderer notifications"
+  -
+    "id": "e.desktop-main.api"
+    "type": "Runtime"
+    "fromNodeId": "p.desktop-main"
+    "toNodeId": "p.api"
+    "metadata":
+      "protocol": "https"
+      "layer7": "rest-json"
+      "description": "Local run claim and completion operations"
+  -
+    "id": "e.api.postgres"
+    "type": "Dataflow"
+    "fromNodeId": "p.api"
+    "toNodeId": "p.postgres"
+    "metadata":
+      "protocol": "pgwire"
+      "layer7": "postgresql-sql"
+      "description": "Primary data store access"
+  -
+    "id": "e.web.auth0"
+    "type": "Runtime"
+    "fromNodeId": "p.web-spa"
+    "toNodeId": "p.auth0-oidc"
+    "metadata":
+      "protocol": "https"
+      "layer7": "oidc-oauth2"
+      "description": "Web interactive login"
+  -
+    "id": "e.desktop-main.auth0"
+    "type": "Runtime"
+    "fromNodeId": "p.desktop-main"
+    "toNodeId": "p.auth0-oidc"
+    "metadata":
+      "protocol": "https"
+      "layer7": "oidc-oauth2-pkce"
+      "description": "Desktop PKCE login flow"
+  -
+    "id": "e.api.auth0"
+    "type": "Runtime"
+    "fromNodeId": "p.api"
+    "toNodeId": "p.auth0-oidc"
+    "metadata":
+      "protocol": "https"
+      "layer7": "jwks-userinfo"
+      "description": "Token verification and user profile sync"
+  -
+    "id": "e.api.notion"
+    "type": "Runtime"
+    "fromNodeId": "p.api"
+    "toNodeId": "p.notion-api"
+    "metadata":
+      "protocol": "https"
+      "layer7": "oauth-rest-json"
+      "description": "Notion OAuth and content integration"
+  -
+    "id": "e.api.google"
+    "type": "Runtime"
+    "fromNodeId": "p.api"
+    "toNodeId": "p.google-oauth-docs"
+    "metadata":
+      "protocol": "https"
+      "layer7": "oauth-rest-json"
+      "description": "Google OAuth and docs integration"
+  -
+    "id": "e.api.anthropic"
+    "type": "Runtime"
+    "fromNodeId": "p.api"
+    "toNodeId": "p.anthropic-api"
+    "metadata":
+      "protocol": "https"
+      "layer7": "assistant-provider"
+      "description": "API hosted assistant execution with Claude models"
+  -
+    "id": "e.api.openai"
+    "type": "Runtime"
+    "fromNodeId": "p.api"
+    "toNodeId": "p.openai-codex"
+    "metadata":
+      "protocol": "https"
+      "layer7": "assistant-provider"
+      "description": "API hosted assistant execution with Codex models"
+  -
+    "id": "e.desktop-main.anthropic"
+    "type": "Runtime"
+    "fromNodeId": "p.desktop-main"
+    "toNodeId": "p.anthropic-api"
+    "metadata":
+      "protocol": "https"
+      "layer7": "assistant-provider"
+      "description": "Desktop local execution with Claude models"
+  -
+    "id": "e.desktop-main.openai"
+    "type": "Runtime"
+    "fromNodeId": "p.desktop-main"
+    "toNodeId": "p.openai-codex"
+    "metadata":
+      "protocol": "https"
+      "layer7": "assistant-provider"
+      "description": "Desktop local execution with Codex models"
+  -
+    "id": "e.web.dep.ui"
+    "type": "Dependency"
+    "fromNodeId": "p.web-spa"
+    "toNodeId": "l.staffx-ui"
+    "metadata":
+      "description": "Web uses shared UI package"
+  -
+    "id": "e.desktop-renderer.dep.ui"
+    "type": "Dependency"
+    "fromNodeId": "p.desktop-renderer"
+    "toNodeId": "l.staffx-ui"
+    "metadata":
+      "description": "Desktop renderer uses shared UI package"
+  -
+    "id": "e.desktop-main.dep.runtime"
+    "type": "Dependency"
+    "fromNodeId": "p.desktop-main"
+    "toNodeId": "l.staffx-agent-runtime"
+    "metadata":
+      "description": "Desktop main uses shared agent runtime package"
+  -
+    "id": "e.api.dep.runtime"
+    "type": "Dependency"
+    "fromNodeId": "p.api"
+    "toNodeId": "l.staffx-agent-runtime"
+    "metadata":
+      "description": "API uses shared agent runtime package"
