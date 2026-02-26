@@ -1,8 +1,9 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+import type { PoolClient } from "pg";
 
 import pool, { query } from "../db.js";
 import { generateOpenShipFileBundle } from "../agent-runner.js";
@@ -22,8 +23,183 @@ import {
   parseCursor,
   type StaffXEvent,
 } from "../events.js";
+import {
+  BLANK_TEMPLATE_ID,
+  DEFAULT_CONCERNS,
+  getTemplateById,
+  isKnownTemplateId,
+  type TemplateDefinition,
+  type TemplateDocument,
+} from "../templates/index.js";
 
 type AccessRole = "Owner" | "Editor" | "Viewer";
+type V1OpenShipNodeKind = "Root" | "Host" | "Container" | "Process" | "Library";
+
+const OPENSHIP_ROOT_NODE_ID = "s.root";
+const TYPED_NODE_ID_SCHEME = "typed_key_v1";
+const OPENSHIP_KEY_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+
+function kindToPrefix(kind: V1OpenShipNodeKind): string {
+  if (kind === "Root") return "s";
+  if (kind === "Host") return "h";
+  if (kind === "Container") return "c";
+  if (kind === "Process") return "p";
+  return "l";
+}
+
+function normalizeOpenShipKey(raw: string): string {
+  const normalized = raw
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "");
+
+  if (!OPENSHIP_KEY_PATTERN.test(normalized)) {
+    throw new Error(`Invalid OpenShip key "${raw}".`);
+  }
+  return normalized;
+}
+
+function buildTypedNodeId(kind: V1OpenShipNodeKind, key: string): string {
+  if (kind === "Root") return OPENSHIP_ROOT_NODE_ID;
+  return `${kindToPrefix(kind)}.${key}`;
+}
+
+function computeTemplateDocumentHash(document: Pick<TemplateDocument, "kind" | "title" | "language" | "text">): string {
+  const payload = [document.kind, document.title, document.language, document.text].join("\n");
+  return `sha256:${createHash("sha256").update(payload, "utf8").digest("hex")}`;
+}
+
+async function seedSystemConcernsV1(
+  client: PoolClient,
+  systemId: string,
+  concerns: Array<{ name: string; position: number; isBaseline: boolean; scope?: string | null }>,
+): Promise<void> {
+  for (const concern of concerns) {
+    await client.query(
+      `INSERT INTO concerns (system_id, name, position, is_baseline, scope)
+       VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT (system_id, name) DO NOTHING`,
+      [systemId, concern.name, concern.position, concern.isBaseline, concern.scope ?? null],
+    );
+  }
+}
+
+async function seedSystemTemplateV1(
+  client: PoolClient,
+  systemId: string,
+  rootNodeId: string,
+  template: TemplateDefinition,
+): Promise<void> {
+  const nodeIds = new Map<string, string>([["root", rootNodeId]]);
+  const nodeOpenShipKeys = new Map<string, string>();
+  const nodeIdToTemplateKey = new Map<string, string>();
+
+  for (const node of template.nodes) {
+    if (nodeIds.has(node.key)) {
+      throw new Error(`Template "${template.id}" has duplicate node key "${node.key}"`);
+    }
+
+    const openShipKey = normalizeOpenShipKey(node.key);
+    const typedNodeId = buildTypedNodeId(node.kind, openShipKey);
+    const existingTemplateKey = nodeIdToTemplateKey.get(typedNodeId);
+    if (existingTemplateKey) {
+      throw new Error(
+        `Template "${template.id}" has node id collision after normalization: ` +
+          `"${existingTemplateKey}" and "${node.key}" both map to "${typedNodeId}"`,
+      );
+    }
+
+    nodeIds.set(node.key, typedNodeId);
+    nodeOpenShipKeys.set(node.key, openShipKey);
+    nodeIdToTemplateKey.set(typedNodeId, node.key);
+  }
+
+  for (const node of template.nodes) {
+    const nodeId = nodeIds.get(node.key);
+    const openShipKey = nodeOpenShipKeys.get(node.key);
+    const parentKey = node.parentKey ?? "root";
+    const parentNodeId = nodeIds.get(parentKey);
+
+    if (!nodeId || !parentNodeId || !openShipKey) {
+      throw new Error(
+        `Template "${template.id}" references unknown parent "${parentKey}" for node "${node.key}"`,
+      );
+    }
+
+    const nodeMetadata = {
+      ...node.metadata,
+      ...(node.layout ? { layout: node.layout } : {}),
+      openshipKey: openShipKey,
+    };
+
+    await client.query(
+      `INSERT INTO nodes (id, system_id, kind, name, parent_id, metadata)
+       VALUES ($1, $2, $3::node_kind, $4, $5, $6::jsonb)`,
+      [nodeId, systemId, node.kind, node.name, parentNodeId, JSON.stringify(nodeMetadata)],
+    );
+  }
+
+  for (const edge of template.edges) {
+    const fromNodeId = nodeIds.get(edge.fromKey);
+    const toNodeId = nodeIds.get(edge.toKey);
+    if (!fromNodeId || !toNodeId) {
+      throw new Error(
+        `Template "${template.id}" edge references unknown nodes "${edge.fromKey}" -> "${edge.toKey}"`,
+      );
+    }
+
+    const metadata = edge.protocol ? JSON.stringify({ protocol: edge.protocol }) : "{}";
+    await client.query(
+      `INSERT INTO edges (id, system_id, type, from_node_id, to_node_id, metadata)
+       VALUES ($1, $2, $3::edge_type, $4, $5, $6::jsonb)`,
+      [randomUUID(), systemId, edge.type, fromNodeId, toNodeId, metadata],
+    );
+  }
+
+  await seedSystemConcernsV1(client, systemId, template.concerns);
+  const concernNames = new Set(template.concerns.map((concern) => concern.name));
+
+  const documentHashes = new Map<string, string>();
+  for (const document of template.documents) {
+    if (documentHashes.has(document.key)) {
+      throw new Error(`Template "${template.id}" has duplicate document key "${document.key}"`);
+    }
+
+    const hash = computeTemplateDocumentHash(document);
+    documentHashes.set(document.key, hash);
+    await client.query(
+      `INSERT INTO documents (hash, system_id, kind, title, language, text)
+       VALUES ($1, $2, $3::doc_kind, $4, $5, $6)
+       ON CONFLICT (system_id, hash) DO NOTHING`,
+      [hash, systemId, document.kind, document.title, document.language, document.text],
+    );
+  }
+
+  for (const ref of template.matrixRefs) {
+    const nodeId = nodeIds.get(ref.nodeKey);
+    const docHash = documentHashes.get(ref.documentKey);
+    if (!nodeId) {
+      throw new Error(`Template "${template.id}" matrix ref references unknown node "${ref.nodeKey}"`);
+    }
+    if (!docHash) {
+      throw new Error(
+        `Template "${template.id}" matrix ref references unknown document "${ref.documentKey}"`,
+      );
+    }
+    if (!concernNames.has(ref.concern)) {
+      throw new Error(`Template "${template.id}" matrix ref references unknown concern "${ref.concern}"`);
+    }
+
+    await client.query(
+      `INSERT INTO matrix_refs (system_id, node_id, concern, ref_type, doc_hash)
+       VALUES ($1, $2, $3, $4::ref_type, $5)
+       ON CONFLICT DO NOTHING`,
+      [systemId, nodeId, ref.concern, ref.refType, docHash],
+    );
+  }
+}
 
 interface V1AuthRequest extends FastifyRequest {
   auth: AuthUser;
@@ -86,6 +262,8 @@ interface V1TopologyNode {
   parentId: string | null;
   layoutX?: number | null;
   layoutY?: number | null;
+  ownership: "first_party" | "third_party";
+  boundary: "internal" | "external";
 }
 
 interface V1TopologyEdge {
@@ -1014,6 +1192,11 @@ async function loadThreadMatrix(systemId: string): Promise<V1ThreadMatrixNodeCel
 function toTopology(nodes: Array<{ id: string; name: string; kind: string; parent_id: string | null; metadata: Record<string, unknown> }> ,
   edges: Array<{ id: string; from_node_id: string; to_node_id: string; type: string; metadata: Record<string, unknown> }>,
 ): { nodes: V1TopologyNode[]; edges: V1TopologyEdge[] } {
+  const normalizeNodeOwnership = (value: unknown): "first_party" | "third_party" =>
+    value === "third_party" ? "third_party" : "first_party";
+  const normalizeNodeBoundary = (value: unknown): "internal" | "external" =>
+    value === "external" ? "external" : "internal";
+
   const topoNodes = nodes.map((node) => {
     const layout = (node.metadata?.layout as Record<string, unknown>) ?? {};
     const layoutX = typeof layout.x === "number" ? layout.x : null;
@@ -1025,6 +1208,8 @@ function toTopology(nodes: Array<{ id: string; name: string; kind: string; paren
       parentId: node.parent_id,
       layoutX,
       layoutY,
+      ownership: normalizeNodeOwnership(node.metadata?.ownership),
+      boundary: normalizeNodeBoundary(node.metadata?.boundary),
     };
   });
 
@@ -1240,12 +1425,13 @@ export async function v1Routes(app: FastifyInstance) {
     },
   );
 
-  app.post<{ Body: { name?: string; description?: string; visibility?: V1ProjectVisibility } }>(
+  app.post<{ Body: { name?: string; description?: string; template?: string; visibility?: V1ProjectVisibility } }>(
     "/projects",
     async (req, reply) => {
       const user = (req as V1AuthRequest).auth;
       const name = req.body?.name?.trim();
       const description = req.body?.description?.trim() || null;
+      const selectedTemplateId = req.body?.template ?? BLANK_TEMPLATE_ID;
       const visibility = req.body?.visibility ?? "private";
 
       if (!name) {
@@ -1257,6 +1443,10 @@ export async function v1Routes(app: FastifyInstance) {
       if (!/^[a-zA-Z0-9]([a-zA-Z0-9_-]*[a-zA-Z0-9])?$/.test(name) || name.length > 80) {
         return writeProblem(reply, 400, "Invalid project name", "Use a valid project name.");
       }
+      if (!isKnownTemplateId(selectedTemplateId)) {
+        return writeProblem(reply, 400, "Invalid template", "template must match a known project template.");
+      }
+      const selectedTemplate = getTemplateById(selectedTemplateId);
 
       const existing = await query<{ id: string }>(
         "SELECT 1 FROM projects WHERE owner_id = $1 AND name = $2",
@@ -1269,7 +1459,7 @@ export async function v1Routes(app: FastifyInstance) {
       const projectId = randomUUID();
       const threadId = randomUUID();
       const systemId = randomUUID();
-      const rootNodeId = "s.root";
+      const rootNodeId = OPENSHIP_ROOT_NODE_ID;
       const now = new Date();
 
       const client = await pool.connect();
@@ -1285,14 +1475,40 @@ export async function v1Routes(app: FastifyInstance) {
         );
         await client.query(
           `INSERT INTO systems (id, name, root_node_id, metadata, spec_version)
-           VALUES ($1, $2, $3, '{}'::jsonb, 'openship/v1')`,
-          [systemId, name, rootNodeId],
+           VALUES ($1, $2, $3, $4::jsonb, 'openship/v1')`,
+          [
+            systemId,
+            name,
+            rootNodeId,
+            JSON.stringify({ nodeIdScheme: TYPED_NODE_ID_SCHEME }),
+          ],
         );
         await client.query(
           `INSERT INTO nodes (id, system_id, kind, name, parent_id, metadata)
-           VALUES ($1, $2, 'Root'::node_kind, $3, NULL, '{}'::jsonb)`,
-          [rootNodeId, systemId, name],
+           VALUES ($1, $2, 'Root'::node_kind, $3, NULL, $4::jsonb)`,
+          [
+            rootNodeId,
+            systemId,
+            name,
+            JSON.stringify({
+              openshipKey: "root",
+              ownership: "first_party",
+              boundary: "internal",
+            }),
+          ],
         );
+        if (selectedTemplate) {
+          await seedSystemTemplateV1(client, systemId, rootNodeId, selectedTemplate);
+        } else {
+          await seedSystemConcernsV1(
+            client,
+            systemId,
+            DEFAULT_CONCERNS.map((concern) => ({
+              ...concern,
+              scope: null,
+            })),
+          );
+        }
         await client.query(
           "SELECT create_thread($1, $2, $3, $4, $5, $6)",
           [threadId, projectId, user.id, systemId, "Project Creation", description],

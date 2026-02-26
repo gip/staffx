@@ -104,6 +104,8 @@ A `Host` node with no `parentId` is implicitly contained by the `Root` node. Thi
   "name": "API",
   "parentId": "c.backend",
   "metadata": {
+    "ownership": "first_party",
+    "boundary": "internal",
     "runtime": "node",
     "language": "typescript"
   },
@@ -120,8 +122,17 @@ Field requirements:
 
 - `id`, `kind`, `name`, `matrix` are REQUIRED.
 - `parentId` is REQUIRED for `Container` and `Process`; forbidden for `Root` and `Library`; optional for `Host`.
-- `metadata` is OPTIONAL and extensible.
+- `metadata` is REQUIRED.
+- `metadata.ownership` is REQUIRED and MUST be `first_party` or `third_party`.
+- `metadata.boundary` is REQUIRED and MUST be `internal` or `external`.
 - `matrix` keys MUST reference known concerns.
+
+### 4.4 Host Ownership Naming Convention
+
+- Host names are ownership-based labels.
+- For hosts with `metadata.ownership = "first_party"`, `name` MUST start with `First-Party Host`.
+- For hosts with `metadata.ownership = "third_party"`, `name` MUST start with `Third-Party Service Host` or `External Service Host`.
+- Qualifiers MAY be appended for specificity, for example `First-Party Host (Vercel)` or `Third-Party Service Host (Auth0)`.
 
 ## 5. Edge Model and Metadata
 
@@ -385,6 +396,8 @@ A payload is OpenShip v1 conformant only if all rules pass.
 24. All IDs MUST match regex `^[a-zA-Z0-9._:-]+$`.
 25. Supersession chains in input documents MUST be acyclic.
 26. Code artifact `filePath` values MUST be valid relative paths (no `..`, no absolute paths, no NUL bytes).
+27. Every node MUST define `metadata.ownership` (`first_party` or `third_party`) and `metadata.boundary` (`internal` or `external`).
+28. Every `Host` node `name` MUST follow the ownership naming convention in Section 4.4.
 
 ## 10. File-Based Canonical Representation
 
@@ -472,6 +485,8 @@ kind: Process
 name: API
 parentId: c.backend
 metadata:
+  ownership: first_party
+  boundary: internal
   runtime: node
 matrix:
   Interfaces:
@@ -689,7 +704,10 @@ Implementations MAY impose stricter limits and SHOULD document them.
       "id": "s.root",
       "kind": "Root",
       "name": "Example System",
-      "metadata": {},
+      "metadata": {
+        "ownership": "first_party",
+        "boundary": "internal"
+      },
       "matrix": {
         "Features": {
           "documentRefs": ["sha256:1111111111111111111111111111111111111111111111111111111111111111"],
@@ -700,8 +718,11 @@ Implementations MAY impose stricter limits and SHOULD document them.
     {
       "id": "h.main",
       "kind": "Host",
-      "name": "Main host",
-      "metadata": {},
+      "name": "First-Party Host (Main)",
+      "metadata": {
+        "ownership": "first_party",
+        "boundary": "internal"
+      },
       "matrix": {}
     },
     {
@@ -709,7 +730,11 @@ Implementations MAY impose stricter limits and SHOULD document them.
       "kind": "Process",
       "name": "API",
       "parentId": "h.main",
-      "metadata": { "runtime": "node" },
+      "metadata": {
+        "ownership": "first_party",
+        "boundary": "internal",
+        "runtime": "node"
+      },
       "matrix": {}
     },
     {
@@ -717,14 +742,20 @@ Implementations MAY impose stricter limits and SHOULD document them.
       "kind": "Process",
       "name": "Worker",
       "parentId": "h.main",
-      "metadata": {},
+      "metadata": {
+        "ownership": "first_party",
+        "boundary": "internal"
+      },
       "matrix": {}
     },
     {
       "id": "lib.auth",
       "kind": "Library",
       "name": "Auth Library",
-      "metadata": {},
+      "metadata": {
+        "ownership": "first_party",
+        "boundary": "internal"
+      },
       "matrix": {}
     }
   ],
@@ -820,6 +851,8 @@ A producer/consumer is OpenShip v1 conformant when it satisfies all of the follo
 - Parses and emits `specVersion: openship/v1`.
 - Supports baseline concern names exactly.
 - Validates `kind` for nodes against `NodeKind`.
+- Requires `metadata.ownership` + `metadata.boundary` on every node with allowed enum values.
+- Enforces ownership-based host naming (`First-Party Host`, `Third-Party Service Host`, `External Service Host`).
 - Preserves unknown concerns and metadata fields.
 - Validates node containment and edge endpoint rules per edge type.
 - Validates matrix reference kinds against `MatrixRefKind` (`Document`, `Skill`, `Prompt`) with `Prompt` constrained to system prompt rules.

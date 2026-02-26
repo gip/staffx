@@ -37,6 +37,10 @@ export interface TemplateNode {
   key: string;
   name: string;
   kind: TemplateNodeKind;
+  metadata: {
+    ownership: "first_party" | "third_party";
+    boundary: "internal" | "external";
+  };
   parentKey?: string;
   layout?: TemplateNodeLayout;
 }

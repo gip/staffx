@@ -9,6 +9,10 @@ const SYSTEM_PROMPT_CONCERN = "__system_prompt__";
 const OPENSHIP_ROOT_NODE_ID = "s.root";
 const TYPED_NODE_ID_SCHEME = "typed_key_v1";
 const TYPED_NODE_ID_PATTERN = /^([hcpl])\.([a-z0-9]+(?:-[a-z0-9]+)*)$/;
+const NODE_OWNERSHIP_VALUES = new Set(["first_party", "third_party"]);
+const NODE_BOUNDARY_VALUES = new Set(["internal", "external"]);
+const FIRST_PARTY_HOST_NAME_PREFIX = "First-Party Host";
+const THIRD_PARTY_HOST_NAME_PREFIXES = ["Third-Party Service Host", "External Service Host"] as const;
 
 type YamlScalar = string | number | boolean | null;
 interface YamlObject {
@@ -616,6 +620,44 @@ function validateLibraryContainmentAndDependencyEdges(parsed: ParsedOpenShipBund
   }
 }
 
+function validateNodeOwnershipAndBoundary(parsed: ParsedOpenShipBundle): void {
+  for (const node of parsed.nodes) {
+    const ownership = typeof node.metadata.ownership === "string" ? node.metadata.ownership : null;
+    const boundary = typeof node.metadata.boundary === "string" ? node.metadata.boundary : null;
+
+    if (!ownership || !NODE_OWNERSHIP_VALUES.has(ownership)) {
+      throw new Error(
+        `Invalid node "${node.id}" metadata.ownership; expected one of first_party|third_party.`,
+      );
+    }
+
+    if (!boundary || !NODE_BOUNDARY_VALUES.has(boundary)) {
+      throw new Error(
+        `Invalid node "${node.id}" metadata.boundary; expected one of internal|external.`,
+      );
+    }
+
+    if (node.kind !== "Host") continue;
+
+    if (ownership === "first_party") {
+      if (!node.name.startsWith(FIRST_PARTY_HOST_NAME_PREFIX)) {
+        throw new Error(
+          `Invalid Host name for node "${node.id}"; first_party hosts must start with "${FIRST_PARTY_HOST_NAME_PREFIX}".`,
+        );
+      }
+      continue;
+    }
+
+    const hasValidThirdPartyPrefix = THIRD_PARTY_HOST_NAME_PREFIXES.some((prefix) => node.name.startsWith(prefix));
+    if (!hasValidThirdPartyPrefix) {
+      throw new Error(
+        `Invalid Host name for node "${node.id}"; third_party hosts must start with ` +
+          `"${THIRD_PARTY_HOST_NAME_PREFIXES[0]}" or "${THIRD_PARTY_HOST_NAME_PREFIXES[1]}".`,
+      );
+    }
+  }
+}
+
 function resolveOpenShipRootNodeId(manifestRootNodeId: string, nodeLookup: Map<string, ParsedNodeManifest>): string {
   if (manifestRootNodeId === OPENSHIP_ROOT_NODE_ID) {
     if (!nodeLookup.has(OPENSHIP_ROOT_NODE_ID)) {
@@ -828,6 +870,7 @@ export async function applyOpenShipBundleToThreadSystemWithClient(
   const nodeLookup = new Map<string, ParsedNodeManifest>(parsed.nodes.map((node) => [node.id, node]));
   const resolvedSystemNodeId = resolveOpenShipRootNodeId(manifest.systemNodeId, nodeLookup);
   validateLibraryContainmentAndDependencyEdges(parsed);
+  validateNodeOwnershipAndBoundary(parsed);
   if (typedNodeSchemeEnabled) {
     validateTypedNodeScheme(parsed, resolvedSystemNodeId, baseNodeKinds);
   }

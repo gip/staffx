@@ -127,6 +127,7 @@ async function seedSystemTemplate(
     }
 
     const nodeMetadata = {
+      ...node.metadata,
       ...(node.layout ? { layout: node.layout } : {}),
       openshipKey: openShipKey,
     };
@@ -518,7 +519,16 @@ export async function projectRoutes(app: FastifyInstance) {
         await client.query(
           `INSERT INTO nodes (id, system_id, kind, name, parent_id, metadata)
            VALUES ($1, $2, 'Root'::node_kind, $3, NULL, $4::jsonb)`,
-          [rootNodeId, systemId, trimmed, JSON.stringify({ openshipKey: "root" })],
+          [
+            rootNodeId,
+            systemId,
+            trimmed,
+            JSON.stringify({
+              openshipKey: "root",
+              ownership: "first_party",
+              boundary: "internal",
+            }),
+          ],
         );
 
         if (selectedTemplate) {

@@ -28,6 +28,12 @@ A component in the architecture graph. Nodes form a **tree** (via `parent_id`, s
 
 - Table: `nodes` — composite PK `(system_id, id)`
 - Parent FK is `deferrable initially deferred` so insert order doesn't matter
+- Required metadata contract in this repository:
+  - `metadata.ownership`: `first_party` or `third_party`
+  - `metadata.boundary`: `internal` or `external`
+- Host naming convention:
+  - `first_party` host names start with `First-Party Host`
+  - `third_party` host names start with `Third-Party Service Host` or `External Service Host`
 
 ### Edge
 
