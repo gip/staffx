@@ -3,6 +3,7 @@ import { Settings } from "lucide-react";
 import { Link } from "./link";
 import { isFinalizedThreadStatus, type Project, type Thread } from "./home";
 import type { ThreadDetail } from "./thread-page";
+import { renderMarkdown } from "./markdown";
 
 interface MutationError {
   error: string;
@@ -15,6 +16,7 @@ interface ProjectPageProps {
   fromThreadId?: string | null;
   onCloseThread?: (threadId: string) => Promise<MutationResult<{ thread: ThreadDetail }>>;
   onCommitThread?: (threadId: string) => Promise<MutationResult<{ thread: ThreadDetail }>>;
+  onUpdateDescription?: (description: string | null) => Promise<MutationResult<{ description: string | null }>>;
   onCloneThread?: (
     threadId: string,
     payload: {
@@ -77,7 +79,14 @@ function flattenThreadTree(threads: Thread[], fromProjectThreadId?: string | nul
   return result;
 }
 
-export function ProjectPage({ project, fromThreadId, onCloseThread, onCommitThread, onCloneThread }: ProjectPageProps) {
+export function ProjectPage({
+  project,
+  fromThreadId,
+  onCloseThread,
+  onCommitThread,
+  onUpdateDescription,
+  onCloneThread,
+}: ProjectPageProps) {
   const [cloningThreadId, setCloningThreadId] = useState<string | null>(null);
   const [threadTransitionThreadId, setThreadTransitionThreadId] = useState<string | null>(null);
   const [threadTransitionAction, setThreadTransitionAction] = useState<"close" | "commit" | null>(null);
@@ -88,6 +97,33 @@ export function ProjectPage({ project, fromThreadId, onCloseThread, onCommitThre
   const [cloneThreadDescription, setCloneThreadDescription] = useState("");
   const [isSubmittingClone, setIsSubmittingClone] = useState(false);
   const canCloneThreads = project.accessRole === "Owner" || project.accessRole === "Editor";
+  const canEditDescription = (project.accessRole === "Owner" || project.accessRole === "Editor") && !!onUpdateDescription;
+  const [isDescriptionEditing, setIsDescriptionEditing] = useState(false);
+  const [descriptionTab, setDescriptionTab] = useState<"write" | "preview">("write");
+  const [descriptionDraft, setDescriptionDraft] = useState(project.description ?? "");
+  const [descriptionError, setDescriptionError] = useState("");
+  const [isSavingDescription, setIsSavingDescription] = useState(false);
+
+  async function handleSaveDescription() {
+    if (!onUpdateDescription) return;
+    setDescriptionError("");
+    setIsSavingDescription(true);
+    const nextDescription = descriptionDraft.trim() ? descriptionDraft.trim() : null;
+    try {
+      const result = await onUpdateDescription(nextDescription);
+      const error = getErrorMessage(result);
+      if (error) {
+        setDescriptionError(error);
+        return;
+      }
+      setDescriptionDraft(nextDescription ?? "");
+      setIsDescriptionEditing(false);
+    } catch {
+      setDescriptionError("Failed to update project description");
+    } finally {
+      setIsSavingDescription(false);
+    }
+  }
 
   return (
     <main className="page">
@@ -104,9 +140,91 @@ export function ProjectPage({ project, fromThreadId, onCloseThread, onCommitThre
         </div>
       </div>
 
-      {project.description && (
-        <p className="page-description">{project.description}</p>
-      )}
+      <section className="project-description-card">
+        {isDescriptionEditing ? (
+          <div className="project-description-editor">
+            <div className="md-tabs">
+              <button
+                type="button"
+                className={`md-tab${descriptionTab === "write" ? " md-tab--active" : ""}`}
+                onClick={() => setDescriptionTab("write")}
+              >
+                Write
+              </button>
+              <button
+                type="button"
+                className={`md-tab${descriptionTab === "preview" ? " md-tab--active" : ""}`}
+                onClick={() => setDescriptionTab("preview")}
+              >
+                Preview
+              </button>
+            </div>
+            {descriptionTab === "write" ? (
+              <textarea
+                className="field-input field-textarea md-textarea"
+                rows={8}
+                value={descriptionDraft}
+                onChange={(event) => setDescriptionDraft(event.target.value)}
+                placeholder="Add a project description (Markdown supported)"
+              />
+            ) : (
+              <div className="md-preview">
+                {descriptionDraft.trim() ? (
+                  <div className="md-body" dangerouslySetInnerHTML={{ __html: renderMarkdown(descriptionDraft) }} />
+                ) : (
+                  <p className="project-description-empty">Nothing to preview</p>
+                )}
+              </div>
+            )}
+            {descriptionError && <p className="field-error">{descriptionError}</p>}
+            <div className="thread-inline-actions">
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={() => {
+                  setDescriptionDraft(project.description ?? "");
+                  setDescriptionError("");
+                  setDescriptionTab("write");
+                  setIsDescriptionEditing(false);
+                }}
+              >
+                Cancel
+              </button>
+              <button type="button" className="btn" disabled={isSavingDescription} onClick={handleSaveDescription}>
+                {isSavingDescription ? "Saving..." : "Save"}
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div className="project-description-display">
+            <div className="project-description-content">
+              {project.description ? (
+                <div className="md-body project-description-body" dangerouslySetInnerHTML={{ __html: renderMarkdown(project.description) }} />
+              ) : (
+                <p className="project-description-empty">
+                  {canEditDescription
+                    ? <em>No description yet. Click Edit to add one.</em>
+                    : "No description provided yet."}
+                </p>
+              )}
+            </div>
+            {canEditDescription && (
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={() => {
+                  setDescriptionDraft(project.description ?? "");
+                  setDescriptionError("");
+                  setDescriptionTab("write");
+                  setIsDescriptionEditing(true);
+                }}
+              >
+                Edit
+              </button>
+            )}
+          </div>
+        )}
+      </section>
 
       <section className="thread-section">
         <h3 className="thread-section-title">Threads</h3>

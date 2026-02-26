@@ -13,7 +13,6 @@ import {
   X,
 } from "lucide-react";
 import ELK, { type ElkExtendedEdge, type ElkNode } from "elkjs/lib/elk.bundled.js";
-import { Marked } from "marked";
 import ReactFlow, {
   Background,
   ControlButton,
@@ -33,6 +32,7 @@ import "reactflow/dist/style.css";
 import { Link } from "./link";
 import { useAuth } from "./auth-context";
 import { isFinalizedThreadStatus, type ThreadStatus } from "./home";
+import { renderMarkdown } from "./markdown";
 
 type DocKind = "Document" | "Skill";
 type MessageRole = "User" | "Assistant" | "System";
@@ -452,15 +452,6 @@ function formatDateTime(value: string) {
     hour: "numeric",
     minute: "2-digit",
   });
-}
-
-const markedInstance = new Marked({
-  breaks: true,
-  gfm: true,
-});
-
-function renderMarkdown(source: string): string {
-  return markedInstance.parse(source) as string;
 }
 
 function timeAgo(value: string) {

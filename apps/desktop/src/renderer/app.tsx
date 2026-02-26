@@ -869,6 +869,40 @@ function ProjectRoute({ isAuthenticated, onProjectMutated }: { isAuthenticated: 
   return (
     <ProjectPage
       project={project}
+      onUpdateDescription={async (description) => {
+        if (!handle || !projectName) {
+          return { error: "Project not found" };
+        }
+        try {
+          const res = await apiFetch(
+            `/projects/${encodeURIComponent(handle)}/${encodeURIComponent(projectName)}/description`,
+            {
+              method: "PATCH",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ description }),
+            },
+          );
+          if (!res.ok) {
+            return { error: await readError(res, "Failed to update project description") };
+          }
+          const data = await res.json() as { description: string | null };
+          setProject((current) => (
+            current
+              ? {
+                  ...current,
+                  description: data.description,
+                }
+              : current
+          ));
+          onProjectMutated?.();
+          return data;
+        } catch (error: unknown) {
+          if (error instanceof Error && error.message.trim()) {
+            return { error: error.message };
+          }
+          return { error: "Failed to update project description" };
+        }
+      }}
       onCloseThread={async (threadProjectId) => {
         try {
           const res = await apiFetch(
