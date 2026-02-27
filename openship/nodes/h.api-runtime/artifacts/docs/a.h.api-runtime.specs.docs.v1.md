@@ -1,0 +1,9 @@
+---
+id: "a.h.api-runtime.specs.docs.v1"
+nodeId: "h.api-runtime"
+concern: "General Specs"
+type: "Docs"
+language: "en"
+---
+
+This docs artifact is the node-level specification checkpoint for First-Party Host (API Runtime). It aligns the matrix-linked Features and General Specs documents with the current runtime implementation and dependency graph.
