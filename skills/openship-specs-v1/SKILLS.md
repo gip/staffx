@@ -89,6 +89,7 @@ A `Host` node with no `parentId` is implicitly contained by the `Root` node. Thi
 
 - `Host` MAY contain `Container` and `Process`.
 - `Container` MAY contain `Process`.
+- `Process` MUST be a child of either `Host` or `Container` and MUST NOT be a child of `Process`.
 - `Process` MUST NOT contain children.
 - `Library` MUST be freestanding (no parent, no children).
 - `Root` MUST be freestanding for containment (no parent).
@@ -103,6 +104,8 @@ A `Host` node with no `parentId` is implicitly contained by the `Root` node. Thi
   "name": "API",
   "parentId": "c.backend",
   "metadata": {
+    "ownership": "first_party",
+    "boundary": "internal",
     "runtime": "node",
     "language": "typescript"
   },
@@ -119,8 +122,17 @@ Field requirements:
 
 - `id`, `kind`, `name`, `matrix` are REQUIRED.
 - `parentId` is REQUIRED for `Container` and `Process`; forbidden for `Root` and `Library`; optional for `Host`.
-- `metadata` is OPTIONAL and extensible.
+- `metadata` is REQUIRED.
+- `metadata.ownership` is REQUIRED and MUST be `first_party` or `third_party`.
+- `metadata.boundary` is REQUIRED and MUST be `internal` or `external`.
 - `matrix` keys MUST reference known concerns.
+
+### 4.4 Host Ownership Naming Convention
+
+- Host names are ownership-based labels.
+- For hosts with `metadata.ownership = "first_party"`, `name` MUST start with `First-Party Host`.
+- For hosts with `metadata.ownership = "third_party"`, `name` MUST start with `Third-Party Service Host` or `External Service Host`.
+- Qualifiers MAY be appended for specificity, for example `First-Party Host (Vercel)` or `Third-Party Service Host (Auth0)`.
 
 ## 5. Edge Model and Metadata
 
@@ -145,6 +157,7 @@ OpenShip v1 defines three edge types:
   "fromNodeId": "p.api",
   "toNodeId": "p.db",
   "metadata": {
+    "layer7": "postgresql-sql",
     "protocol": "pgwire",
     "speedMbps": 1000,
     "latencyMs": 2,
@@ -153,21 +166,35 @@ OpenShip v1 defines three edge types:
 }
 ```
 
-### 5.3 Endpoint Rules
+### 5.3 Network Connection Conventions
+
+For `Runtime`/`Dataflow` edges, implementations and authored bundles SHOULD encode connection semantics in metadata:
+
+- `metadata.protocol` SHOULD describe the transport-level protocol and SHOULD be used for compatibility checks. Examples include `"http"`, `"grpc"`, `"pgwire"`, `"filesystem"`.
+- `metadata.layer7` SHOULD describe the application-layer protocol for topology readability and routing intent. Examples include:
+  - `"rest-json"`
+  - `"grpc-json"`
+  - `"oidc-oauth2"`
+  - `"oidc-oauth2-pkce"`
+
+Tooling SHOULD display `metadata.layer7` first when rendering edge labels; if absent, it MAY fallback to `metadata.protocol`.
+
+### 5.4 Endpoint Rules
 
 - For `Runtime` and `Dataflow` edges: `fromNodeId` MUST reference a `Process` node. `toNodeId` MUST reference a `Process` or `Container` node.
 - For `Dependency` edges: `fromNodeId` MUST reference a `Process` node. `toNodeId` MUST reference a `Library` node.
 - Edges to or from `Root` are forbidden for all edge types.
 
-### 5.4 Edge Target Semantics for Containers
+### 5.5 Edge Target Semantics for Containers
 
 When a `Runtime` or `Dataflow` edge targets a `Container` node, this represents an opaque routing boundary. The edge indicates that the source Process communicates with the Container as a unit, without specifying which internal Process handles the interaction. Tooling SHOULD interpret this as: the Container exposes a stable entry point (such as a load balancer, ingress, or service mesh endpoint) and internal routing is an implementation detail.
 
 For analysis or flattening purposes, tooling MAY expand a Container-targeted edge into individual Process-targeted edges based on the Container's children, but this expansion is not required for conformance.
 
-### 5.5 Metadata Rules
+### 5.6 Metadata Rules
 
 - `metadata.protocol` is OPTIONAL. When present, it describes the wire protocol (e.g., `"http"`, `"grpc"`, `"pgwire"`, `"filesystem"`).
+- `metadata.layer7` is OPTIONAL. When present, it describes the application-layer protocol family (e.g., `"rest-json"`, `"grpc-json"`), and MAY be used by topology renderers as the preferred edge label.
 - `metadata.description` is OPTIONAL. A short human-readable description of the edge's purpose.
 - `metadata.speedMbps` is OPTIONAL numeric throughput.
 - Additional metadata fields MAY be included.
@@ -351,23 +378,26 @@ A payload is OpenShip v1 conformant only if all rules pass.
 6. `Root` and `Library` are freestanding and have no parent.
 7. `Host` may parent only `Container` or `Process`.
 8. `Container` may parent only `Process`.
-9. `Process` and `Library` have no children.
-10. Every edge MUST have a `type` field with value `Runtime`, `Dataflow`, or `Dependency`.
-11. For `Runtime` and `Dataflow` edges: source MUST be `Process`; target MUST be `Process` or `Container`.
-12. For `Dependency` edges: source MUST be `Process`; target MUST be `Library`.
-13. No edge of any type may include `Root` as source or target.
-14. The projected graph of `Dataflow` edges (Process-to-Process only) MUST be a DAG. `Runtime` edges are exempt from cycle constraints.
-15. The projected graph of `Dependency` edges MUST be a DAG.
-16. All matrix concern keys are declared in concern registry.
-17. All `documentRefs` resolve in shared document store.
-18. All `skillRefs` resolve in shared document store.
-19. `Prompt` references MUST be attached only via `__system_prompt__` on the system root node.
-20. Shared document hashes MUST match canonical hash algorithm (Section 12).
-21. Baseline concerns MUST exist in registry with exact names.
-22. Artifacts MUST reference an existing node.
-23. All IDs MUST match regex `^[a-zA-Z0-9._:-]+$`.
-24. Supersession chains in input documents MUST be acyclic.
-25. Code artifact `filePath` values MUST be valid relative paths (no `..`, no absolute paths, no NUL bytes).
+9. `Process` may only have parent `Host` or `Container`.
+10. `Process` and `Library` have no children.
+11. Every edge MUST have a `type` field with value `Runtime`, `Dataflow`, or `Dependency`.
+12. For `Runtime` and `Dataflow` edges: source MUST be `Process`; target MUST be `Process` or `Container`.
+13. For `Dependency` edges: source MUST be `Process`; target MUST be `Library`.
+14. No edge of any type may include `Root` as source or target.
+15. The projected graph of `Dataflow` edges (Process-to-Process only) MUST be a DAG. `Runtime` edges are exempt from cycle constraints.
+16. The projected graph of `Dependency` edges MUST be a DAG.
+17. All matrix concern keys are declared in concern registry.
+18. All `documentRefs` resolve in shared document store.
+19. All `skillRefs` resolve in shared document store.
+20. `Prompt` references MUST be attached only via `__system_prompt__` on the system root node.
+21. Shared document hashes MUST match canonical hash algorithm (Section 12).
+22. Baseline concerns MUST exist in registry with exact names.
+23. Artifacts MUST reference an existing node.
+24. All IDs MUST match regex `^[a-zA-Z0-9._:-]+$`.
+25. Supersession chains in input documents MUST be acyclic.
+26. Code artifact `filePath` values MUST be valid relative paths (no `..`, no absolute paths, no NUL bytes).
+27. Every node MUST define `metadata.ownership` (`first_party` or `third_party`) and `metadata.boundary` (`internal` or `external`).
+28. Every `Host` node `name` MUST follow the ownership naming convention in Section 4.4.
 
 ## 10. File-Based Canonical Representation
 
@@ -455,6 +485,8 @@ kind: Process
 name: API
 parentId: c.backend
 metadata:
+  ownership: first_party
+  boundary: internal
   runtime: node
 matrix:
   Interfaces:
@@ -521,6 +553,7 @@ edges:
     fromNodeId: p.api
     toNodeId: p.db
     metadata:
+      layer7: postgresql-sql
       protocol: pgwire
       speedMbps: 1000
   - id: e.api.authlib
@@ -671,7 +704,10 @@ Implementations MAY impose stricter limits and SHOULD document them.
       "id": "s.root",
       "kind": "Root",
       "name": "Example System",
-      "metadata": {},
+      "metadata": {
+        "ownership": "first_party",
+        "boundary": "internal"
+      },
       "matrix": {
         "Features": {
           "documentRefs": ["sha256:1111111111111111111111111111111111111111111111111111111111111111"],
@@ -682,8 +718,11 @@ Implementations MAY impose stricter limits and SHOULD document them.
     {
       "id": "h.main",
       "kind": "Host",
-      "name": "Main host",
-      "metadata": {},
+      "name": "First-Party Host (Main)",
+      "metadata": {
+        "ownership": "first_party",
+        "boundary": "internal"
+      },
       "matrix": {}
     },
     {
@@ -691,7 +730,11 @@ Implementations MAY impose stricter limits and SHOULD document them.
       "kind": "Process",
       "name": "API",
       "parentId": "h.main",
-      "metadata": { "runtime": "node" },
+      "metadata": {
+        "ownership": "first_party",
+        "boundary": "internal",
+        "runtime": "node"
+      },
       "matrix": {}
     },
     {
@@ -699,14 +742,20 @@ Implementations MAY impose stricter limits and SHOULD document them.
       "kind": "Process",
       "name": "Worker",
       "parentId": "h.main",
-      "metadata": {},
+      "metadata": {
+        "ownership": "first_party",
+        "boundary": "internal"
+      },
       "matrix": {}
     },
     {
       "id": "lib.auth",
       "kind": "Library",
       "name": "Auth Library",
-      "metadata": {},
+      "metadata": {
+        "ownership": "first_party",
+        "boundary": "internal"
+      },
       "matrix": {}
     }
   ],
@@ -802,6 +851,8 @@ A producer/consumer is OpenShip v1 conformant when it satisfies all of the follo
 - Parses and emits `specVersion: openship/v1`.
 - Supports baseline concern names exactly.
 - Validates `kind` for nodes against `NodeKind`.
+- Requires `metadata.ownership` + `metadata.boundary` on every node with allowed enum values.
+- Enforces ownership-based host naming (`First-Party Host`, `Third-Party Service Host`, `External Service Host`).
 - Preserves unknown concerns and metadata fields.
 - Validates node containment and edge endpoint rules per edge type.
 - Validates matrix reference kinds against `MatrixRefKind` (`Document`, `Skill`, `Prompt`) with `Prompt` constrained to system prompt rules.
