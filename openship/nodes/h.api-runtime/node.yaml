@@ -1,8 +1,9 @@
 "id": "h.api-runtime"
 "kind": "Host"
-"name": "First-Party Host (API Runtime)"
+"name": "API Runtime"
 "parentId": "s.root"
 "metadata":
+  "openshipKey": "api-runtime"
   "ownership": "first_party"
   "boundary": "internal"
   "platform": "node-fastify"

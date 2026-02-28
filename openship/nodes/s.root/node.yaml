@@ -2,6 +2,7 @@
 "kind": "Root"
 "name": "StaffX Active Runtime"
 "metadata":
+  "openshipKey": "root"
   "ownership": "first_party"
   "boundary": "internal"
   "role": "system_root"

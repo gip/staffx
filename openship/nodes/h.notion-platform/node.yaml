@@ -1,8 +1,9 @@
 "id": "h.notion-platform"
 "kind": "Host"
-"name": "Third-Party Service Host (Notion Platform)"
+"name": "Notion Platform"
 "parentId": "s.root"
 "metadata":
+  "openshipKey": "notion-platform"
   "ownership": "third_party"
   "boundary": "external"
   "platform": "notion-cloud-apis"

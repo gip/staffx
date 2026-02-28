@@ -1,8 +1,9 @@
 "id": "h.desktop-runtime"
 "kind": "Host"
-"name": "First-Party Host (Desktop Runtime)"
+"name": "Desktop Runtime"
 "parentId": "s.root"
 "metadata":
+  "openshipKey": "desktop-runtime"
   "ownership": "first_party"
   "boundary": "external"
   "platform": "electron"

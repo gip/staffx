@@ -3,6 +3,7 @@
 "name": "Google OAuth Process"
 "parentId": "h.google-platform"
 "metadata":
+  "openshipKey": "google-oauth"
   "ownership": "third_party"
   "boundary": "external"
   "runtime": "oauth2-provider"

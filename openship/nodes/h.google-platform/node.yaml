@@ -1,8 +1,9 @@
 "id": "h.google-platform"
 "kind": "Host"
-"name": "Third-Party Service Host (Google Platform)"
+"name": "Google Platform"
 "parentId": "s.root"
 "metadata":
+  "openshipKey": "google-platform"
   "ownership": "third_party"
   "boundary": "external"
   "platform": "google-cloud-apis"

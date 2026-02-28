@@ -3,6 +3,7 @@
 "name": "Desktop Main Process"
 "parentId": "h.desktop-runtime"
 "metadata":
+  "openshipKey": "desktop-main"
   "ownership": "first_party"
   "boundary": "external"
   "runtime": "node/electron-main"

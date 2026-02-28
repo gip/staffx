@@ -3,6 +3,7 @@
 "name": "Auth0 Identity Process"
 "parentId": "h.auth0"
 "metadata":
+  "openshipKey": "auth0"
   "ownership": "third_party"
   "boundary": "external"
   "runtime": "oidc-provider"

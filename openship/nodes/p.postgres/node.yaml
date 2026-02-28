@@ -3,6 +3,7 @@
 "name": "PostgreSQL Process"
 "parentId": "h.data-runtime"
 "metadata":
+  "openshipKey": "postgres"
   "ownership": "first_party"
   "boundary": "internal"
   "runtime": "postgresql"

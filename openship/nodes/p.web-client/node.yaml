@@ -3,6 +3,7 @@
 "name": "Web Client Process"
 "parentId": "h.web-runtime"
 "metadata":
+  "openshipKey": "web-client"
   "ownership": "first_party"
   "boundary": "external"
   "runtime": "react/browser"

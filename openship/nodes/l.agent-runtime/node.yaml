@@ -2,6 +2,7 @@
 "kind": "Library"
 "name": "@staffx/agent-runtime Execution Library"
 "metadata":
+  "openshipKey": "agent-runtime"
   "ownership": "first_party"
   "boundary": "internal"
   "language": "typescript-node"

@@ -3,6 +3,7 @@
 "name": "Notion API Process"
 "parentId": "h.notion-platform"
 "metadata":
+  "openshipKey": "notion-api"
   "ownership": "third_party"
   "boundary": "external"
   "runtime": "notion-rest-api"

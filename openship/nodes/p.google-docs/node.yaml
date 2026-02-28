@@ -3,6 +3,7 @@
 "name": "Google Docs API Process"
 "parentId": "h.google-platform"
 "metadata":
+  "openshipKey": "google-docs"
   "ownership": "third_party"
   "boundary": "external"
   "runtime": "google-docs-api"

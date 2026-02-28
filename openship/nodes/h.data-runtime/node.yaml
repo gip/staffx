@@ -1,8 +1,9 @@
 "id": "h.data-runtime"
 "kind": "Host"
-"name": "First-Party Host (Data Runtime)"
+"name": "Data Runtime"
 "parentId": "s.root"
 "metadata":
+  "openshipKey": "data-runtime"
   "ownership": "first_party"
   "boundary": "internal"
   "platform": "postgres-host"

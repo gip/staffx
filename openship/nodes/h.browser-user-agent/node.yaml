@@ -1,8 +1,9 @@
 "id": "h.browser-user-agent"
 "kind": "Host"
-"name": "Third-Party Service Host (Browser User Agent)"
+"name": "Browser User Agent"
 "parentId": "s.root"
 "metadata":
+  "openshipKey": "browser-user-agent"
   "ownership": "third_party"
   "boundary": "external"
   "platform": "user-browser"

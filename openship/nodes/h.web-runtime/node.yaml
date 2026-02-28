@@ -1,8 +1,9 @@
 "id": "h.web-runtime"
 "kind": "Host"
-"name": "First-Party Host (Web Runtime)"
+"name": "Web Runtime"
 "parentId": "s.root"
 "metadata":
+  "openshipKey": "web-runtime"
   "ownership": "first_party"
   "boundary": "external"
   "platform": "browser-web"

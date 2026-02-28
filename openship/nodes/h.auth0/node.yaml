@@ -1,8 +1,9 @@
 "id": "h.auth0"
 "kind": "Host"
-"name": "Third-Party Service Host (Auth0)"
+"name": "Auth0"
 "parentId": "s.root"
 "metadata":
+  "openshipKey": "auth0"
   "ownership": "third_party"
   "boundary": "external"
   "platform": "auth0-cloud"

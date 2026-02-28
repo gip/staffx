@@ -3,6 +3,7 @@
 "name": "API Service Process"
 "parentId": "h.api-runtime"
 "metadata":
+  "openshipKey": "api"
   "ownership": "first_party"
   "boundary": "internal"
   "runtime": "node-fastify-process"

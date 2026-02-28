@@ -3,6 +3,7 @@
 "name": "Browser Execution Process"
 "parentId": "h.browser-user-agent"
 "metadata":
+  "openshipKey": "browser"
   "ownership": "third_party"
   "boundary": "external"
   "runtime": "browser-engine"

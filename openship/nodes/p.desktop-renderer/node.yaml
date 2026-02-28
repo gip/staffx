@@ -3,6 +3,7 @@
 "name": "Desktop Renderer Process"
 "parentId": "h.desktop-runtime"
 "metadata":
+  "openshipKey": "desktop-renderer"
   "ownership": "first_party"
   "boundary": "external"
   "runtime": "react/electron-renderer"
